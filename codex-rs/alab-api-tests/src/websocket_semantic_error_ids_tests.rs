@@ -335,33 +335,6 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-fn request() -> codex_api::ResponsesApiRequest {
-    codex_api::ResponsesApiRequest {
-        model: "gpt-semantic-error-ids".into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(json!({
-                "type":"message", "role":"user",
-                "content":[{"type":"input_text", "text":PRIVATE_INPUT}]
-            }))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    }
-}
-
 async fn exchange(case: Case, code: &str, envelope: Envelope) {
     let mut peer = tokio::time::timeout(
         WAIT,
@@ -402,6 +375,7 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
     .await
     .expect("semantic ID Upgrade deadline")
     .unwrap();
+    let request = crate::streaming_request("gpt-semantic-error-ids", PRIVATE_INPUT);
     let capture = Capture::default();
     let mut stream = {
         let _subscriber =
@@ -416,7 +390,7 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
             WAIT,
             connection.stream_request(
                 codex_api::ResponsesWsRequest::ResponseCreate(
-                    codex_api::ResponseCreateWsRequest::from(&request()),
+                    codex_api::ResponseCreateWsRequest::from(&request),
                 ),
                 false,
                 None,
@@ -485,7 +459,7 @@ async fn exchange(case: Case, code: &str, envelope: Envelope) {
                 | ("bio_policy", ApiError::BioPolicy { message }) => {
                     assert_eq!(message, PRIVATE_MESSAGE);
                 }
-                ("model_not_found", ApiError::ModelNotFound { message, status })
+                ("model_not_found", ApiError::ModelNotFound { message, status, .. })
                 | (
                     "content_policy_violation",
                     ApiError::ContentPolicyViolation { message, status },

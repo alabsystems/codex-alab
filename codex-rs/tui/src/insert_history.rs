@@ -415,6 +415,7 @@ where
             bg = next_bg;
         }
 
+        if codex_alab_tui::banner::artwork::write_history_span(writer, span)? { continue; } // ALAB(banner): inline scrollback archives the illustrated row with its text.
         queue!(writer, Print(&span.content))?;
     }
 

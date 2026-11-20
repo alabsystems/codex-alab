@@ -356,13 +356,10 @@ impl Autopilot {
             .await
             .ok_or("the model goal's native history is unavailable")?;
         let codex_home = thread.config().await.codex_home.clone();
-        let chronology_allows = matches!(
-            codex_alab_core::goal_chronology_fence::read_current(
-                &codex_home,
-                &rt.id.to_string(),
-            ),
-            Ok(generation) if generation == pending.chronology_fence_generation
-        );
+        let generation =
+            codex_alab_core::goal_chronology_fence::read_current(&codex_home, &rt.id.to_string())
+                .map_err(|error| error.to_string())?;
+        let chronology_allows = generation == pending.chronology_fence_generation;
         if !chronology_allows {
             close();
             return Ok(());
@@ -776,6 +773,9 @@ impl Autopilot {
                         })
                     })
                 });
+                let retain_unread_fresh = callback_current
+                    && own_fresh
+                    && current_generation.as_ref().is_some_and(Result::is_err);
                 let duplicate_generation_current = duplicate_stop
                     && stops == stops_at_start
                     && committed.stop.as_ref().is_some_and(|stop| {
@@ -787,8 +787,8 @@ impl Autopilot {
                     });
 
                 *lock(&rt.model_goal_mode_epoch) = Some(mode_epoch);
-                match candidate.filter(|_| chronology_current) {
-                    Some(candidate) if direct => {
+                match candidate.filter(|_| chronology_current || retain_unread_fresh) {
+                    Some(candidate) if direct && chronology_current => {
                         let bound = ModelGoalBinding::from_passive(candidate.clone());
                         *lock(&rt.model_blocked_goal) = Some(bound.clone());
                         *lock(&rt.model_goal_import) = PendingImport {
@@ -801,9 +801,8 @@ impl Autopilot {
                         expected_publication = Some(Some(bound));
                     }
                     Some(candidate) => {
-                        // A source resolved by another callback cannot skip the
-                        // complete-history adoption path. Stage its exact target
-                        // and keep it passive until restore validates the record.
+                        // A source with unread chronology or resolved through another
+                        // callback stays passive until restore validates its exact target.
                         *lock(&rt.model_blocked_goal) = None;
                         *lock(&rt.model_goal_import) = PendingImport {
                             staged: true,
@@ -1005,15 +1004,14 @@ impl Autopilot {
         let codex_home = thread.config().await.codex_home.clone();
         let thread_id = id.to_string();
         let chronology_current = || {
-            matches!(
-                codex_alab_core::goal_chronology_fence::read_current(&codex_home, &thread_id),
-                Ok(generation) if generation == bound.goal.chronology_fence_generation
-            )
+            codex_alab_core::goal_chronology_fence::read_current(&codex_home, &thread_id)
+                .map(|generation| generation == bound.goal.chronology_fence_generation)
+                .map_err(|error| error.to_string())
         };
         if goals
             .alab_with_current_goal_mutation_epoch(id, &bound.epoch, || ())
             .is_none()
-            || !chronology_current()
+            || !chronology_current()?
         {
             return Ok(None);
         }
@@ -1032,7 +1030,7 @@ impl Autopilot {
             || goals
                 .alab_with_current_goal_mutation_epoch(id, &bound.epoch, || ())
                 .is_none()
-            || !chronology_current()
+            || !chronology_current()?
             || codex_alab_core::mode_epoch() != Some(bound.mode_epoch)
         {
             return Ok(None);

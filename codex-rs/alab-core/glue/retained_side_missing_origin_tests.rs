@@ -73,6 +73,15 @@ async fn actual_side_close_and_rollback_selectors_without_native_a_keep_original
         installed?;
         let actual=h.host.control.manager.get_thread(h.parent_id).await?;
         let c1=h.c1.clone();
+        for (id, phase) in [(9126, "readResult"), (9127, "acknowledgeResult")] {
+            let thread = h.parent_id.to_string();
+            let query = json!({"id":id,"method":"config/read","params":{"includeLayers":false,"_meta":{
+                "alab.sideView":{"phase":phase,"view":{"schema":1,"claim":"a".repeat(32),"threadId":thread},
+                    "operation":"b".repeat(32),"parameters":{"threadId":thread}}
+            }}});
+            let error = h.request::<serde_json::Value>(ConnectionId(41), &c1, query).await.unwrap_err();
+            ensure!(error.to_string().ends_with(&format!("code {}", crate::error_code::INVALID_REQUEST_ERROR_CODE)), "{error:#}");
+        }
         for (id,method,key,selection) in [
             (9121,"thread/unsubscribe","alab.sideView",json!({"phase":"close","view":{"schema":1,"claim":"a".repeat(32),"threadId":h.parent_id.to_string()},"operation":"b".repeat(32)})),
             (9122,"thread/delete","alab.sideRollback",json!({"phase":"rollback","schema":1,"claim":"a".repeat(32),"operation":"c".repeat(32)})),

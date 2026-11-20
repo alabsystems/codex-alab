@@ -20,6 +20,10 @@ class ArtifactStatusTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         self.first = self.package('first', 'a' * 40)
         self.second = self.package('second', 'b' * 40)
+        main_image = patch.object(STATUS, 'process_main_image',
+                                  return_value=str((self.first / 'bin/codex').resolve()), create=True)
+        self.main_image = main_image.start()
+        self.addCleanup(main_image.stop)
 
     def package(self, name, source):
         root = self.root / name
@@ -51,6 +55,35 @@ class ArtifactStatusTests(unittest.TestCase):
         self.assertFalse(result['errors'])
         self.assertFalse((self.root / 'must-not-run').exists())
 
+    def test_package_switch_during_manifest_read_keeps_each_stage_independent(self):
+        current = self.root / 'current'
+        current.symlink_to(self.first)
+        replacement = self.root / 'replacement'
+        for stage in ('packaged', 'selected'):
+            with self.subTest(stage=stage):
+                replacement.symlink_to(self.first)
+                replacement.replace(current)
+                original_read = STATUS.regular_fd_bytes
+
+                def switch_after_read(fd, manifest):
+                    data = original_read(fd, manifest)
+                    if manifest == (self.first / 'alab-build.json').resolve():
+                        replacement.symlink_to(self.second)
+                        replacement.replace(current)
+                    return data
+
+                selected = current / 'bin/codex'
+                package = current if stage == 'packaged' else self.second
+                with patch.object(STATUS, 'regular_fd_bytes', side_effect=switch_after_read):
+                    result = STATUS.observe(package, selected)
+                self.assertIsNone(result[stage + '_sha'])
+                self.assertNotIn(stage, result['observations'])
+                other = 'selected' if stage == 'packaged' else 'packaged'
+                self.assertEqual(result[other + '_sha'], 'b' * 40)
+                self.assertEqual(len(result['errors']), 1)
+                self.assertTrue(result['errors'][0].startswith(stage + ': '))
+                self.assertEqual(STATUS.observe(current, selected)['selected_sha'], 'b' * 40)
+
     def test_running_source_is_independent_of_newer_package_and_selection(self):
         pointer = self.root / 'selected'
         pointer.symlink_to(self.second / 'bin/codex')
@@ -62,6 +95,52 @@ class ArtifactStatusTests(unittest.TestCase):
         self.assertEqual(result['selected_sha'], 'b' * 40)
         self.assertEqual(result['running_sha'], 'a' * 40)
         self.assertEqual(result['observations']['running']['pid'], 123)
+        self.assertFalse(result['errors'])
+
+    def test_foreign_codex_mapping_cannot_name_the_running_main_image(self):
+        self.main_image.return_value = '/usr/bin/python3'
+        with patch.object(STATUS.sys, 'platform', 'darwin'), patch.object(
+                STATUS.subprocess, 'check_output', side_effect=[
+                    'started', self.mappings(self.first), 'started']):
+            result = STATUS.observe(self.second, self.first / 'bin/codex', 123)
+        self.assertEqual(result['packaged_sha'], 'b' * 40)
+        self.assertEqual(result['selected_sha'], 'a' * 40)
+        self.assertIsNone(result['running_sha'])
+        self.assertTrue(result['errors'])
+        self.assertFalse((self.root / 'must-not-run').exists())
+
+    def test_main_executable_refusal_keeps_other_artifact_observations(self):
+        for error in (OSError(1, 'controlled kernel main-path refusal'),
+                      ValueError('controlled invalid kernel main path')):
+            with self.subTest(error=type(error).__name__):
+                self.main_image.side_effect = error
+                with patch.object(STATUS.sys, 'platform', 'darwin'), patch.object(
+                        STATUS.subprocess, 'check_output', side_effect=[
+                            'started', self.mappings(self.first), 'started']):
+                    result = STATUS.observe(self.second, self.first / 'bin/codex', 123)
+                self.assertEqual(result['packaged_sha'], 'b' * 40)
+                self.assertEqual(result['selected_sha'], 'a' * 40)
+                self.assertIsNone(result['running_sha'])
+                self.assertTrue(result['errors'])
+
+    def test_changed_kernel_main_image_stays_unknown(self):
+        self.main_image.side_effect = [str((self.first / 'bin/codex').resolve()),
+                                       str((self.second / 'bin/codex').resolve())]
+        with patch.object(STATUS.sys, 'platform', 'darwin'), patch.object(
+                STATUS.subprocess, 'check_output', side_effect=[
+                    'started', self.mappings(self.first), 'started']):
+            result = STATUS.observe(running_pid=123)
+        self.assertIsNone(result['running_sha'])
+        self.assertTrue(result['errors'])
+
+    def test_kernel_main_image_wins_over_another_codex_mapping(self):
+        with patch.object(STATUS.sys, 'platform', 'darwin'), patch.object(
+                STATUS.subprocess, 'check_output', side_effect=[
+                    'started', self.mappings(self.first, self.second), 'started']):
+            result = STATUS.observe(running_pid=123)
+        self.assertEqual(result['running_sha'], 'a' * 40)
+        self.assertEqual(result['observations']['running']['image'],
+                         str((self.first / 'bin/codex').resolve()))
         self.assertFalse(result['errors'])
 
     def test_replaced_inode_and_changed_pid_identity_stay_unknown(self):
@@ -100,8 +179,8 @@ class ArtifactStatusTests(unittest.TestCase):
                 self.assertIsNone(result['running_sha'])
                 self.assertTrue(result['errors'])
 
-    def test_missing_ambiguous_or_inode_less_process_image_cannot_qualify(self):
-        outputs = ['p123\n', self.mappings(self.first, self.second),
+    def test_missing_or_inode_less_process_image_cannot_qualify(self):
+        outputs = ['p123\n',
                    'p123\nftxt\nn' + str((self.first / 'bin/codex').resolve()) + '\n']
         for output in outputs:
             with self.subTest(output=output), patch.object(STATUS.sys, 'platform', 'darwin'), patch.object(
@@ -153,6 +232,12 @@ class ArtifactStatusTests(unittest.TestCase):
 
     def test_missing_pointer_and_incomplete_manifest_do_not_invent_source(self):
         self.assertTrue(STATUS.observe(selected_executable=self.root / 'missing')['errors'])
+        loop = self.root / 'loop'
+        loop.symlink_to(loop)
+        result = STATUS.observe(package=self.second, selected_executable=loop)
+        self.assertEqual(result['packaged_sha'], 'b' * 40)
+        self.assertIsNone(result['selected_sha'])
+        self.assertTrue(result['errors'])
         manifest = self.first / 'alab-build.json'
         for value in [{}, {'source': 'short', 'version': '0.4'},
                       {'source': 'a' * 40, 'version': None}, []]:

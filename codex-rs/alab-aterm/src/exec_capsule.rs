@@ -114,15 +114,18 @@ impl Drop for Mapping {
 
 impl Capsule {
     pub fn new(grant: &Grant, state: Value) -> io::Result<Self> {
-        let bytes = serde_json::to_vec(&serde_json::json!({
+        let mut envelope = serde_json::json!({
             "version": 1,
             "pid": std::process::id(),
             "id": grant.ticket.id,
             "thread": grant.origin.thread,
             "turn": grant.origin.turn,
             "state": state,
-        }))
-        .map_err(|_| invalid())?;
+        });
+        if let Some(limit) = grant.checkpoint.get("limit") {
+            envelope["limit"] = limit.clone();
+        }
+        let bytes = serde_json::to_vec(&envelope).map_err(|_| invalid())?;
         if bytes.len() > LIMIT {
             return Err(invalid());
         }
@@ -219,7 +222,9 @@ pub unsafe fn load(grant: &Grant, reference: &str) -> io::Result<Value> {
         return Err(io::Error::other("exec capsule content digest mismatch"));
     }
     let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    if value.as_object().map(serde_json::Map::len) != Some(6)
+    let limit = grant.checkpoint.get("limit");
+    if value.get("limit") != limit
+        || value.as_object().map(serde_json::Map::len) != Some(6 + usize::from(limit.is_some()))
         || value["version"] != 1
         || value["pid"].as_u64() != Some(u64::from(std::process::id()))
         || value["id"].as_str() != Some(&grant.ticket.id)
@@ -333,7 +338,8 @@ mod tests {
     }
 
     fn rejected_identity_sequence() {
-        let original = grant();
+        let mut original = grant();
+        original.checkpoint = serde_json::json!({"limit": "codex_other"});
         let capsule = Capsule::new(&original, serde_json::json!({"private": "fixture"})).unwrap();
         let fd = capsule.file.as_raw_fd();
         assert_ne!(descriptor_flags(fd) & libc::FD_CLOEXEC, 0);
@@ -345,7 +351,13 @@ mod tests {
         // Model the ownership transfer performed by exec without replacing
         // this test process. No other object owns or uses this descriptor.
         std::mem::forget(capsule);
-        let mut wrong = grant();
+        for checkpoint in [Value::Null, serde_json::json!({"limit": "other_model"})] {
+            let mut wrong = original.clone();
+            wrong.checkpoint = checkpoint;
+            // SAFETY: rejected loads retain the exclusively owned descriptor.
+            assert!(unsafe { load(&wrong, &reference) }.is_err());
+        }
+        let mut wrong = original.clone();
         wrong.origin.turn = "different-turn".into();
         // SAFETY: the previous owner was relinquished above.
         assert!(unsafe { load(&wrong, &reference) }.is_err());

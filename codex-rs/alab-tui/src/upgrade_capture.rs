@@ -7,6 +7,16 @@ use codex_alab_core::session::UpgradeRequest;
 use codex_alab_core::upgrade_completion::UpgradeCompletion;
 use std::time::Duration;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The request could not be made, expired, or reached a source that could not commit.
+    NotLeaving,
+    /// A queued terminal request ended before the terminal supplied its capture context.
+    TerminalUnavailable,
+    /// The source committed to leaving and its previous work must stay stopped.
+    Leaving,
+}
+
 /// Queue a final synchronous source decision using the actual TUI owner. A
 /// deadline withdraws only an undispatched request. Once committed, capture must
 /// settle even if it outlives that deadline; returning refusal would let the
@@ -18,7 +28,7 @@ pub async fn request<T: std::any::Any + Send>(
     shared: &Shared,
     deadline: Duration,
     commit: impl FnOnce(T) -> Option<UpgradeCompletion> + Send + 'static,
-) -> Result<bool, String> {
+) -> Result<Outcome, String> {
     let (answer, mut accepted) = tokio::sync::oneshot::channel();
     let (request, cancellation) = UpgradeRequest::with_context(move |context: T| {
         let completion = commit(context);
@@ -26,25 +36,22 @@ pub async fn request<T: std::any::Any + Send>(
         completion
     });
     if !shared.queue_upgrade(request) {
-        return Ok(false);
+        return Ok(Outcome::NotLeaving);
     }
-    let response = match tokio::time::timeout(deadline, &mut accepted).await {
-        Ok(response) => response,
+    let (response, without_context) = match tokio::time::timeout(deadline, &mut accepted).await {
+        Ok(response) => (response, Outcome::TerminalUnavailable),
         Err(_) => {
             // Cancellation synchronizes with dispatch's decision ownership. A
             // dispatched callback still owns the sender and must report its
             // result; an undispatched callback drops it without source effects.
             drop(cancellation);
-            return match accepted.await {
-                Ok(Some(completion)) => completion.wait().await.map(|()| true),
-                _ => Ok(false),
-            };
+            (accepted.await, Outcome::NotLeaving)
         }
     };
-    drop(cancellation);
     match response {
-        Ok(Some(completion)) => completion.wait().await.map(|()| true),
-        _ => Ok(false),
+        Ok(Some(completion)) => completion.wait().await.map(|()| Outcome::Leaving),
+        Ok(None) => Ok(Outcome::NotLeaving),
+        Err(_) => Ok(without_context),
     }
 }
 
@@ -73,7 +80,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         assert!(!waiter.is_finished());
         release.send(()).unwrap();
-        assert_eq!(waiter.await.unwrap(), Ok(true));
+        assert_eq!(waiter.await.unwrap(), Ok(Outcome::Leaving));
         completion.wait().await.unwrap();
     }
 
@@ -127,10 +134,34 @@ mod tests {
         }));
         let event = events.recv().await.unwrap();
         tokio::time::advance(Duration::from_secs(2)).await;
-        assert_eq!(waiter.await.unwrap(), Ok(false));
+        assert_eq!(waiter.await.unwrap(), Ok(Outcome::NotLeaving));
         assert!(matches!(
             event.decide_with_context(true, 7u64),
             UpgradeDispatch::Refused
         ));
+    }
+
+    #[tokio::test]
+    async fn only_a_queued_request_without_terminal_context_is_eligible_for_catch_up() {
+        let shared = Shared::new();
+        let decline = |_: u64| None;
+        assert_eq!(
+            request(&shared, Duration::from_secs(60), decline).await,
+            Ok(Outcome::NotLeaving)
+        );
+
+        let (queue, mut events) = tokio::sync::mpsc::unbounded_channel();
+        shared.set_upgrade_leave(Box::new(move |request| queue.send(request).unwrap()));
+        let (outcome, _) =
+            tokio::join!(request(&shared, Duration::from_secs(60), decline), async {
+                events.recv().await.unwrap().decide(false)
+            });
+        assert_eq!(outcome, Ok(Outcome::TerminalUnavailable));
+
+        let (outcome, _) =
+            tokio::join!(request(&shared, Duration::from_secs(60), decline), async {
+                events.recv().await.unwrap().decide_with_context(true, 7u64)
+            });
+        assert_eq!(outcome, Ok(Outcome::NotLeaving));
     }
 }

@@ -35,7 +35,7 @@ mod tests {
             .journal_mode(SqliteJournalMode::Delete)
             .page_size(512);
         if protected {
-            connect_once(&options, JournalModePolicy::InitializeDelete)
+            connect_once(&options, JournalModePolicy::InitializeDelete, false)
                 .await
                 .expect("open production pool")
         } else {

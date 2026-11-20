@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "base": "0bc1e7db9a6f033aa8d9b786f608e6bf5a403c96",
+  "target": "b5d9f7116e256e59f4a036c1c3e18979994598c4",
+  "frontier": "0bc1e7db9a6f033aa8d9b786f608e6bf5a403c96",
+  "commits": [
+    {
+      "sha": "fc483d4b4d743045dd0fe969844c948152231296",
+      "subject": "Box the future returned by response item injection (#62420)",
+      "paths": [
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/tests/all.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the boxed Core response-item injection future and retain the fork’s batch admission across native mailbox delivery.",
+      "evidence": [
+        "The public method now returns BoxFuture tied to the borrowed thread. Its inner async method receives the same items, and its entire upstream body is byte-identical across the change. The single Core integration test binary also raises its recursion limit to 256.",
+        "The cumulative fork keeps admit_upgrade_input inside the native plaintext mailbox branch, before pin_v2_residency and the loop of per-message submissions. Raw, mixed and encrypted inputs still take the retained history path. A three-commit merge rehearsal preserves both the new inner method and this fork hook."
+      ],
+      "revisit": "Run the Core agent_mailbox integration cases for interrupted sampling and idle eviction, and the native handoff controls for already accepted input."
+    },
+    {
+      "sha": "770c38d0b16efc78e7a1e77868605ab457b26401",
+      "subject": "Reject provider query parameters for connector result passthrough (#62421)",
+      "paths": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/tests/suite/scenarios_mcp_ema.rs",
+        "codex-rs/http-client/src/outbound_proxy.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the narrower Responses destination check for optional private connector results across configured routes and refreshed credentials.",
+      "evidence": [
+        "HTTP sampling resolves the destination from the current credential owner, a ChatGPT credential variant, internal metadata policy, the approved gateway, permitted provider headers, empty request-specific headers and absent or empty provider query parameters. The retained owner still verifies the connector grant.",
+        "The client setup fixture exercises refresh, custom destination, internal metadata and header exclusions. The enterprise lifecycle fixture verifies its configured provider still receives its account bearer and ordinary executed-call metadata. The direct-system-proxy change is a test fixture. The fork’s foreground credential-attempt recorder and transport recovery remain in the composed source."
+      ],
+      "revisit": "Run client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches and enterprise_lifecycle_preserves_history_and_ordinary_tools. Include a changed provider query map on the approved origin and check that sampling omits result bodies."
+    },
+    {
+      "sha": "b5d9f7116e256e59f4a036c1c3e18979994598c4",
+      "subject": "Include nested Apps tool results in Code Mode sampling requests (#62423)",
+      "paths": [
+        "codex-rs/codex-api/src/common.rs",
+        "codex-rs/codex-api/src/common_tests.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/tools/executed_tool_calls.rs",
+        "codex-rs/core/src/tools/executed_tool_calls/request_metadata.rs",
+        "codex-rs/core/src/tools/executed_tool_calls/request_metadata_tests.rs",
+        "codex-rs/core/src/tools/executed_tool_calls_direct_tests.rs",
+        "codex-rs/core/src/tools/handlers/mcp.rs",
+        "codex-rs/core/tests/suite/code_mode.rs",
+        "codex-rs/protocol/src/models/executed_tool_calls.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "telemetry"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry nested Apps result passthrough behind the existing connector feature, analytics consent and provider metadata policy. Preserve the fork’s packaged defaults.",
+      "evidence": [
+        "Nested Code Mode dispatch binds the projected result and nested call ID to their originating turn and exec or wait output. Capture checks the connector credentials at dispatch and completion. A weak turn handle, owner checks and bounded byte accounting constrain the original private payload.",
+        "The recorder invalidates result bindings and refunds budget on replacement, pruning, conflicting calls and untrusted output. HTTP sampling appends the body and JSON-escaped call ID together only when both fit. The in-memory request enrichment leaves persisted conversation history and the ordinary WebSocket frame unchanged.",
+        "The former direct-only condition from #62392 now permits eligible nested Apps calls. Neither ALab packaged defaults file enables connector_tool_result_passthrough. The bounded three-commit merge rehearsal preserves the fork’s task assignment admission and request-credential hooks."
+      ],
+      "revisit": "Run nested_call_id_and_result_fit_the_wire_budget_together, nested_result_budget_reopens_after_binding_loss, direct_result_body_budget_reopens_when_the_output_is_lost and the direct and Code Mode cases of result_metadata_preserves_results_within_request_budget. Exercise disabled analytics, changed credentials and same-turn replacement alongside the private wire capture."
+    }
+  ]
+}

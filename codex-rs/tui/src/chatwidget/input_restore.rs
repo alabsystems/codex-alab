@@ -172,6 +172,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn submit_initial_user_message_if_pending(&mut self) {
+        if self.input_queue.alab_snapshot_input_held { return; } // ALAB(retained-ui): retain the saved prompt even when a read-only view would otherwise move it into the composer.
         #[cfg(unix)] if self.alab_holds_retained_startup() { return; } // ALAB(retained-frontier): the same accepted CLI message stays owned until actual UI/runtime activation.
         if self.suppress_initial_user_message_submit || self.input_queue.rate_limit_recovery_pending
         {
@@ -441,7 +442,7 @@ impl ChatWidget {
                 crate::terminal_program_status::ProgramStatus::Idle;
         }
         let send_pending_steers_immediately =
-            self.input_queue.submit_pending_steers_after_interrupt;
+            self.input_queue.submit_pending_steers_after_interrupt && !self.input_queue.recovered_queue; // ALAB(misalignment-review): the interrupt shortcut cannot retry a recovered backlog.
         self.input_queue.submit_pending_steers_after_interrupt = false;
         if self.interrupted_turn_notice_mode != InterruptedTurnNoticeMode::Suppress {
             if send_pending_steers_immediately {
@@ -462,6 +463,7 @@ impl ChatWidget {
         // The server has already discarded pending input by the time the
         // interrupted turn reaches the UI, so any unacknowledged steers still
         // tracked here must be restored locally instead of waiting for a later commit.
+        if self.alab_retain_recovered_input_on_interrupt() { return; } // ALAB(misalignment-review): an interrupt must not drain input retained for manual recall.
         if send_pending_steers_immediately {
             let pending_steers = self
                 .input_queue
@@ -838,6 +840,7 @@ impl ChatWidget {
                 self.input_queue.queued_user_messages.len(),
                 UserMessageHistoryRecord::UserMessageText,
             );
+            self.alab_recover_restored_finding_input(); // ALAB(misalignment-review): replay may reveal the refusal before the saved queue is reattached.
         } else {
             self.turn_lifecycle
                 .restore_running(/*running*/ false, Instant::now());

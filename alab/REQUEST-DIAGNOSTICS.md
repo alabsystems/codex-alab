@@ -88,8 +88,13 @@ Use Python 3.11 or newer. `--process-uuid` selects an exact canonical
 `pid:N:UUID` identity, `--thread-id` selects a canonical thread UUID, and supplied
 filters intersect. `--since` is an inclusive Unix-second lower bound applied to
 integer stored seconds before the row limit; unusable seconds are excluded.
-Without that filter, unknown timestamps remain visible. A PID can
-have multiple retained process instances; their UUIDs remain separate. These
+Without a time filter, unknown timestamps remain visible.
+Use `--target` to select one of the exact diagnostic targets listed in
+`--help` before the row limit applies. For example, add
+`--target codex_core::responses_retry::alab_capacity_retry` to a thread-scoped
+query to see retained rows from that module even if newer API events fill the
+default window. Use `codex_core::responses_retry` for the parent module.
+A PID can have multiple retained process instances; their UUIDs remain separate. These
 filters do not identify the current rollout, resolve forks, or discover a
 session's effective configuration.
 

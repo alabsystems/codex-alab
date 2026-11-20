@@ -120,7 +120,7 @@ class UnitCollectCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="alab-collect-cleanup-") as temporary:
             state_dir = Path(temporary)
             (state_dir / "round-0.status").write_text("0")
-            args = SimpleNamespace(state=str(state_dir), status=0, log="unused.log",
+            args = SimpleNamespace(state=str(state_dir), status=0, log="unused.log", sequential_output=False,
                                    out=str(state_dir / "out.json"))
             with mock.patch.object(RESULTS, "os", ledger.api), \
                     mock.patch.object(RESULTS, "load", load), \

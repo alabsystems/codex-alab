@@ -398,7 +398,8 @@ impl ChatWidget {
             .into_iter()
             .map(codex_app_server_protocol::CommandAction::into_core)
             .collect();
-        let duration = Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
+        // ALAB(shell-output): keep a missing measurement through live completion and replay.
+        let duration = duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64));
         let running = self.running_commands.remove(&id);
         if self.suppressed_exec_calls.remove(&id) {
             return;

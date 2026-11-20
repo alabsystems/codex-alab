@@ -14,6 +14,13 @@ pub(super) fn fixture_with_presentation(
     target: &OwnedLocalTarget,
     presentation: ClientPresentation,
 ) -> Result<Arc<ConstructionRecord>> {
+    fixture_for_original(target, presentation, None)
+}
+fn fixture_for_original(
+    target: &OwnedLocalTarget,
+    presentation: ClientPresentation,
+    saved: Option<(uuid::Uuid, ThreadId)>,
+) -> Result<Arc<ConstructionRecord>> {
     let selection = InitialSessionSelection {
         claim: "1".repeat(32),
         prospective_create: None,
@@ -37,13 +44,20 @@ pub(super) fn fixture_with_presentation(
         owner: if presentation == ClientPresentation::Primary {
             ConstructionOwner::Initial(owner)
         } else {
-            ConstructionOwner::Later(ClientConstructionOperation::new(
-                ClientConstructionSelection {
-                    prospective_create: ThreadStartParams::default(),
-                    presentation,
-                    prepared: None,
-                },
-            )?)
+            let selection = ClientConstructionSelection {
+                prospective_create: ThreadStartParams::default(),
+                presentation,
+                prepared: None,
+            };
+            let operation = match saved {
+                Some((opening, child)) => ClientConstructionOperation::for_saved_resume(
+                    selection,
+                    &opening.simple().to_string(),
+                    &child.to_string(),
+                )?,
+                None => ClientConstructionOperation::new(selection)?,
+            };
+            ConstructionOwner::Later(operation)
         },
         presentation,
         output: Mutex::new(Output::Running),
@@ -161,5 +175,47 @@ fn pending_local_record_does_not_keep_its_target_alive_in_a_cycle() -> Result<()
     drop(target);
     assert!(weak.upgrade().is_none());
     assert!(record.target.upgrade().is_none());
+    Ok(())
+}
+
+#[test]
+fn saved_resume_history_releases_live_capacity_and_retires_only_the_original_record() -> Result<()>
+{
+    let target = OwnedLocalTarget::new("a".repeat(32), None, None);
+    let child = ThreadId::new();
+    let saved = || {
+        fixture_for_original(
+            &target,
+            ClientPresentation::SideConversation,
+            Some((uuid::Uuid::new_v4(), child)),
+        )
+    };
+    let old = saved()?;
+    for _ in 1..MAX_CONSTRUCTIONS {
+        fixture(&target)?;
+    }
+    assert!(ConstructionAdmission::reserve(&target.0).is_err());
+    *old.output.lock().unwrap_or_else(PoisonError::into_inner) = Output::Failed;
+    old.retain_saved_resume_history();
+    // C1 history remains available to a handoff while an explicit same-child
+    // C2 construction uses the newly available live slot.
+    let newer = saved()?;
+    let current = || {
+        target
+            .0
+            .initial_choice
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .constructions
+            .clone()
+    };
+    assert!(current().iter().any(|r| Arc::ptr_eq(r, &old)));
+    assert!(ConstructionAdmission::reserve(&target.0).is_err());
+    old.finish_saved_resume_history();
+    old.finish_saved_resume_history();
+    let remaining = current();
+    assert_eq!(remaining.len(), MAX_CONSTRUCTIONS);
+    assert!(!remaining.iter().any(|r| Arc::ptr_eq(r, &old)));
+    assert!(remaining.iter().any(|r| Arc::ptr_eq(r, &newer)));
     Ok(())
 }

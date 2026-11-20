@@ -58,6 +58,7 @@ pub(crate) fn intercept_stream(
     mut stream: ModelResponseStream,
     interceptors: Vec<Box<dyn ModelResponseInterceptor>>,
 ) -> ModelResponseStream {
+    stream = crate::session::step_context::StepContext::alab_observe_original_stream(stream, interceptors.is_empty()); // ALAB(defaults): observe provider retirement before response contributors transform the stream.
     for interceptor in interceptors {
         stream = interceptor.intercept(stream);
     }

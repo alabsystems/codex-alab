@@ -21,7 +21,7 @@ pub(super) fn operation() -> Result<ClientConstructionOperation> {
         selection: "3".repeat(32),
     };
     {
-        let mut p = actual.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut p = actual.state.lock().unwrap_or_else(PoisonError::into_inner);
         p.offer = Some(offer.clone());
         p.mutation_attempted = true;
         p.result = Some(ClientConstructionResult {
@@ -87,7 +87,7 @@ fn pre_fork_and_primary_intents_cannot_freeze_a_side_injection() -> Result {
     assert!(start.freeze_side(&wire()?).is_err());
     let actual = operation()?;
     {
-        let mut p = actual.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut p = actual.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let ConstructionIntent::Projected { selection } = &mut p.intent {
             selection.presentation = ClientPresentation::Primary;
         }

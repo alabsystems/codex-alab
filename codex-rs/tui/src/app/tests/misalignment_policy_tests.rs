@@ -9,13 +9,13 @@ use codex_protocol::openai_models::ModelAccessPrograms;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
 
-fn policy_error() -> AppServerTurnError {
+fn policy_error(target: Option<&str>) -> AppServerTurnError {
     AppServerTurnError {
         message: "Chat paused".into(),
         codex_error_info: Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation),
         additional_details: None,
         misalignment: Some(MisalignmentErrorDetails {
-            review_target: Some("RB".to_string()),
+            review_target: target.map(str::to_owned),
             error_type: None,
             detailed_explanation: Some(
                 "The proposed action exceeded the request.\n\n".repeat(1_500),
@@ -42,17 +42,19 @@ fn error_notification(
 
 #[tokio::test]
 async fn misalignment_continuation_requires_current_review_and_submits_once() -> Result<()> {
-    for (reject, preserve, daybreak, rollout_enabled, has_chatgpt_account, server_owned) in [
-        (false, false, false, true, true, false),
-        (false, true, true, true, true, false),
-        (true, false, false, true, true, false),
-        (false, false, false, false, true, false),
-        (false, true, true, false, true, false),
+    let opaque = Some(" RB/opaque== ");
+    for (reject, preserve, daybreak, rollout_enabled, has_chatgpt_account, server_owned, target) in [
+        (false, false, false, true, true, false, opaque),
+        (false, false, false, true, true, false, None),
+        (false, true, true, true, true, false, opaque),
+        (true, false, false, true, true, false, opaque),
+        (false, false, false, false, true, false, opaque),
+        (false, true, true, false, true, false, opaque),
         // Continuations submit directly rather than via the normal turn-start path.
-        (false, false, false, true, false, false),
-        (false, true, true, true, false, false),
+        (false, false, false, true, false, false, opaque),
+        (false, true, true, true, false, false, opaque),
         // Server-owned continuations preserve the acknowledgement without local overrides.
-        (false, false, false, true, true, true),
+        (false, false, false, true, true, true, opaque),
     ] {
         let (mut app, mut rx, _) = make_test_app_with_channels().await;
         app.chat_widget
@@ -126,7 +128,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
             RuntimePermissionProfileOverride::from_config(app.chat_widget.config_ref())
         });
         app.chat_widget.handle_server_notification(
-            error_notification(thread_id, "failed-turn", policy_error()),
+            error_notification(thread_id, "failed-turn", policy_error(target)),
             /*replay_kind*/ None,
         );
         app.chat_widget
@@ -154,14 +156,19 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
         insta::assert_snapshot!("misalignment_findings_38", terminal.backend());
         app.overlay = None;
         assert!(recorded_params(&requests, "turn/start").is_empty());
-        let mut withdrawn = policy_error();
+        let mut withdrawn = policy_error(target);
         withdrawn
             .misalignment
             .as_mut()
             .unwrap()
             .detailed_explanation = None;
-        // Reject both a newer turn and withdrawn findings followed by an empty duplicate.
+        // An updated target supersedes the review even when the visible findings match.
         for notifications in [
+            vec![error_notification(
+                thread_id,
+                &review.turn_id,
+                policy_error(Some("replacement")),
+            )],
             vec![turn_completed_notification(
                 thread_id,
                 "newer-turn",
@@ -223,7 +230,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
                 "settings-update",
                 AppServerTurnError {
                     codex_error_info: Some(AppServerCodexErrorInfo::BadRequest),
-                    ..policy_error()
+                    ..policy_error(target)
                 },
             ),
         )
@@ -242,9 +249,13 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
         let metadata = params.responsesapi_client_metadata.take().unwrap();
         let override_value: serde_json::Value =
             serde_json::from_str(&metadata["misalignment_override"])?;
-        let timestamp = override_value["timestamp"].as_u64().unwrap();
         assert_eq!(metadata.len(), 1);
-        assert_eq!(override_value, serde_json::json!({"timestamp": timestamp}));
+        if let Some(target) = target {
+            assert_eq!(override_value, serde_json::json!({"review_target": target}));
+        } else {
+            let timestamp = override_value["timestamp"].as_u64().unwrap();
+            assert_eq!(override_value, serde_json::json!({"timestamp": timestamp}));
+        }
         let config = app.chat_widget.config_ref();
         assert_eq!(
             params,

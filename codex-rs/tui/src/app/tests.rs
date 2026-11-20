@@ -38,6 +38,14 @@ mod background_task_defaults_tests;
 mod browsing_pagination_tests;
 #[path = "tests/buffered_replay.rs"]
 mod buffered_replay;
+#[path = "../../../alab-tui/glue/misalignment_replay_tests.rs"]
+mod misalignment_replay_tests; // ALAB(misalignment-review): a delayed terminal must preserve the latest turn's review state.
+#[path = "../../../alab-tui/glue/misalignment_retired_summary_tests.rs"]
+mod misalignment_retired_summary_tests; // ALAB(misalignment-review): recover a dropped final item without replaying its old lifecycle.
+#[path = "../../../alab-tui/glue/misalignment_terminal_hold_tests.rs"]
+mod misalignment_terminal_hold_tests; // ALAB(misalignment-review): replay preserves only the latest hold.
+#[path = "../../../alab-tui/glue/observed_steer_routing_tests.rs"]
+mod observed_steer_routing_tests; // ALAB(queue-review): delayed composer operations retain source-thread custody.
 #[path = "tests/connector_policy.rs"]
 mod connector_policy;
 #[path = "tests/disconnect_tests.rs"]
@@ -3776,11 +3784,15 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
         assert_ne!(app.current_displayed_thread_id(), Some(parent));
         let mut replacement =
             boxed_future!(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        let work = sidebar_loading::alab_saved_chat_work_checks::PreparedWork::capture(&server, &app.saved_openings, &completed).await?; // ALAB(retained-ui): capture the original worker book and saved-chat request before release.
+        let replacement_work = sidebar_loading::alab_saved_chat_work_checks::ready(&replacement).await?; // ALAB(retained-ui): the new physical connection must remain idle during the old unsubscribe.
         boxed_future!(app.handle_event(&mut tui, &mut replacement, completed)).await?;
         // A reconnect rotates the UI event receiver while the old connection still has a release to do.
         let (tx, mut new_events) = tokio::sync::mpsc::unbounded_channel();
         app.app_event_tx = AppEventSender::new(tx);
         drop(events);
+        work.join(&server, &app.saved_openings).await?; // ALAB(retained-ui): the original connection owns the unsubscribe through release publication.
+        replacement_work.current(&replacement)?; // ALAB(retained-ui): handling the old completion did not register a worker with this replacement.
         let released = app
             .saved_openings
             .next_event(&mut new_events)
@@ -3789,6 +3801,7 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
         assert!(
             matches!(released, AppEvent::SavedChatReleased { target, .. } if target.child == child)
         );
+        work.check_event(&released); // ALAB(retained-ui): the original request identifier survives the receiver rotation.
         boxed_future!(app.handle_event(&mut tui, &mut replacement, released)).await?;
         replacement.shutdown().await?;
         wait_for_close(&mut server).await;
@@ -3823,13 +3836,16 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
             )
             .await;
         }
+        let work = sidebar_loading::alab_saved_chat_work_checks::PreparedWork::capture(&server, &app.saved_openings, &completed).await?; // ALAB(retained-ui): identify the original request before checking its provisional close.
         boxed_future!(app.handle_event(&mut tui, &mut server, completed)).await?;
+        work.join(&server, &app.saved_openings).await?; // ALAB(retained-ui): the close check has joined and published before the actor installs its result.
         while app.current_displayed_thread_id() == Some(parent) {
             let event = app
                 .saved_openings
                 .next_event(&mut events)
                 .await
                 .expect("verified runtime");
+            work.check_event(&event); // ALAB(retained-ui): the second preparation retains its original request and target.
             boxed_future!(app.handle_event(&mut tui, &mut server, event)).await?;
         }
         assert_eq!(app.current_displayed_thread_id(), Some(child));

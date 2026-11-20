@@ -3,7 +3,7 @@
 
 //! Native protected execution for the release controller. Source inputs stay
 //! read-only; outputs, private dependency downloads and native capacity claims
-//! have explicit write roots. No script or caller-supplied sandbox profile runs.
+//! have explicit write roots. The certified compiler runs under the embedded, source-locked Trust memory keeper.
 
 use crate::Result;
 use std::ffi::CStr;
@@ -12,6 +12,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitStatus;
+
+#[path = "worker.rs"]
+mod worker;
+pub use worker::Worker;
+pub use worker::WorkerCancelled;
 
 /// A held private scratch directory and its closed execution policy.
 pub struct Protected {
@@ -77,6 +82,58 @@ fn owned(path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub(crate) fn owned_directory(path: &Path) -> Result<PathBuf> {
+    let path = directory(path)?;
+    owned(&path)?;
+    Ok(path)
+}
+
+/// Keep an enclosing controller's short private temporary namespace. For the
+/// ordinary long Darwin TMPDIR, allocate beneath the uid's private directory
+/// on the OS's sticky temporary volume. The compiler never gains write access
+/// to that parent or to another release's scratch.
+pub fn short_scratch(prefix: &str) -> Result<tempfile::TempDir> {
+    let base = scratch_parent(true)?;
+    Ok(tempfile::Builder::new().prefix(prefix).tempdir_in(base)?)
+}
+
+pub(crate) fn scratch_parent(create: bool) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let system = directory(Path::new("/tmp"))?;
+    let temporary = directory(&std::env::temp_dir())?;
+    let base = if temporary != system && temporary.as_os_str().len() <= 55 {
+        owned(&temporary)?;
+        temporary
+    } else {
+        let metadata = std::fs::metadata(&system)?;
+        if metadata.uid() != 0 || metadata.mode() & 0o1000 == 0 {
+            return Err("the OS's temporary namespace is not root-owned and sticky".into());
+        }
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        let private = system.join(format!("cr-{uid}"));
+        let events = private.join(".ubd");
+        if !create {
+            return Ok(events);
+        }
+        for dir in [&private, &events] {
+            match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            let info = std::fs::symlink_metadata(dir)?;
+            if !info.is_dir() || info.uid() != uid || info.mode() & 0o077 != 0 {
+                return Err("invalid private release scratch directory".into());
+            }
+        }
+        events
+    };
+    Ok(base)
 }
 
 fn quote(path: &Path) -> Result<String> {
@@ -226,8 +283,7 @@ impl Protected {
         let account = account_home()?;
         let homes = vec![home.clone(), account.clone()];
         let cwd = directory(repo)?;
-        let cargo_home = directory(cargo_home)?;
-        owned(&cargo_home)?;
+        let cargo_home = owned_directory(cargo_home)?;
         if cargo_home.starts_with(&cwd)
             || homes.iter().any(|home| {
                 let global = std::fs::canonicalize(home.join(".cargo"))
@@ -287,29 +343,7 @@ impl Protected {
         if directory(&capacity)? != capacity {
             return Err("native capacity directory is aliased".into());
         }
-        // Keep an existing controller's short, owned temporary namespace. A
-        // refusal there is returned; never escape it by trying a broader root.
-        let temporary = directory(&std::env::temp_dir())?;
-        let system_tmp = directory(Path::new("/tmp"))?;
-        let temporary = if temporary != system_tmp && temporary.as_os_str().len() <= 55 {
-            owned(&temporary)?;
-            temporary
-        } else {
-            std::fs::create_dir_all("/tmp/.ubd")?;
-            let short = directory(Path::new("/tmp/.ubd"))?;
-            use std::os::unix::fs::MetadataExt;
-            let info = std::fs::metadata(&short)?;
-            // The system's root-owned sticky namespace is safe for an
-            // exclusively created private leaf; the profile grants only that
-            // leaf, never this shared parent. Other bases must be privately owned.
-            if info.uid() != 0 || info.mode() & 0o1000 == 0 {
-                owned(&short)?;
-            }
-            short
-        };
-        let scratch = tempfile::Builder::new()
-            .prefix("cr.")
-            .tempdir_in(temporary)?;
+        let scratch = short_scratch("cr.")?;
         let scratch_path = directory(scratch.path())?;
         owned(&scratch_path)?;
         let mut paths: Vec<_> =
@@ -346,8 +380,7 @@ impl Protected {
         }
         let mut writes = vec![cargo_home.clone(), capacity, scratch_path.clone()];
         for path in write {
-            let path = directory(path)?;
-            owned(&path)?;
+            let path = owned_directory(path)?;
             if reads
                 .iter()
                 .any(|input| path.starts_with(input) || input.starts_with(&path))
@@ -392,9 +425,37 @@ impl Protected {
     /// The caller may add only its stage's declared build inputs to this scrubbed
     /// environment. This wrapper establishes isolation, never a successful check.
     pub fn command(&self, program: &OsStr, args: &[std::ffi::OsString]) -> Command {
-        let mut command = Command::new("/usr/bin/sandbox-exec");
+        self.profile_command(
+            Command::new("/usr/bin/sandbox-exec"),
+            &self.profile,
+            program,
+            args,
+        )
+    }
+
+    fn certified_profile(&self) -> Result<String> {
+        let socket = std::fs::canonicalize("/tmp")?
+            .join(format!("trustd-runtime-locks-{}", unsafe {
+                libc::geteuid()
+            }))
+            .join("trust-memory-jobserver.sock");
+        let mut profile = self.profile.clone();
+        profile.push_str(&format!(
+            "(allow network-outbound (remote unix-socket (path-literal {})))\n",
+            quote(&socket)?
+        ));
+        Ok(profile)
+    }
+
+    fn profile_command(
+        &self,
+        mut command: Command,
+        profile: &str,
+        program: &OsStr,
+        args: &[std::ffi::OsString],
+    ) -> Command {
         command
-            .args(["-p", &self.profile])
+            .args(["-p", profile])
             .arg(program)
             .args(args)
             .current_dir(&self.cwd)
@@ -565,6 +626,69 @@ pub fn verify_native_policy() -> Result<()> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn certified_compile_uses_embedded_outside_keeper_and_only_its_exact_socket() {
+        let private = tempfile::tempdir().unwrap();
+        let protected = Protected {
+            scratch: private.path().into(),
+            profile: "(version 1)\n(deny network-outbound (remote unix-socket))\n".into(),
+            home: private.path().into(),
+            cargo_home: private.path().into(),
+            cwd: private.path().into(),
+            path: "/usr/bin:/bin".into(),
+        };
+        let source = OsStr::new("/checkout/alab/certified-build.sh");
+        let canonical = std::ffi::OsString::from("--verified");
+        let worker = Worker::new().unwrap();
+        let compiler = worker
+            .command(&protected, source, std::slice::from_ref(&canonical), true)
+            .unwrap();
+        let args: Vec<_> = compiler.get_args().collect();
+        assert_eq!(compiler.get_program(), OsStr::new("/usr/bin/python3"));
+        assert_eq!(
+            &args[..4],
+            ["-I", "-B", "-S", "-c"].map(OsStr::new).as_slice()
+        );
+        assert_eq!(
+            args[4],
+            OsStr::new(include_str!("../../../alab/native_worker.py"))
+        );
+        assert_eq!(
+            args[5],
+            OsStr::new(include_str!("../../../alab/command_guard.py"))
+        );
+        assert_eq!(
+            args[6],
+            OsStr::new(include_str!("../../../alab/trust_memory.py"))
+        );
+        assert_eq!(args[8], OsStr::new("compiler"));
+        assert_eq!(args[9], OsStr::new("/usr/bin/sandbox-exec"));
+        assert_eq!(args[10], OsStr::new("-p"));
+        let expected = std::fs::canonicalize("/tmp").unwrap().join(format!(
+            "trustd-runtime-locks-{}/trust-memory-jobserver.sock",
+            unsafe { libc::geteuid() }
+        ));
+        let rule = format!(
+            "(allow network-outbound (remote unix-socket (path-literal {})))\n",
+            quote(&expected).unwrap()
+        );
+        assert_eq!(
+            args[11],
+            OsStr::new(&format!("{}{rule}", protected.profile))
+        );
+        assert_eq!(args[12], source);
+        assert_eq!(args[13], canonical.as_os_str());
+        let plain = protected.command(source, &[]);
+        assert_eq!(plain.get_program(), OsStr::new("/usr/bin/sandbox-exec"));
+        assert!(
+            !plain
+                .get_args()
+                .any(|w| w.to_string_lossy().contains("trust-memory-jobserver"))
+        );
+    }
+
     #[test]
     #[ignore = "macOS refuses nested sandbox_apply; check_selected runs the native verify-sandbox stage"]
     fn native_wrapper_runs_with_scrubbed_environment_and_read_only_source() -> crate::Result<()> {

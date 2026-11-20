@@ -59,6 +59,7 @@ pub struct ResponseItemAnnotations {
 #[derive(Clone, Debug)]
 pub struct TurnInputRequest {
     pub input: TurnInput,
+    pub alab_queue_dispatch: Option<QueueDispatch>, // ALAB(queue-review): distinguish native automatic delivery and manual queue start from a trigger string.
     /// Optional host-assigned UUID for the Responses message created from [`TurnInput::UserInput`].
     /// Ignored for all other inputs, including raw user-role Responses items.
     pub user_item_uuid: Option<uuid::Uuid>,
@@ -95,7 +96,10 @@ impl TurnAttribution {
     /// Restores provenance without changing the thread's execution settings.
     pub fn start_options(&self) -> TurnStartOptions {
         TurnStartOptions {
-            turn_trigger: self.turn_trigger.clone(),
+            turn_trigger: match self.turn_trigger.as_deref() { // ALAB(queue-review): a future wake inherits queue provenance only.
+                Some(QUEUE_REVIEW_TRIGGER) => Some("queue".to_owned()),
+                _ => self.turn_trigger.clone(),
+            },
             parent_turn_id: self.parent_turn_id.clone(),
             initiating_agent_path: self.initiating_agent_path.clone(),
             root_turn_id: self.root_turn_id.clone(),
@@ -124,6 +128,7 @@ impl TurnInputRequest {
     pub fn new(input: TurnInput) -> Self {
         Self {
             input,
+            alab_queue_dispatch: None, // ALAB(queue-review): only the queue service marks its native dispatch.
             user_item_uuid: None,
             user_input_extension_data: BTreeMap::new(),
             thread_settings: ThreadSettingsOverrides::default(),
@@ -192,6 +197,16 @@ impl TurnInputRequest {
         self
     }
 }
+
+/// Native queue origin, independent of restored or client-supplied turn attribution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueDispatch { // ALAB(queue-review): only a selected manual delivery can answer a finding.
+    Automatic,
+    Explicit,
+}
+
+pub const QUEUE_REVIEW_TRIGGER: &str = "queue_review"; // ALAB(queue-review): records Core accepting a manual queue selection while held.
+pub const OBSERVED_STEER_FALLBACK_TRIGGER: &str = "user_steer_fallback"; // ALAB(queue-review): a missing-turn retry retains human authorship but cannot answer a later finding.
 
 /// How Core should route submitted turn input.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -312,6 +327,9 @@ pub enum SteerSubmission {
 /// Why Core did not accept submitted turn input for turn processing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotSubmittedReason {
+    /// A terminal provider finding still requires explicit user input on this thread.
+    MisalignmentReview { turn_id: String }, // ALAB(queue-review): a held thread is neither occupied nor superseded.
+
     /// New work superseded the expected previous turn of an internal continuation.
     Superseded,
 

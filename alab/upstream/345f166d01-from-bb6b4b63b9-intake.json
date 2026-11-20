@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "base": "bb6b4b63b9df5432f4f45c90072d7823764ced00",
+  "target": "345f166d01fda88e6e723afbbfdce2efde843f74",
+  "frontier": "bb6b4b63b9df5432f4f45c90072d7823764ced00",
+  "commits": [
+    {
+      "sha": "345f166d01fda88e6e723afbbfdce2efde843f74",
+      "subject": "Wait for the search connector in hosted web search tests (#62165)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/web_search.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "provider-recovery",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Wait for the hosted-search connector to finish startup before measuring discovery reuse. Preserve the allowed and denied provider paths and their existing request assertions.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 80fc6552571c5d4c58c52e7facaa0ce0a119bf72a8091f3c64d93083575d9c4d.",
+        "The bounded wait matches the current thread ID, the Apps MCP service and its ready state, and executes only when hosted search is allowed. The denied path starts without waiting on an unavailable connector."
+      ],
+      "revisit": "Run the observed hosted and denied search cases through the managed app-server integration lane and keep the original per-turn request assertions."
+    }
+  ]
+}

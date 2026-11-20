@@ -9,6 +9,7 @@
 //! code fence hides no later message's need; and an exchange an Off left to the person past
 //! the session's opening is Land's to carry once the word moves to Land.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Instant;
 
 use pretty_assertions::assert_eq;
@@ -28,6 +29,7 @@ fn cut_short(now: Instant) -> Vec<(&'static str, Option<Wall>, bool)> {
         (
             "a usage window",
             Some(Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: Some(now + 30 * MIN),
                 reset_label: None,
             }),
@@ -97,6 +99,7 @@ fn a_need_said_in_a_turn_a_wall_or_an_interrupt_ended_stands() {
     }
     let usage = |at: Instant| TurnEnd {
         wall: Some(Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: Some(at + 30 * MIN),
             reset_label: None,
         }),

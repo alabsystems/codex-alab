@@ -21,6 +21,7 @@ import pwd
 import runpy
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -33,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("alab_promote", ROOT / "alab/promote.py")
 PROMOTE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROMOTE)
+failure_detail = PROMOTE.CLI["failure_detail"]
 LABEL = "systems.alab.codex-alab-local-update"
 GUARDIAN_CONTRACT = "cache-lock-v2"
 CHANNEL_STATUS = ".alab-local-update-status.json"
@@ -142,8 +144,12 @@ def update_once(repo, out, prefix, aterm, *, run=subprocess.run, build=None, kee
     # Only the bootstrap fetches. Its internal handoff supplies that immutable commit,
     # so fresh tooling neither fetches a different tip nor recursively dispatches.
     if source is None:
-        git(repo, "fetch", "--quiet", "--no-tags", "origin",
-            "refs/heads/main:refs/remotes/origin/main")
+        transport = runpy.run_path(str(ROOT / "alab/github.py"))
+        try:
+            transport["fetch"](repo, "origin", ["refs/heads/main:refs/remotes/origin/main"],
+                               before_transfer=fetch_disk_guard())
+        except transport["Refused"] as error:
+            raise RuntimeError(f"origin fetch refused: {failure_detail(error)}") from error
         source = git(repo, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
     if not PROMOTE.SOURCE.fullmatch(source):
         raise RuntimeError("origin/main did not resolve to an exact source commit")
@@ -252,25 +258,55 @@ def common_dir(repo):
     return directory
 
 
+def controller_scratch_parent():
+    return Path(tempfile.gettempdir()) / ".ubd"
+
+
 def check_controller_disk(repo, out):
     """Refuse known resource shortages before allocating a retained source tree."""
     common = common_dir(repo)
     out = Path(out).absolute()
     home = Path.home()
-    # Match lib.sh's build-disk paths, including a separately routed artifact child.
-    # This read-only preflight grants no lock or reservation; the fetched guardian
-    # still checks them before launch and throughout its cache-owning transaction.
-    paths = [os.environ.get("ALAB_PACKAGE_CACHE", str(home / ".cache/codex-alab")),
+    cache = Path(os.environ.get("ALAB_PACKAGE_CACHE", home / ".cache/codex-alab"))
+    # Check the dispatcher’s allocation as well as the fetched guardian’s build paths.
+    # The guardian still measures its own paths throughout the build.
+    paths = [cache, cache / "v8", cache / "cargo-home",
              out, out / "codex", home / "Developer", common,
              os.environ.get("ALAB_CARGO_HOME") or common / "alab-cargo-home",
-             "/tmp", os.environ.get("TMPDIR") or "/tmp"]
+             "/tmp", os.environ.get("TMPDIR") or "/tmp", controller_scratch_parent()]
+    check_disk_paths(paths, "controller floor; not allocating source")
+
+
+def fetch_disk_guard():
+    """Check the launch volumes throughout one Git transfer."""
+    launch_destinations = None
+
+    def check(common, scratch_parent):
+        nonlocal launch_destinations
+        objects = common / "objects"
+        paths = [common, objects, objects / "pack"]
+        if scratch_parent is not None:
+            paths.append(scratch_parent)
+        observed = check_disk_paths(paths, "fetch floor; not importing Git objects")
+        if launch_destinations is None:
+            launch_destinations = observed
+        elif observed != launch_destinations:
+            # Git may still have the original object or pack directory open.
+            raise RuntimeError("disk: Git transfer destination changed during fetch")
+
+    return check
+
+
+def check_disk_paths(paths, reason):
     # Bootstrap helpers can be stale or locally edited; do not execute them just
     # to measure space before handing off to the fetched source's own guardian.
+    destinations = []
     for requested in paths:
         path = Path(requested)
         if not path.is_absolute():
             raise ValueError("disk guard paths must be absolute")
-        path = path.resolve()
+        destination = path.resolve()
+        path = destination
         while True:
             try:
                 space = os.statvfs(path)
@@ -282,7 +318,9 @@ def check_controller_disk(repo, out):
         free_gib = space.f_bavail * space.f_frsize / 2**30
         if free_gib < 20:
             raise RuntimeError(f"disk: {free_gib:.2f} GiB free for {requested}; "
-                               "20 GiB controller floor; not allocating source")
+                               f"20 GiB {reason}")
+        destinations.append((destination, getattr(space, "f_fsid", None)))
+    return tuple(destinations)
 
 
 def controller_binding_text(binding):
@@ -330,7 +368,7 @@ def validate_controller_binding(binding, repo, controller, source):
 @contextmanager
 def controller_checkout(repo, source, *, handoff_complete=None):
     """Own the source's pre-checkout binding through the completed public handoff."""
-    parent = Path(tempfile.gettempdir()) / ".ubd"
+    parent = controller_scratch_parent()
     parent.mkdir(mode=0o700, exist_ok=True)
     if parent.is_symlink() or not parent.is_dir():
         raise ValueError("controller scratch must be a real directory")
@@ -379,7 +417,7 @@ def launchd_plist(args):
                    "ATPKG_BIN": str(prefix / "bin"), "ALAB_PACKAGE_CACHE": cache,
                    "HOME": str(Path.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     for name in ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "ALAB_CONTAIN", "ALAB_CARGO_HOME",
-                 "ALAB_CARGO", "ALAB_ATPKG_PUBLISH"):
+                 "ALAB_CARGO", "ALAB_ATPKG_PUBLISH", "ALAB_AGH"):
         if name in os.environ:
             environment[name] = os.environ[name]
     builder = os.environ.get("ALAB_PYTHON")
@@ -583,7 +621,7 @@ def run_locked(argv, *, source=None, expected_checkout=None, expected_prefix=Non
             return handed_off
     except (OSError, ValueError, TypeError, RuntimeError, ImportError, SyntaxError,
             subprocess.SubprocessError) as error:
-        code, reason = 1, str(error)
+        code, reason = 1, failure_detail(error)
     print(f"alab: local update: {reason}", flush=True)
     record_status(args.repo, code, reason, **details)
     record_channel_status(display, code, "completed", last_phase, details)
@@ -682,4 +720,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # An ignored SIGCHLD survives exec. This process owns and waits for its Git children.
+    if signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     sys.exit(main())

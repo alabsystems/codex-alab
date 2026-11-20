@@ -109,6 +109,7 @@ type ResizeFn = Box<dyn FnMut(TerminalSize) -> anyhow::Result<()> + Send>;
 
 /// Handle for driving an interactive process (PTY or pipe).
 pub struct ProcessHandle {
+    pub(crate) native_output_eof: crate::NativeOutputEof, // ALAB(shell-output): driver closure alone cannot establish native EOF.
     writer_tx: StdMutex<Option<mpsc::Sender<Vec<u8>>>>,
     killer: StdMutex<Option<Box<dyn ChildTerminator>>>,
     stdout_reader: Option<JoinHandle<()>>,
@@ -146,6 +147,7 @@ impl ProcessHandle {
         resizer: Option<ResizeFn>,
     ) -> Self {
         Self {
+            native_output_eof: Default::default(), // ALAB(shell-output): only installed by a native reader.
             writer_tx: StdMutex::new(Some(writer_tx)),
             killer: StdMutex::new(Some(killer)),
             stdout_reader,
@@ -227,6 +229,7 @@ impl ProcessHandle {
     /// Attempts to kill the child while leaving the reader/writer tasks alive
     /// so callers can still drain output until EOF.
     pub fn request_terminate(&self) {
+        self.native_output_eof.interrupt(self.has_exited()); // ALAB(shell-output): forced closure cannot prove an unfinished raw stream.
         if let Ok(mut killer_opt) = self.killer.lock()
             && let Some(mut killer) = killer_opt.take()
         {

@@ -148,7 +148,7 @@ async fn switching_threads_restores_session_speed_for_the_next_turn() {
     );
     app.replay_thread_snapshot(
         snapshot(session(standard_thread, SERVICE_TIER_DEFAULT_REQUEST_VALUE)),
-        /*resume_restored_queue*/ false,
+        /*resume_restored_queue*/ true, // ALAB(retained-ui): this final selection is writable and receives the next turn.
     );
     app.chat_widget
         .apply_external_edit("Check this task".into());

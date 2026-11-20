@@ -5,6 +5,8 @@ from contextlib import contextmanager
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -26,6 +28,8 @@ class RequestRecoveryCleanupTests(unittest.TestCase):
     def fixture(self, *, body_error=None, failures=None, verifier_error=None, main=False):
         root = Path(tempfile.mkdtemp(prefix="request-recovery-cleanup-", dir=FIXTURE_PARENT))
         FIXTURES.append(str(root))
+        if FIXTURE_PARENT is None:
+            self.addCleanup(shutil.rmtree, root)
         output = root / "results"
         if not main:
             output.mkdir()
@@ -50,6 +54,8 @@ class RequestRecoveryCleanupTests(unittest.TestCase):
         def write_json(path, value):
             if path.name == "requests.json":
                 cleanup("write")()
+            elif path.name == "exec-observed.json":
+                cleanup("write stdout times")()
             save(path, value)
 
         def run(_codex, _args, case_root, _env, _label):
@@ -99,9 +105,11 @@ class RequestRecoveryCleanupTests(unittest.TestCase):
         with self.fixture() as fixture:
             result = self.call_case(fixture)
         self.assertEqual(result, {"case": "opaque", "passed": True, "requestCount": 1,
-                                  "returncode": 0, "retryAfterSeconds": 2.0})
+                                  "returncode": 0, "turnEvents": [], "retryAfterSeconds": 2.0})
         fixture.execute.assert_called_once()
-        fixture.check.assert_called_once_with(0, [{"type": "fixture"}], fixture.model.requests, True)
+        fixture.check.assert_called_once_with(0, [{"type": "fixture"}], fixture.model.requests, True,
+                                              expect_capacity_notice=False, fail_with_tool=False, waits=(2,), handshakes=None,
+                                              case_dir=fixture.output / "opaque", refusal=None)
         self.assert_teardown(fixture)
 
     def test_success_does_not_inherit_a_callers_handled_exception(self):
@@ -227,6 +235,218 @@ class RequestRecoveryCleanupTests(unittest.TestCase):
                     fixture.execute.assert_called_once()
                     self.assert_teardown(fixture, shutdown_failed=phase == "shutdown", write_failed=phase == "write",
                                          name=SMOKE.CASES[0][0])
+
+    def test_main_preserves_observations_from_a_timed_out_exec(self):
+        def partial_output(_codex, _args, root, _env, _label):
+            messages = SMOKE.probe.provider_fixture.CAPACITY_MESSAGES
+            notice = {"type": "error", "message": messages["server_is_overloaded"] + " (Retry scheduled in 324s.)"}
+            events = [
+                {"type": "item.completed", "item": notice},
+                {"type": "error", "message": messages["policy_capacity_unavailable"]},
+                {"type": "error", "message": "PRIVATE unrelated diagnostic"},
+                {"type": "error", "message": notice["message"] + " PRIVATE suffix"},
+            ]
+            (root / "exec-stdout.jsonl").write_bytes(
+                b'{"type":"turn.started"}\n\nfalse\n{"type":"item.completed"}\n'
+                + '{"type":"turn.completed"}'.encode("utf-16le") + b'\n{"type":"turn.\xff\n'
+                + b"\n".join(json.dumps(event).encode() for event in events))
+            raise subprocess.TimeoutExpired("fixture", 6)
+
+        with self.fixture(main=True) as fixture:
+            fixture.execute.side_effect = partial_output
+            args = SimpleNamespace(output=fixture.output, codex=fixture.binary, package=None, capacity_only=False)
+            with mock.patch.object(SMOKE, "CASES", SMOKE.CASES[:1]), mock.patch("builtins.print"):
+                self.assertEqual(SMOKE.main(args), 1)
+            report = json.loads((fixture.output / "result.json").read_text())
+            case = report["cases"][0]
+            self.assertFalse(case["passed"])
+            self.assertIn("TimeoutExpired", case["error"])
+            self.assertNotIn("returncode", case)
+            self.assertEqual(case["requestCount"], 1)
+            self.assertEqual(case["turnEvents"], ["turn.started"])
+            self.assertEqual(case["invalidStdoutLines"], [3, 5, 6])
+            self.assertEqual(case["capacityNotices"], [
+                {"stdoutLine": 7, "eventType": "item.completed", "reason": "server_is_overloaded", "scheduledSeconds": 324},
+                {"stdoutLine": 8, "eventType": "error", "reason": "policy_capacity_unavailable"},
+                {"stdoutLine": 10, "eventType": "error", "reason": "server_is_overloaded"},
+            ])
+            self.assertNotIn("PRIVATE", json.dumps(case))
+            self.assertEqual(case, json.loads((fixture.output / case["case"] / "result.json").read_text()))
+
+    def test_malformed_stdout_after_exit_keeps_the_exit_and_partial_observations(self):
+        for code, invalid, terminal in ((0, b'{"type":', "turn.completed"), (1, b"null", "turn.failed")):
+            with self.subTest(code=code), self.fixture() as fixture:
+                def run(_codex, _args, root, _env, _label):
+                    notice = {"type": "error", "message": SMOKE.probe.provider_fixture.CAPACITY_NOTICE}
+                    (root / "exec-stdout.jsonl").write_bytes(b"\n".join((
+                        b'{"type":"turn.started"}', json.dumps(notice).encode(),
+                        json.dumps({"type": terminal}).encode(), invalid)))
+                    return code
+
+                fixture.execute.side_effect = run
+                case = self.call_case(fixture)
+                self.assertFalse(case["passed"])
+                self.assertIn("error", case)
+                self.assertEqual(case["returncode"], code)
+                self.assertEqual(case["requestCount"], 1)
+                self.assertEqual(case["turnEvents"], ["turn.started", terminal])
+                self.assertEqual(case["invalidStdoutLines"], [4])
+                self.assertEqual(case["capacityNotices"], [
+                    {"stdoutLine": 2, "eventType": "error", "reason": "server_is_overloaded"}])
+                fixture.check.assert_not_called()
+                self.assert_teardown(fixture)
+
+    def test_timeout_retains_stdout_timing_even_if_request_trace_export_fails(self):
+        lines = [b'{"type":"turn.started"}\n', b'\n', b'{"type":"item.completed"}\n']
+
+        def partial_output(_codex, _args, root, _env, _label, *, interact, stdin_pipe):
+            with (root / "exec-stdout.jsonl").open("wb") as log:
+                interact(SimpleNamespace(stdout=iter(lines)), log)
+            raise primary
+
+        for name in ("prewarm-overload", "repeated-overload", "unadvised-overload"):
+            with self.subTest(case=name), self.fixture(failures={"write": OSError("trace unavailable")}) as fixture:
+                primary = subprocess.TimeoutExpired("fixture", 6)
+                fixture.execute.side_effect = partial_output
+                caught, _ = self.capture(lambda: SMOKE.case(fixture.binary, fixture.output, name, 503, {}, True))
+                self.assertIs(caught, primary)
+                self.assert_notes(caught, "trace unavailable")
+                times = json.loads((fixture.output / name / "exec-observed.json").read_text())
+                self.assertEqual(len(times), 2)
+                self.assertLessEqual(times[0], times[1])
+
+    def test_timing_export_failure_preserves_timeout_and_provider_trace(self):
+        primary = subprocess.TimeoutExpired("fixture", 6)
+        with self.fixture(failures={"write stdout times": OSError("timing unavailable")}) as fixture:
+            fixture.execute.side_effect = primary
+            caught, _ = self.capture(lambda: SMOKE.case(
+                fixture.binary, fixture.output, "repeated-overload", 503, {}, True))
+            self.assertIs(caught, primary)
+            self.assert_notes(caught, "write stdout times", "timing unavailable")
+            root = fixture.output / "repeated-overload"
+            self.assertEqual(json.loads((root / "requests.json").read_bytes()), fixture.model.requests)
+            self.assertFalse((root / "exec-observed.json").exists())
+
+    def test_timeout_before_stdout_is_available_keeps_the_original_error(self):
+        primary = subprocess.TimeoutExpired("fixture", 6)
+        with self.fixture(body_error=primary, failures={"write": OSError("trace unavailable")}, main=True) as fixture:
+            args = SimpleNamespace(output=fixture.output, codex=fixture.binary, package=None, capacity_only=False)
+            with mock.patch.object(SMOKE, "CASES", SMOKE.CASES[:1]), mock.patch("builtins.print"):
+                self.assertEqual(SMOKE.main(args), 1)
+            case = json.loads((fixture.output / "result.json").read_text())["cases"][0]
+            self.assertIn("TimeoutExpired", case["error"])
+            self.assertIn("trace unavailable", str(case["errorNotes"]))
+            self.assertNotIn("requestCount", case)
+            self.assertNotIn("turnEvents", case)
+            self.assertIn("exec-stdout.jsonl", case["stdoutReadError"])
+
+    def test_damaged_compaction_stdout_retains_rpc_and_process_outcome(self):
+        import compaction_recovery
+
+        for mid_turn, status, invalid in ((True, "failed", b"null"), (False, "completed", b'{"method":')):
+            with self.subTest(mid_turn=mid_turn), self.fixture() as fixture:
+                final = {"id": "compact", "status": status}
+                event = {"method": "turn/completed", "params": {"threadId": "thread", "turn": final}}
+                rpc = mock.Mock()
+                rpc.request.return_value = {"thread": {"id": "thread"}}
+                rpc.turn.return_value = final if mid_turn else {"id": "seed", "status": "completed"}
+                rpc.wait.return_value = event
+
+                def run(_codex, _args, root, _env, _label, *, interact):
+                    interact(None, None)
+                    (root / "app-stdout.jsonl").write_bytes(json.dumps(event).encode() + b"\n" + invalid)
+                    return 0
+
+                fixture.execute.side_effect = run
+                with mock.patch.object(compaction_recovery, "Rpc", return_value=rpc), \
+                        mock.patch.object(compaction_recovery, "CompactionModel", return_value=fixture.model), \
+                        mock.patch.object(compaction_recovery, "check_compaction") as verify:
+                    SMOKE.probe.configure.side_effect = lambda root, *_args, **_kwargs: (root / "codex-home").mkdir()
+                    case = compaction_recovery.compaction_case(
+                        fixture.binary, fixture.output, "compaction", "v2", "frame-advice", mid_turn)
+                self.assertFalse(case["passed"])
+                self.assertIn("error", case)
+                self.assertEqual(case["returncode"], 0)
+                self.assertEqual(case["requestCount"], 1)
+                self.assertEqual(case["threadId"], "thread")
+                self.assertEqual(case["compactionTurnId"], "compact")
+                self.assertEqual(case["compactionStatus"], status)
+                self.assertEqual(case.get("seedTurnId"), None if mid_turn else "seed")
+                self.assertEqual(case["invalidStdoutLines"], [2])
+                self.assertEqual(case["appServerEvents"], [
+                    {"method": "turn/completed", "threadId": "thread", "turnId": "compact", "status": status}])
+                verify.assert_not_called()
+                self.assert_teardown(fixture, name="compaction")
+
+    def test_compaction_deadline_preserves_the_observed_wait_and_partial_final_line(self):
+        import compaction_recovery
+
+        def interrupted_case(_codex, output, name, *_scenario):
+            root = output / name
+            root.mkdir()
+            SMOKE.probe.write_json(root / "requests.json", [{}, {}])
+            events = [
+                {"method": "turn/started", "params": {"threadId": "t", "turn": {"id": "u", "status": "inProgress"}}},
+                {"method": "item/started", "params": {"threadId": "t", "turnId": "u",
+                                                      "item": {"type": "contextCompaction", "id": "c"}}},
+                {"method": "error", "params": {"threadId": "t", "turnId": "u", "willRetry": True,
+                                               "error": {"codexErrorInfo": "serverOverloaded",
+                                                         "additionalDetails": "Retry scheduled in 324s."}}},
+                {"id": 3, "result": {}},
+            ]
+            rows = b"".join((json.dumps(e) + "\n").encode() for e in events)
+            (root / "app-stdout.jsonl").write_bytes(rows + b'{"method":"turn/completed"')
+            raise RuntimeError("app-server protocol deadline expired")
+
+        with self.fixture(main=True) as fixture:
+            args = SimpleNamespace(output=fixture.output, codex=fixture.binary, package=None, compaction_only=True)
+            with mock.patch.object(compaction_recovery, "COMPACTION_CASES", compaction_recovery.COMPACTION_CASES[:1]), \
+                    mock.patch.object(compaction_recovery, "compaction_case", side_effect=interrupted_case), \
+                    mock.patch("builtins.print"):
+                self.assertEqual(SMOKE.main(args), 1)
+            case, = json.loads((fixture.output / "result.json").read_text())["cases"]
+            self.assertEqual(case["error"], "RuntimeError: app-server protocol deadline expired")
+            self.assertEqual(case["requestCount"], 2)
+            self.assertEqual(case["invalidStdoutLines"], [5])
+            self.assertNotIn("returncode", case)
+            self.assertEqual(case["appServerEvents"], [
+                {"method": "turn/started", "threadId": "t", "turnId": "u", "status": "inProgress"},
+                {"method": "item/started", "threadId": "t", "turnId": "u",
+                 "itemType": "contextCompaction", "itemId": "c"},
+                {"method": "error", "threadId": "t", "turnId": "u", "willRetry": True,
+                 "reason": "serverOverloaded", "scheduledSeconds": 324},
+            ])
+
+    def test_app_server_schedule_requires_a_capacity_retry_and_numeric_details(self):
+        details = "Retry scheduled in 0s."
+        for kind, retry, text, expected in (
+                ("policyCapacityUnavailable", True, details, 0),
+                ("policyCapacityUnavailable", False, details, None),
+                ({"httpConnectionFailed": {"httpStatusCode": 403}}, True, details, None),
+                ("serverOverloaded", True, "Please try a different model.", None),
+                ("serverOverloaded", True, details + " private suffix", None),
+                ("serverOverloaded", True, None, None)):
+            params = {"threadId": "t", "turnId": "u", "willRetry": retry,
+                      "error": {"codexErrorInfo": kind, "additionalDetails": text}}
+            with self.subTest(kind=kind, retry=retry, text=text):
+                row = SMOKE.probe.provider_fixture.app_server_observation({"method": "error", "params": params})
+                if expected is None:
+                    self.assertNotIn("scheduledSeconds", row)
+                else:
+                    self.assertEqual(row["scheduledSeconds"], expected)
+                self.assertNotIn("additionalDetails", row)
+
+    def test_partial_compaction_can_report_a_final_refusal_from_the_completion_alone(self):
+        error = {"message": "private provider message", "additionalDetails": "private details",
+                 "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}}
+        event = {"method": "turn/completed", "params": {"threadId": "t", "turn": {
+            "id": "u", "status": "failed", "error": error}}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app-stdout.jsonl").write_text(json.dumps(event))
+            result = SMOKE.partial_observations(root, compaction=True)
+        self.assertEqual(result, {"appServerEvents": [{"method": "turn/completed", "threadId": "t",
+                         "turnId": "u", "status": "failed", "reason": "httpConnectionFailed", "httpStatusCode": 403}]})
 
     def test_main_serializes_ordinary_case_cleanup_notes(self):
         primary = RuntimeError("body broke")

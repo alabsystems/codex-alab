@@ -97,8 +97,8 @@ impl ChatComposerHistory {
         {
             return Err(invalid());
         }
-        if let Some(search) = &self.search {
-            if search.query_lower != search.query.to_lowercase()
+        if let Some(search) = &self.search
+            && (search.query_lower != search.query.to_lowercase()
                 || search
                     .selected_match_index
                     .is_some_and(|index| index >= search.unique_matches.len())
@@ -122,10 +122,9 @@ impl ChatComposerHistory {
                         cursor.end_offset() > self.persistent_entry_count
                             || read_failures > MAX_BATCH_READ_RETRIES
                     }
-                })
-            {
-                return Err(invalid());
-            }
+                }))
+        {
+            return Err(invalid());
         }
         Ok(())
     }

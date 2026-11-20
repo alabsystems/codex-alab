@@ -33,7 +33,8 @@ git() {
   case "$1" in
     merge-base) [[ "$2" != --is-ancestor ]] || return 1; key=base; value=base ;;
     rev-list) key=pending; value=2 ;;
-    rev-parse) key=subject; value=short-target ;;
+    rev-parse)
+      if [[ "$2" == --verify ]]; then key=main; value=main; else key=subject; value=short-target; fi ;;
     log)
       case "$3" in
         --format=%H*) key=upstream; value=upstream-summary ;;
@@ -49,6 +50,8 @@ git() {
   fi
   echo "$value"
 }
+prepare_sync_branch() { record prepare; }
+write_in_wt() { in_wt "$@"; }
 in_wt() { while [[ "$1" == -c ]]; do shift 2; done; record "$1"; }
 merging() { return 0; }
 unmerged() { :; }
@@ -66,7 +69,7 @@ run_sync target
             return result, actions, before, after
 
     def test_failed_metadata_reads_preserve_worktree_and_previous_state(self):
-        for failure in ('base', 'pending', 'subject', 'upstream', 'progress'):
+        for failure in ('main', 'base', 'pending', 'subject', 'upstream', 'progress'):
             for partial in (False, True):
                 with self.subTest(failure=failure, partial=partial):
                     result, actions, before, after = self.shell(failure, partial)

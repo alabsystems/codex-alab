@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+from test_github import disk_fixture_cli
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
@@ -55,10 +57,30 @@ class SyncResolverContainmentTests(unittest.TestCase):
         git(repo, "remote", "add", "upstream", str(upstream))
         scripts = repo / "alab"
         scripts.mkdir()
-        for name in ("sync.sh", "lib.sh", "github.py", "github_push.py", "cli_status.py", "command_guard.py", "retention.py", "merge-attributes",
-                     "removed-paths", "owned-paths", "watched-paths"):
-            shutil.copyfile(ROOT / "alab" / name, scripts / name)
+        for name in ("sync.sh", "lib.sh", "sync_worktree.py", "github.py", "github_push.py", "cli_status.py", "command_guard.py", "retention.py", "merge-attributes",
+                     "removed-paths", "owned-paths", "watched-paths", "project-targo.sh"):
+            shutil.copy2(ROOT / "alab" / name, scripts / name)
+        merged = repo / ".git/alab-sync"
+        witness = directory / "selected-worktree"
+        native = directory / "native-selector"
+        front = directory / "native-front"
         cargo = scripts / "fake-cargo"
+        front.write_text(PYTHON_ENTRY + '''import os, sys
+assert sys.argv[1:3] == ["__build_admit", os.environ["ATPKG_PROJECT_TARGO"]], sys.argv
+assert os.environ["CARGO_TARGET_DIR"] == os.getcwd() + "/target"
+os.execv(sys.argv[2], sys.argv[2:])
+''')
+        native.write_text(PYTHON_ENTRY + f'''import os, sys
+from pathlib import Path
+assert sys.argv[1:6] == ["toolchain", "run", "--repo", {str(merged)!r}, "--"], sys.argv
+Path({str(witness)!r}).write_text(sys.argv[4])
+os.environ.update(ATPKG_PROJECT_FRONT={str(front)!r}, ATPKG_PROJECT_TARGO={str(cargo)!r},
+                  ATPKG_PROJECT_TRUSTC="/usr/bin/true", ATPKG_PROJECT_TRUSTDOC="/usr/bin/true",
+                  ATPKG_PROJECT_PAYLOAD={str(scripts)!r}, ATPKG_PROJECT_EXECUTION={str(scripts)!r})
+os.execv(sys.argv[6], sys.argv[6:])
+''')
+        front.chmod(0o755)
+        native.chmod(0o755)
         cargo.write_text(PYTHON_ENTRY + '''import errno, json, os, sys
 from pathlib import Path
 assert sys.argv[1:] == ["metadata", "--format-version", "1"], sys.argv
@@ -80,6 +102,17 @@ print(json.dumps({"packages": [], "workspace_members": [],
                   "workspace_root": str(Path.cwd()), "target_directory": str(Path.cwd() / "target")}))
 ''')
         cargo.chmod(0o755)
+        # Only these two fixture-local tools measure capacity. Run their real
+        # entry points with a fixed reading while preserving sandbox and Git behavior.
+        python = scripts / "fixture-python"
+        interpreter = shlex.quote(sys.executable)
+        dispatch = []
+        for tool in (scripts / "github.py", scripts / "command_guard.py"):
+            fixture = shlex.quote(disk_fixture_cli(tool, 21))
+            dispatch.append(f'if [ "$1" = -I ] && [ "$2" = -B ] && [ "$3" = {shlex.quote(str(tool))} ]; then\n'
+                            f'  shift 3\n  exec {interpreter} -I -B -c {fixture} "$@"\nfi\n')
+        python.write_text("#!/bin/sh\n" + "".join(dispatch) + f'exec {interpreter} "$@"\n')
+        python.chmod(0o755)
         git(repo, "add", ".")
         git(repo, "commit", "-qm", "ALab tooling")
         (upstream / "new-upstream-file").write_text("new upstream behavior\n")
@@ -89,20 +122,20 @@ print(json.dumps({"packages": [], "workspace_members": [],
         private = repo / ".git/alab-cargo-home"
         (private / "registry/cache").mkdir(parents=True)
         (private / ".alab-seeded").touch()
-        environment.update(ALAB_CONTAIN="1", ALAB_CARGO=str(cargo),
-                           ALAB_CARGO_HOME=str(private), ALAB_PYTHON=sys.executable,
+        environment.update(ALAB_CONTAIN="1", ALAB_ATPKG_PUBLISH=str(native),
+                           ALAB_CARGO_HOME=str(private), ALAB_PYTHON=str(python),
                            ALAB_ATERM="/usr/bin/false")
         done = subprocess.run(
             ["/bin/bash", str(scripts / "sync.sh"), "--ref", desired, "--no-check", "--no-push"],
             cwd=repo, env=environment, capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(witness.read_text(), str(merged))
         self.assertEqual((private / "registry/cache/new-dependency.crate").read_bytes(),
                          b"new public dependency archive")
         self.assertTrue(all(code in (errno.EPERM, errno.EACCES)
                             for code in json.loads((private / "witness.json").read_text())))
         self.assertEqual((scripts / "lib.sh").read_bytes(), (ROOT / "alab/lib.sh").read_bytes())
-        merged = repo / ".git/alab-sync"
         self.assertIn("contained resolver wrote its lock", (merged / "codex-rs/Cargo.lock").read_text())
         self.assertEqual(git(merged, "show", "HEAD:new-upstream-file"), "new upstream behavior")
 

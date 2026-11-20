@@ -121,7 +121,7 @@ class UnitStatusTests(unittest.TestCase):
 
     def api(self, status):
         return UNIT.collect(SimpleNamespace(state=str(self.state), log=str(self.log),
-                                             out=str(self.output(status)), status=status))
+                                             out=str(self.output(status)), status=status, sequential_output=False))
 
     def natural_child(self, status):
         argv = [sys.executable, '-I', '-B', str(Path(UNIT.__file__)), *self.arguments(status)[1:]]

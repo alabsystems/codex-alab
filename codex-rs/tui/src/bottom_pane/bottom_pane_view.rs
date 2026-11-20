@@ -84,6 +84,9 @@ pub(crate) trait BottomPaneView: Renderable {
         self.handle_key_event(key_event);
     }
 
+    fn alab_picker_mouse(&mut self, _event: crossterm::event::MouseEvent) -> super::alab_picker_pointer::PickerMouse { Default::default() } // ALAB(interface): only the Autopilot picker handles row clicks and hover.
+    fn alab_cancel_picker_mouse(&mut self, _keep_geometry: bool) -> bool { false } // ALAB(interface): report when an input-owner change removes a visible hover.
+
     /// Observe a press or repeat while another view is on top without handling it as input.
     fn observe_key_event_while_covered(
         &mut self,

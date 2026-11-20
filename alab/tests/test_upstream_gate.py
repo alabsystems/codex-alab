@@ -44,6 +44,57 @@ class ReviewAdmissionTests(unittest.TestCase):
     def admit(self, base=None):
         return GATE.admission(self.repo, base or self.base)
 
+    def test_release_leaf_uses_annotated_tag_for_review_record_and_campaign(self):
+        from feature_recipes.request import context
+        from qualification import snapshot as native_context
+
+        # An unrelated mainline change and a release-only change share the reviewed branch point.
+        self.git('checkout', '-q', '--detach', self.target)
+        self.commit('next development change')
+        development = self.git('rev-parse', 'HEAD')
+        self.git('update-ref', 'refs/remotes/upstream/main', development)
+        self.git('checkout', '-q', '--detach', self.target)
+        self.commit('release-only model change')
+        release = self.git('rev-parse', 'HEAD')
+        tag = 'rust-v1.2.3'
+        self.git('tag', '-a', tag, '-m', 'Official fixture release')
+        tag_object = self.git('rev-parse', 'refs/tags/' + tag)
+        ref = 'refs/upstream-tags/' + tag
+        self.git('update-ref', ref, tag_object)
+        (self.repo / 'alab').mkdir(exist_ok=True)
+        marker = self.repo / 'alab/upstream-release'
+        marker.write_text(f'{tag} {tag_object} {release}\n')
+        # A worktree edit cannot change the unmarked source's selection.
+        self.assertEqual(GATE.integrated_upstream(self.repo, release), self.target)
+        self.git('add', 'alab/upstream-release')
+        self.commit('pin official release')
+        marked = self.git('rev-parse', 'HEAD')
+        self.assertEqual(GATE.integrated_upstream(self.repo, marked), release)
+        self.assertEqual(native_context(self.repo)['upstream'], release)
+        self.assertEqual(context(self.repo, self.base)['upstream'], release)
+        for reader in (lambda: GATE.admission(self.repo, self.base, marked, self.target),
+                       lambda: EVIDENCE.snapshot(self.repo, marked, self.target)):
+            with self.assertRaisesRegex(ValueError, 'differs from the pinned release'):
+                reader()
+
+        for replacement in (release, self.base, None):
+            with self.subTest(incorrect_ref=replacement):
+                if replacement:
+                    self.git('update-ref', ref, replacement)
+                else:
+                    self.git('update-ref', '-d', ref)
+                with self.assertRaisesRegex(ValueError, 'official release tag missing or changed'):
+                    GATE.integrated_upstream(self.repo, marked)
+        self.git('update-ref', ref, tag_object)
+        self.git('merge', '-q', '--no-ff', development, '-m', 'unrelated later mainline')
+        with self.assertRaisesRegex(ValueError, 'mainline frontier differs'):
+            GATE.integrated_upstream(self.repo, self.git('rev-parse', 'HEAD'))
+        self.git('checkout', '-q', '--detach', self.target)
+        self.git('checkout', marked, '--', 'alab/upstream-release')
+        self.commit('marker without release history')
+        with self.assertRaisesRegex(ValueError, 'does not contain its pinned upstream release'):
+            GATE.integrated_upstream(self.repo, self.git('rev-parse', 'HEAD'))
+
     def test_missing_and_uncommitted_reviews_do_not_admit(self):
         self.assertEqual(self.admit()['missing'], [self.target])
         (self.repo / 'alab/upstream/one-intake.json').write_text(json.dumps(self.reviewed()))
@@ -165,6 +216,28 @@ class ReviewAdmissionTests(unittest.TestCase):
         self.persist(batch)
         result = self.admit(base=self.target)
         self.assertEqual((result['commits'], result['reviewed'], result['missing']), (1, 1, []))
+
+    def test_review_inside_verified_range_must_cover_its_whole_interval(self):
+        self.persist(self.reviewed())
+        candidate = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '--detach', self.target)
+        self.commit('second change')
+        later = self.git('rev-parse', 'HEAD')
+        self.git('update-ref', 'refs/remotes/upstream/main', later)
+        self.git('checkout', '-q', '--detach', candidate)
+        self.git('merge', '-q', '--no-ff', later, '-m', 'integrate second change')
+
+        second = GATE.snapshot(self.repo, self.target, later)
+        second['commits'][0].update(classes=['fix'], decision='adopt', reason='Review second change',
+                                    evidence=['commit diff'])
+        forged = {**second, 'base': self.base, 'frontier': self.base}
+        self.persist(forged, 'second-intake.json')
+        result = self.admit()
+        self.assertEqual(result['missing'], [later])
+        self.assertTrue(any('immutable source coverage' in error for error in result['errors']))
+        self.persist(second, 'second-intake.json')
+        result = self.admit()
+        self.assertEqual((result['reviewed'], result['errors']), (2, []))
 
     def test_owned_only_change_needs_no_new_upstream_assessment(self):
         self.git('rm', 'alab/features.toml')

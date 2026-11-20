@@ -35,6 +35,7 @@ pub(crate) async fn resolve_request_auth(
     scope: Option<ProviderAuthScope>,
     destination: Option<String>,
 ) -> codex_protocol::error::Result<ResolvedProviderAuth> {
+    crate::alab_picker_provider::admit(&info)?; // ALAB(accounts): check catalog and model credential sources before resolving them.
     tokio::spawn(async move {
         crate::auth::observe_auth_selection(
             runtime.as_ref().map(|(_, mode)| *mode),
@@ -142,6 +143,7 @@ pub async fn resolve_request(
     routing: Option<&WorkspaceRoutingContext>,
     http_client_factory: HttpClientFactory,
 ) -> Result<ResolvedProviderRequest> {
+    crate::alab_picker_provider::admit(provider.info())?; // ALAB(accounts): a confirmed subscription cannot be replaced by a different provider.
     let check_auth = provider.runtime_auth().is_none()
         && crate::provider_uses_first_party_auth_path(provider.info());
     crate::prepare_provider_request(provider, check_auth, |state| {
@@ -165,6 +167,7 @@ pub async fn resolve_request(
                 }
                 None => (api_provider, ClientRedirectPolicy::Default),
             };
+            let redirect_policy = crate::alab_picker_provider::redirect_policy(redirect_policy); // ALAB(accounts): a redirected request would bypass the confirmed signer.
             resolved_auth.validate_headers(&api_provider.headers)?;
             let runtime_state = resolved_auth
                 .runtime

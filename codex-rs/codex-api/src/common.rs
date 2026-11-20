@@ -145,6 +145,7 @@ pub enum ResponseEvent {
         /// Did the model affirmatively end its turn? Some providers do not set this,
         /// so we rely on fallback logic when this is `None`.
         end_turn: Option<bool>,
+        interrupted: bool, // ALAB(shell-invocation): preserve the provider's interruption separately from its turn-continuation bit.
     },
     OutputTextDelta(String),
     ToolCallInputDelta {

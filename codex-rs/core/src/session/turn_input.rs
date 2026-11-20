@@ -173,6 +173,7 @@ impl PreparedTurnInputSettings {
             } else {
                 None
             };
+        session.alab_finish_handoff_model_refresh().await; // ALAB(defaults): confirm the restored root's catalog before applying first-turn overrides.
         let emit_thread_settings_applied = self.thread_settings_update.is_some();
         let _settings_guard = if emit_thread_settings_applied {
             Some(thread_settings::acquire_persistence_lock(session).await)
@@ -313,13 +314,20 @@ pub(super) async fn handle(
         TurnInputMode::ContinueIfIdle {
             expected_previous_turn_id,
         } => {
-            if !matches!(
-                &request.request.input,
-                SubmittedTurnInput::ResponseItem(_) | SubmittedTurnInput::AnnotatedResponseItem(_)
-            ) {
-                return Err(CodexErr::InvalidRequest(
-                    "continuation requires internal response input".to_string(),
-                ));
+            let mut request = request;
+            match &request.request.input {
+                SubmittedTurnInput::ResponseItem(_)
+                | SubmittedTurnInput::AnnotatedResponseItem(_) => {}
+                SubmittedTurnInput::UserInput { content, .. } if content.is_empty() => {
+                    request.request.start = session.agent_message_wake_options().await;
+                }
+                SubmittedTurnInput::UserInput { .. }
+                | SubmittedTurnInput::InterAgentCommunication(_) => {
+                    return Err(CodexErr::InvalidRequest(
+                        "continuation requires internal response input or an empty wake"
+                            .to_string(),
+                    ));
+                }
             }
             start_if_idle(
                 session,
@@ -383,6 +391,7 @@ pub(super) async fn handle_recovery(
 
 fn user_input_metadata(request: &TurnInputRequest) -> UserInputMetadata {
     UserInputMetadata {
+        alab_explicit_input: super::queue_review::explicit_input(request), // ALAB(queue-review): carry the producer of this individual input through an active steer.
         origin: UserInputOrigin::from_turn_trigger(request.start.turn_trigger.as_deref()),
         response_item_uuid: request.user_item_uuid,
         extension_data: request.user_input_extension_data.clone(),
@@ -401,11 +410,13 @@ async fn start_or_steer(
     ) {
         return agent::submit(session, request, submission_id).await;
     }
+    let explicit_input = super::queue_review::explicit_input(&request.request); // ALAB(queue-review): relayed user-shaped input inherits the sender's trigger and keeps its parent lineage.
     let WithTurnExtensionData {
-        request,
+        mut request, // ALAB(queue-review): separate fallback admission from the human attribution of the accepted input.
         turn_extension_init,
     } = request;
     let input_metadata = user_input_metadata(&request);
+    super::queue_review::normalize_observed_steer_start(&mut request); // ALAB(queue-review): keep its admission and individual input noncorrective before applying ordinary turn settings.
     let TurnInputRequest {
         mut input,
         thread_settings,
@@ -483,11 +494,22 @@ async fn start_or_steer(
                 };
                 Some(admission)
             };
-            let Some(turn_context) = settings
+            let reservation = match session.reserve_relay_start(explicit_input).await { // ALAB(queue-review): a relay must own the idle slot and cannot displace a finishing task.
+                Ok(reservation) => reservation,
+                Err(reason) => return Ok(TurnInputSubmission::NotSubmitted { reason }),
+            };
+            let turn_context = match settings
                 .apply_started(session, submission_id.clone(), TurnStartKind::User)
-                .await?
-            else {
-                unreachable!("explicit user input can enter Plan mode");
+                .await
+            {
+                Ok(Some(turn_context)) => turn_context,
+                Ok(None) => unreachable!("explicit user input can enter Plan mode"),
+                Err(error) => {
+                    if let Some(slot) = &reservation {
+                        session.clear_reserved_idle_turn(slot).await;
+                    }
+                    return Err(error);
+                }
             };
             turn_context
                 .turn_metadata_state
@@ -509,13 +531,17 @@ async fn start_or_steer(
                     .await,
                 );
             }
-            session
-                .spawn_task(Arc::clone(&turn_context), task_input, RegularTask::new())
-                .await;
-            Ok(TurnInputSubmission::Started {
-                turn_id: submission_id,
-                root_turn_id: turn_context.root_turn_id(),
-            })
+            if let Some(slot) = reservation { // ALAB(queue-review): register on the relay's reservation without replacing a concurrent owner.
+                session.clear_connector_selection().await;
+                let result = session.start_task_in_slot(turn_context, task_input, RegularTask::new(), Some(&slot)).await;
+                if !matches!(result, TurnInputSubmission::Started { .. }) {
+                    session.clear_reserved_idle_turn(&slot).await;
+                }
+                return Ok(result);
+            }
+            Ok(session
+                .spawn_task(turn_context, task_input, RegularTask::new())
+                .await)
         }
         Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
     }
@@ -537,6 +563,8 @@ async fn start_if_idle(
         turn_extension_init,
     } = request;
     let input_metadata = user_input_metadata(&request);
+    let explicit_input = kind == TurnStartKind::User && super::queue_review::explicit_input(&request); // ALAB(queue-review): automatic delivery, internal continuations and recovery carry no fresh correction.
+    let manual_queue = request.alab_queue_dispatch == Some(codex_protocol::turn_input::QueueDispatch::Explicit); // ALAB(queue-review): only native queue selection can attest the manual start in history.
     let TurnInputRequest {
         mut input,
         thread_settings,
@@ -545,7 +573,10 @@ async fn start_if_idle(
         responsesapi_client_metadata,
         ..
     } = request;
-    if session.input_queue.has_trigger_turn_mailbox_items().await {
+    if expected_previous_turn_id.is_none()
+        && session.input_queue.has_trigger_turn_mailbox_items().await
+        && !(explicit_input && session.awaiting_input_review().await) // ALAB(queue-review): held mail must be consumable by the next explicit user turn.
+    {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
         });
@@ -581,25 +612,35 @@ async fn start_if_idle(
         });
     }
 
-    let turn_state = {
+    let (turn_state, correcting_review) = { // ALAB(queue-review): the explicit start and retained mail share the native idle reservation.
         let mut active_turn = session.active_turn.lock().await;
+        let review = session.automatic_start_refusal().await; // ALAB(queue-review): name the actual terminal owner under the native idle reservation.
+        let correcting_review = review.is_some();
+        if !explicit_input && let Some(reason) = review {
+            return Ok(TurnInputSubmission::NotSubmitted { reason });
+        }
+        if let Some(expected) = expected_previous_turn_id {
+            let state = session.state.lock().await;
+            // A registered successor already owns this work, even if it is still running.
+            // An unregistered reservation can still fail to start and must be retried.
+            if state.last_started_turn_id.as_ref() != Some(&expected)
+                && (state.last_started_turn_id.is_some() || active_turn.is_none())
+            {
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::Superseded,
+                });
+            }
+        }
         if active_turn.is_some() {
             return Ok(TurnInputSubmission::NotSubmitted {
                 reason: NotSubmittedReason::NotIdle,
             });
         }
-        if let Some(expected) = expected_previous_turn_id
-            && session.state.lock().await.last_started_turn_id.as_ref() != Some(&expected)
-        {
-            return Ok(TurnInputSubmission::NotSubmitted {
-                reason: NotSubmittedReason::Superseded,
-            });
-        }
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
-        Arc::clone(&active_turn.turn_state)
+        (Arc::clone(&active_turn.turn_state), correcting_review) // ALAB(queue-review): only an authorized correction can carry held trigger mail into registration.
     };
 
-    if session.input_queue.has_trigger_turn_mailbox_items().await {
+    if !correcting_review && session.input_queue.has_trigger_turn_mailbox_items().await { // ALAB(queue-review): retain ordinary trigger-mail priority outside review.
         session.clear_reserved_idle_turn(&turn_state).await;
         session.maybe_start_turn_for_pending_work().await;
         return Ok(TurnInputSubmission::NotSubmitted {
@@ -640,6 +681,9 @@ async fn start_if_idle(
         }
     };
     if let Err(error) = alab_renewal_admission::admit_renewal_turn(session, &turn_context).await { session.clear_reserved_idle_turn(&turn_state).await; return Err(error); } // ALAB(renewal): refusal leaves input unconsumed and the owed turn durable.
+    if correcting_review && manual_queue { // ALAB(queue-review): this accepted turn carries its own proof, never the next wake.
+        super::queue_review::mark_manual_queue(&turn_context);
+    }
     turn_context
         .turn_metadata_state
         .update_responsesapi_client_metadata(responsesapi_client_metadata);
@@ -689,13 +733,9 @@ async fn start_if_idle(
             }
         }
     }
-    session
+    Ok(session
         .start_task(Arc::clone(&turn_context), task_input, crate::tasks::review_recovery::recovery_task(&turn_context)) // ALAB(exec-review): restored review state retains its task kind; ordinary turns stay regular.
-        .await;
-    Ok(TurnInputSubmission::Started {
-        turn_id: submission_id,
-        root_turn_id: turn_context.root_turn_id(),
-    })
+        .await)
 }
 
 async fn steer(
@@ -823,7 +863,10 @@ impl Session {
         &self,
     ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions)> {
         let mut active_turn = self.active_turn.lock().await;
-        if active_turn.is_some() || self.outcome_handoffs_closed() {
+        if active_turn.is_some() || self.turn_starts_closed() {
+            return None;
+        }
+        if self.awaiting_input_review().await { // ALAB(queue-review): retain mail until the next explicit turn.
             return None;
         }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
@@ -837,15 +880,22 @@ impl Session {
         let previous_options = if has_trigger_turn {
             Default::default()
         } else {
-            self.state
-                .lock()
-                .await
-                .turn_attribution
-                .as_ref()
-                .map(codex_history::TurnAttribution::start_options)
-                .unwrap_or_default()
+            self.agent_message_wake_options().await
         };
         Some((Arc::clone(&active_turn.turn_state), previous_options))
+    }
+
+    async fn agent_message_wake_options(&self) -> TurnStartOptions {
+        let state = self.state.lock().await;
+        let mut options = state
+            .turn_attribution
+            .as_ref()
+            .map(codex_history::TurnAttribution::start_options)
+            .unwrap_or_default();
+        options.cyber_access_program = state
+            .reference_context_item()
+            .and_then(|context| context.cyber_access_program);
+        options
     }
 
     /// Revalidates a reserved wake and selects its settings before any mail is consumed.
@@ -880,11 +930,8 @@ impl Session {
         Some(configuration.clone())
     }
 
-    async fn should_wake_on_agent_messages(&self) -> bool {
-        if !self.features.enabled(Feature::WakeOnAgentMessages)
-            || self.is_interrupted()
-            || !self.input_queue.has_pending_mailbox_items().await
-        {
+    pub(crate) async fn should_wake_on_agent_messages(&self) -> bool {
+        if !self.features.enabled(Feature::WakeOnAgentMessages) || self.is_interrupted() {
             return false;
         }
 
@@ -978,6 +1025,7 @@ impl Session {
         input_metadata: UserInputMetadata,
     ) -> Result<(String, String), NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;
+        if let Some(reason) = self.strict_steer_refusal(active.as_ref(), expected_turn_id).await { return Err(reason); } // ALAB(queue-review): a stale steer cannot authorize a new turn across an unpublished or held finding.
         let Some(active_turn) = active.as_mut() else {
             return Err(NotSubmittedReason::NoActiveTurn);
         };
@@ -1050,6 +1098,7 @@ impl Session {
                 .await
             }
         };
+        let accepted_goal_steer = super::queue_review::goal_steer(&active_task.turn_context, &input); // ALAB(autopilot): bind the order before moving this input.
         pending_input.push(input);
         self.input_queue
             .extend_pending_input_and_notify_for_turn_state(
@@ -1057,6 +1106,7 @@ impl Session {
                 pending_input,
             )
             .await;
+        accepted_goal_steer(); // ALAB(autopilot): supersede older goal recovery only after the input enters this turn's queue.
         Ok((
             active_turn_id.clone(),
             active_task.turn_context.root_turn_id(),

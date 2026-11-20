@@ -265,7 +265,7 @@ async fn reclaim(
         },
     };
 
-    let result = reclaim_pages(&mut connection, options, shutdown).await;
+    let result = reclaim_pages(&mut connection, options, shutdown, sqlite.is_diagnostic_database(path)).await; // ALAB(diagnostic-storage): this dedicated vacuum connection is also a WAL writer.
     connection.close().await?;
     result
 }
@@ -279,6 +279,7 @@ async fn reclaim_pages(
     connection: &mut SqliteConnection,
     options: impl Into<ReclamationOptions>,
     shutdown: &watch::Receiver<()>,
+    diagnostics: bool, // ALAB(diagnostic-storage): other stores keep native journal settings.
 ) -> anyhow::Result<ReclamationPass> {
     let ReclamationOptions {
         budget,
@@ -325,6 +326,7 @@ async fn reclaim_pages(
             outcome = PassOutcome::Idle;
             return Ok(());
         }
+        crate::sqlite::alab_diagnostic_wal::configure(connection, diagnostics, &journal).await?; // ALAB(diagnostic-storage): constrain the next natural reset before writing any vacuum pages.
         if !checkpoint_complete(connection).await? {
             return Ok(());
         }

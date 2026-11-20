@@ -23,6 +23,7 @@ pub(crate) async fn compose_auth(
     manager: Option<&std::result::Result<Arc<GatewayAuthManager>, String>>,
     mut resolved: ResolvedProviderAuth,
 ) -> Result<ResolvedProviderAuth> {
+    crate::alab_picker_provider::bind(provider, &mut resolved)?; // ALAB(accounts): check the final signer on inference, realtime re-selection and model discovery.
     let Some(config) = provider.gateway_oauth.as_ref() else {
         return Ok(resolved);
     };

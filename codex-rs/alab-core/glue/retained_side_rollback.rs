@@ -29,6 +29,11 @@ struct Guard {
     finished: bool,
     _tracked: tokio_util::task::task_tracker::TaskTrackerToken,
 }
+impl Guard {
+    fn finish(&mut self) {
+        self.finished = true;
+    }
+}
 impl Drop for Guard {
     fn drop(&mut self) {
         if !self.finished {
@@ -323,7 +328,8 @@ impl InitialSessionOperation {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .joined = true;
-                guard.finished = true;
+                guard.finish();
+                drop(guard);
             })
             .await;
         }
@@ -425,13 +431,12 @@ impl InitialSessionOperation {
                 }
             }
         };
-        let data = metadata::observation::Observation {
-            schema: 1,
-            operation: selection.operation().into(),
-            claim: selection.claim().into(),
-            thread_id: args.thread_id.clone(),
-            state: observed,
-        };
+        let data = metadata::observation::Observation::new(
+            selection.operation().into(),
+            selection.claim().into(),
+            args.thread_id.clone(),
+            observed,
+        );
         if !data.matches(
             selection.operation(),
             selection.claim(),
@@ -451,3 +456,7 @@ impl InitialSessionOperation {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "retained_side_rollback_guard_tests.rs"]
+mod guard_tests;

@@ -6,6 +6,9 @@ use crate::style::user_message_style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Wrap;
 
+#[path = "../../../../alab-tui/glue/timer_hints.rs"]
+mod timer_hints; // ALAB(interface): keep narrow local timer actions together.
+
 struct PromptAreas {
     panel: Rect,
     header: Rect,
@@ -105,6 +108,7 @@ impl CustomPromptView {
             cancel_label.dim(),
         ]);
         let vim_mode = self.textarea.vim_mode_indicator_span().map(Line::from);
+        if self.local_submit_available.is_some() && timer_hints::render(&areas, buf, self.submit_label, cancel_label, hint.width(), vim_mode.as_ref()) { return; } // ALAB(interface): use an unused panel row for the local timer’s keyboard actions.
         Paragraph::new(hint.clone()).render(areas.footer, buf);
         if let Some(mode) = vim_mode
             && max_left_width_for_right(areas.footer, mode.width() as u16)

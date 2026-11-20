@@ -224,6 +224,11 @@ impl ExecConfiguration {
         // Source paths may point into a retired package, including when the
         // current platform deliberately has no corresponding helper.
         let mut overrides: ConfigOverrides = self.overrides.clone().into();
+        // Replay the admitted checkpoint exactly before enabling catalog
+        // changes on an idle root under destination ownership.
+        if overrides.model.is_none() && self.child.is_some() {
+            overrides.model.clone_from(&cfg.model);
+        }
         overrides.codex_self_exe = current.codex_self_exe.clone();
         overrides.codex_linux_sandbox_exe = current.codex_linux_sandbox_exe.clone();
         overrides.main_execve_wrapper_exe = current.main_execve_wrapper_exe.clone();
@@ -295,6 +300,77 @@ mod tests {
             layers,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn idle_exec_root_keeps_saved_family_eligible_and_explicit_pin_exact()
+    -> std::io::Result<()> {
+        if !crate::alab_test_process::child(concat!(
+            module_path!(),
+            "::idle_exec_root_keeps_saved_family_eligible_and_explicit_pin_exact"
+        )) {
+            return Ok(());
+        }
+        use codex_models_manager::ModelOrigin;
+        use codex_models_manager::manager::RefreshStrategy;
+        use codex_models_manager::manager::StaticModelsManager;
+        use codex_protocol::openai_models::ReasoningEffort;
+
+        codex_alab_core::activate();
+        let dir = tempfile::tempdir()?;
+        let home = AbsolutePathBuf::from_absolute_path(dir.path())?;
+        let mut original = fixture(&home, "gpt-6.1-sol", ConfigOverrides::default(), false).await?;
+        original.model_reasoning_effort = Some(ReasoningEffort::High);
+        let unpinned = ExecConfiguration::capture(&original, &ConfigOverrides::default())?;
+        let pin = ConfigOverrides {
+            model: original.model.clone(),
+            ..Default::default()
+        };
+        let pinned = ExecConfiguration::capture(&original, &pin)?;
+
+        let mut catalog = codex_models_manager::bundled_models_response().expect("bundled catalog");
+        catalog
+            .models
+            .retain(|row| matches!(row.slug.as_str(), "gpt-6.1-sol" | "gpt-6.2-sol"));
+        assert_eq!(catalog.models.len(), 2);
+        let manager = StaticModelsManager::new(None, catalog, ModelOrigin::ExplicitConfig);
+        let model = async |cfg: &Config| {
+            cfg.alab_resolve_catalog_model(&manager, false, RefreshStrategy::Offline)
+                .await
+        };
+
+        for (captured, launch, follows) in [
+            (unpinned.capture_root_model(&original, true)?, None, true),
+            (
+                unpinned.capture_root_model(&original, false)?,
+                Some(&unpinned),
+                false,
+            ),
+            // 0.11 duplicated its active slug. A reconstructed TUI invocation
+            // supplies origin only for the primary root. Unknown callers retain it.
+            (unpinned.capture_child(&original)?, Some(&unpinned), true),
+            (pinned.capture_child(&original)?, Some(&pinned), false),
+            (unpinned.capture_child(&original)?, None, false),
+        ] {
+            let wire = serde_json::to_vec(&captured)?;
+            let saved: ExecConfiguration = serde_json::from_slice(&wire)?;
+            let mut restored = saved.restore(&original).await?;
+            assert_eq!(model(&restored).await, "gpt-6.1-sol", "checkpoint replay");
+            assert_eq!(restored.model_reasoning_effort, Some(ReasoningEffort::High));
+            assert_eq!(saved.follows_root_model(launch), follows);
+            if follows {
+                assert!(restored.alab_enable_recovered_model_following());
+            }
+            assert_eq!(
+                model(&restored).await,
+                if follows {
+                    "gpt-6.2-sol"
+                } else {
+                    "gpt-6.1-sol"
+                }
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

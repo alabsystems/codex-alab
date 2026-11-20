@@ -1270,6 +1270,8 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            #[cfg(unix)]
+            ClientRequest::ConfigRead { .. } if request_context.alab_side_view.is_some() => Box::pin(self.thread_processor.alab_query_side_close(&request_context)).await.map(|()| None), // ALAB(retained-side): read or acknowledge the exact owned result on an effect-free carrier.
             ClientRequest::ConfigRead { params, .. } if request_context.alab_callback_claim.is_some() => { // ALAB(retained-ui): same Source owner and original typed config policy.
                 let selected = request_context.alab_callback_claim.clone().ok_or_else(|| invalid_params("callback owner disappeared"))?;
                 #[cfg(unix)]

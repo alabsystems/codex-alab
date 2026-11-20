@@ -130,6 +130,38 @@ class IntakeTests(unittest.TestCase):
         record['commits'][0]['evidence'] = []
         self.assertTrue(INTAKE.validate(record, self.expected))
 
+    def test_batched_snapshot_preserves_git_subjects_and_exact_path_bytes(self):
+        # A leading newline, an object ID as a name, invalid UTF-8 and an empty
+        # subject must remain distinguishable from the boundaries between commits.
+        for name in (b'\n', self.target.encode(), 'café'.encode()):
+            (self.repo / os.fsdecode(name)).write_bytes(name)
+        self.git('add', '-A')
+        # Some filesystems require UTF-8 names. Stage the raw Git name directly.
+        blob = self.git('rev-parse', ':0:' + self.target).encode()
+        subprocess.run(['git', '-C', str(self.repo), 'update-index', '-z', '--index-info'],
+                       input=b'100644 ' + blob + b'\tinvalid-\xff\0', env=INTAKE.git_environment(), check=True)
+        self.commit('changes to unusual paths')
+        self.git('commit', '-q', '--allow-empty', '--allow-empty-message', '-m', '')
+        self.git('mv', 'café', 'renamed')
+        self.commit('rename – exact   subject')
+        self.commit('empty last commit')
+        records = INTAKE.snapshot(self.repo, self.target, 'HEAD')['commits']
+        self.assertEqual(len(records), 4)
+        for entry in records:
+            oid = entry['sha']
+            raw = subprocess.check_output(['git', '-C', str(self.repo), 'diff-tree', '--no-commit-id',
+                                           '--name-only', '-r', '-z', oid], env=INTAKE.git_environment())
+            expected = [name.decode('utf-8', errors='surrogateescape') for name in raw.split(b'\0')[:-1]]
+            self.assertEqual(entry['paths'], expected)
+            self.assertEqual(entry['subject'], INTAKE.git(self.repo, 'show', '-s', '--format=%s', oid))
+        self.assertEqual((records[1]['paths'], records[1]['subject'], records[-1]['paths']), ([], '', []))
+
+    def test_missing_tree_cannot_be_reviewed_as_an_empty_commit(self):
+        tree = self.git('rev-parse', self.target + '^{tree}')
+        (self.repo / '.git/objects' / tree[:2] / tree[2:]).unlink()
+        with self.assertRaises((subprocess.CalledProcessError, ValueError)):
+            INTAKE.snapshot(self.repo, self.base, self.target)
+
     def test_merge_history_is_explicitly_rejected(self):
         self.git('checkout', '-q', '-b', 'side', self.base)
         self.commit('side')

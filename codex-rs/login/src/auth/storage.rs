@@ -721,7 +721,7 @@ fn create_auth_storage_with_store(
     keyring_store: Arc<dyn KeyringStore>,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
-    let mode = if codex_alab_core::home::has_admitted_auth_path() && matches!(mode, AuthCredentialsStoreMode::Keyring | AuthCredentialsStoreMode::Auto) { AuthCredentialsStoreMode::File } else { mode }; // ALAB(auth-path): CODEX_AUTH_PATH pins file-backed auth; never read shared secrets or unlink into keyring
+    let mode = crate::auth::manager::alab_picker::storage_mode(mode); // ALAB(auth-path): pinned paths and confirmed default-file selections use the same backend on refresh.
     let commit_home = codex_home.clone();
     let storage: Arc<dyn AuthStorageBackend> = match mode {
         AuthCredentialsStoreMode::File => Arc::new(FileAuthStorage::new(codex_home)),

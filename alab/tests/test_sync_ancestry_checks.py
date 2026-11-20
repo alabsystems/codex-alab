@@ -33,7 +33,7 @@ git() {
     *) exit 97 ;;
   esac
 }
-in_wt() { record "$1"; exit 91; }
+prepare_sync_branch() { record prepare; exit 91; }
 alab_say() { printf '%s\n' "$*"; }
 ''' + body)
             env = dict(os.environ, ACTIONS=str(actions), ANCESTRY_RC=str(status))
@@ -56,7 +56,7 @@ alab_say() { printf '%s\n' "$*"; }
         source = (ROOT / "alab/sync.sh").read_text()
         begin = source.index("\nrun_sync() {") + 1
         end = source.index("\n}\n", begin) + 3
-        for status, code, actions in ((0, 0, ["ancestry"]), (1, 91, ["ancestry", "clean"])):
+        for status, code, actions in ((0, 0, ["ancestry"]), (1, 91, ["ancestry", "prepare"])):
             with self.subTest(status=status):
                 result, observed = self.run_shell(source[begin:end] + '\nrun_sync target\n', status)
                 self.assertEqual(result.returncode, code, result.stderr)

@@ -1,12 +1,12 @@
 //! In-app session picker transitions, preserving per-thread input and the view on cancellation.
 
 use super::*;
-use crate::chatwidget::ThreadInputStateRestoreMode;
+#[path = "../../../alab-tui/glue/selected_resume_input.rs"] mod alab_resume_input; // ALAB(retained-ui): named and picker resumes restore input at the same accepted conversation switch.
 
 impl App {
     pub(super) async fn capture_session_inputs(&mut self, owner: crate::backend_id::BackendId) {
         for (id, channel) in &self.thread_event_channels {
-            if channel.backend_id.is_none_or(|backend| backend == owner)
+            if channel.backend_id.or_else(|| self.backend_registry.owner(*id)).is_none_or(|backend| backend == owner) // ALAB(retained-ui): an unstamped parked channel can already have a registered backend.
                 && let Some(input_state) = channel.store.lock().await.input_state.clone()
             {
                 self.agents_overview.input_states.insert(*id, input_state);
@@ -93,33 +93,11 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 let thread_id = target_session.thread_id;
-                let switching_threads = self.current_displayed_thread_id() != Some(thread_id);
-                if switching_threads {
-                    self.capture_session_inputs(app_server.backend_id()).await;
-                }
                 if let AppRunControl::Exit(reason) = self
                     .resume_target_session(tui, app_server, target_session)
                     .await?
                 {
                     return Ok(AppRunControl::Exit(reason));
-                }
-                if switching_threads
-                    && self.current_displayed_thread_id() == Some(thread_id)
-                    && let Some(mut input_state) =
-                        self.agents_overview.input_states.remove(&thread_id)
-                {
-                    // The resumed widget already reflects the latest server result.
-                    input_state.provider_error = None;
-                    self.reconcile_saved_session_input(thread_id, &mut input_state)
-                        .await;
-                    let preserve_in_flight_turn =
-                        self.active_turn_id_for_thread(thread_id).await.is_some();
-                    self.chat_widget.restore_thread_input_state(
-                        Some(input_state),
-                        ThreadInputStateRestoreMode {
-                            preserve_in_flight_turn,
-                        },
-                    );
                 }
                 if self.active_thread_id == Some(thread_id)
                     && self

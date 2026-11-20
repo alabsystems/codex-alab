@@ -19,6 +19,7 @@ pub(super) async fn prepare_saved_result(
 ) -> Result<PreparedAttachment> {
     // This caller is the original saved-child chooser, including loaded children
     // whose independent model-settings policy is PreserveExistingThread.
+    view.alab_saved_resume_unreadable = Some(false);
     crate::boxed_future!(AppServerSession::alab_with_original_resume_presentation(
         ClientPresentation::SideConversation,
         super::thread_attachment::prepare(view, settings, config, child, mode),
@@ -218,6 +219,8 @@ pub(super) fn finish_saved(
     Prepared {
         result,
         metadata,
+        unreadable_resume: view.alab_saved_resume_unreadable == Some(true),
+        missing_resume: view.alab_take_missing_saved_resume(),
         close_check: Ok(false),
     }
 }

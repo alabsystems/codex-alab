@@ -43,6 +43,16 @@ use crate::tools::handlers::unified_exec::preparation::PreparedExecCommand;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
+// ALAB(shell-output): own the thread-private shell output logs.
+#[path = "../../../alab-core/glue/shell_output.rs"]
+pub(crate) mod shell_output;
+// ALAB(shell-invocation): bind model terminal lookup to the producing invocation.
+#[path = "../../../alab-core/glue/shell_binding.rs"]
+pub(crate) mod shell_binding;
+
+#[path = "../../../alab-core/glue/shell_observation.rs"]
+pub(crate) mod shell_observation; // ALAB(shell-output): keep native observations through process replacement.
+
 mod async_watcher;
 mod command_sessions;
 mod errors;
@@ -107,6 +117,8 @@ impl UnifiedExecContext {
 
 #[derive(Debug)]
 pub(crate) struct ExecCommandRequest {
+    pub source: crate::tools::context::ToolCallSource, // ALAB(shell-output): freeze what the producing native surface returns.
+    pub(crate) _number_lease: Arc<()>, // ALAB(shell-invocation): hold the public number throughout every launch callback.
     pub prepared: PreparedExecCommand,
     pub process_id: i32,
     pub network: Option<NetworkProxy>,
@@ -132,6 +144,7 @@ pub(crate) struct WriteStdinRequest<'a> {
 }
 
 pub(crate) struct WriteStdinInteractionEvent<'a> {
+    pub source: &'a crate::tools::context::ToolCallSource, // ALAB(shell-output): order observations with native input and polls.
     pub session: &'a Arc<Session>,
     pub turn: &'a Arc<TurnContext>,
 }
@@ -146,6 +159,9 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
     reserved_process_ids: HashSet<i32>,
+    in_flight_launches: HashMap<i32, Weak<()>>, // ALAB(shell-invocation): outstanding calls survive a bulk terminal cleanup.
+    shell_bindings: shell_binding::ShellBindings, // ALAB(shell-invocation): track ambiguous numeric handles.
+    readers: Arc<process::retired_readers::ReaderPool>, // ALAB(shell-output): share the existing process budget with unwritable readers.
 }
 
 impl ProcessStore {
@@ -159,6 +175,7 @@ impl ProcessStore {
 
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
+    shell_logs: shell_output::ThreadLogs, // ALAB(shell-output): thread lifetime.
     max_write_stdin_yield_time_ms: u64,
 }
 
@@ -166,6 +183,7 @@ impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
+            shell_logs: shell_output::ThreadLogs::default(), // ALAB(shell-output): create lazily.
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }

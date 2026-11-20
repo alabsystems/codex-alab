@@ -36,7 +36,7 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--exec-wrapp
 import runpy
 
 import provider_fixture
-from capacity_exec import case_error_fields, cleanup_case, package_records, run as guarded_run, start_listener, write_json
+from capacity_exec import case_error_fields, check_package_executable, cleanup_case, package_records, run as guarded_run, start_listener, write_json
 
 CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "cli_status.py"))
 FILE_HASH = runpy.run_path(str(Path(__file__).resolve().parents[1] / "file_hash.py"))
@@ -59,70 +59,221 @@ TWO_TOOLS = ("shared-credit", "repeated-same-cycle", "stale-credit-ledger", "unu
 PREPOST_NEGATIVE_CASES = ("prepost-recovery-shifted", "prepost-recovery-foreign", "prepost-recovery-below-99")
 PREPOST_CASES = ("prepost-recovery-restored", *PREPOST_NEGATIVE_CASES,
                  "prepost-recovery-denied", "prepost-preflight-99")
-PREFLIGHT_CASES = ("preflight-weekly", "preflight-weekly-25h", "preflight-weekly-48h", "preflight-beyond-48h", "preflight-weekly-49h", "prepost-preflight-99")
+PREFLIGHT_CASES = ("preflight-weekly", "preflight-beyond-24h", "preflight-weekly-25h", "preflight-weekly-48h", "preflight-weekly-49h", "prepost-preflight-99")
 POLICY_PREFLIGHT_CASES = ("preflight-five-hour", "preflight-weekly-24h", "preflight-below-99", "preflight-elapsed-reset", "preflight-mixed-windows")
 POLICY_BLOCKED_CASES = (*POLICY_PREFLIGHT_CASES, "recovery-weekly-24h", "near-reset", "recovery-below-99", "recovery-elapsed-reset")
 POLICY_POLL_CASES = ("preflight-five-hour", "preflight-weekly-24h", "recovery-weekly-24h", "near-reset", "preflight-elapsed-reset", "preflight-mixed-windows", "recovery-elapsed-reset")
-SUCCESS_CASES = ("recovery-weekly-25h", "recovery-weekly-48h", "recovery-beyond-48h", "recovery-weekly-49h", "prepost-recovery-restored", "prepost-recovery-denied", "spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
-CASE_NAMES = (*SUCCESS_CASES, *POLICY_BLOCKED_CASES, *PREPOST_NEGATIVE_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
-NOTICE_SUCCESS_CASES = ("recovery", "preflight-weekly", "preflight-weekly-25h", "recovery-weekly-25h")
+PAID_RETRY_CASES = ("existing-usage-credits", "paid-retry-refused", "spend-control-reopens")
+FUNDED_CASES = (*PAID_RETRY_CASES, "plan-renewed-before-credit-retry", "spend-control-blocked")
+SUCCESS_CASES = ("existing-usage-credits", "spend-control-reopens", "plan-renewed-before-credit-retry", "recovery-beyond-24h", "recovery-weekly-25h", "recovery-weekly-48h", "recovery-weekly-49h", "prepost-recovery-restored", "prepost-recovery-denied", "spent-retry-deadline", *DEADLINE_OUTAGE_CASES, "stale-allowance-credit", *OUTAGE_CASES, "shared-credit", "natural-reset", "committed-ack", "stale-reset-credit", *PROPAGATION_CASES, "late-credit", "recovery", "lost-ack", "pending-old-cycle", "repeated-same-cycle", "unused-pending", "selected-no-credit", *PREFLIGHT_CASES)
+CASE_NAMES = (*SUCCESS_CASES, "paid-retry-refused", "spend-control-blocked", *POLICY_BLOCKED_CASES, *PREPOST_NEGATIVE_CASES, "stale-credit-ledger", "stale-restored", "identity-mismatch", "no-credit", "unrelated-provider")
+NOTICE_SUCCESS_CASES = ("recovery", "preflight-weekly", "preflight-weekly-25h", "preflight-weekly-48h", "preflight-weekly-49h", "recovery-weekly-25h", "recovery-weekly-48h", "recovery-weekly-49h")
 NOTICE_PRESERVE_CASES = ("preflight-weekly-24h", "recovery-weekly-24h")
 RESET_NOTICE_PREFIX = "[codex-alab reset] "
+CREDIT_NOTICE_PREFIX = "[codex-alab credits] "
+
+def decision_prefix(name):
+    return CREDIT_NOTICE_PREFIX if name in (*PAID_RETRY_CASES, "spend-control-blocked") else RESET_NOTICE_PREFIX
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
 
-def reset_notice_messages(events):
+def has_paced_poll(reads):
+    return any(second["at"] - first["at"] >= 29 for first, second in zip(reads, reads[1:]))
+
+def notice_messages(events, prefix):
     """Exec JSON represents runtime warnings as nonfatal completed error items."""
     messages = []
     for event in events:
         item = event.get("item")
         if (event.get("type") == "item.completed" and isinstance(item, dict)
                 and item.get("type") == "error" and isinstance(item.get("message"), str)
-                and item["message"].startswith(RESET_NOTICE_PREFIX)):
-            messages.append(item["message"][len(RESET_NOTICE_PREFIX):])
+                and item["message"].startswith(prefix)):
+            messages.append(item["message"][len(prefix):])
     return messages
+
+def reset_expiry_label(value):
+    if value is None:
+        return "expiry not provided"
+    invalid = "unknown expiry (invalid server timestamp)"
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2}):(\d{2})(?:\.(\d+))?"
+                         r"([Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)", value, re.ASCII)
+    if not match:
+        return invalid
+    date, minute, second, fraction, offset = match.groups()
+    offset = "+00:00" if offset.upper() == "Z" else offset
+    # datetime handles calendar and offset arithmetic at whole-second precision.
+    # Preserve RFC 3339 leap seconds and the native nanosecond precision separately.
+    try:
+        timestamp = datetime.datetime.fromisoformat(
+            f"{date}T{minute}:{'59' if second == '60' else second}{offset}")
+        utc = timestamp.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
+        return invalid
+    digits = (fraction or "")[:9].ljust(9, "0")
+    while digits.endswith("000"):
+        digits = digits[:-3]
+    fraction = "." + digits if digits else ""
+    return f"{utc.isoformat(timespec='minutes')}:{second}{fraction}+00:00"
+
+def reset_listings_with_weekly_deadlines(requests):
+    """Pair each inventory with the ordinary usage read that preceded it."""
+    deadline = None
+    for request in requests:
+        path = request.get("path", "")
+        response = request.get("response") or {}
+        if path.endswith("/usage"):
+            limit = response.get("rate_limit") or {}
+            windows = (limit.get("primary_window"), limit.get("secondary_window"))
+            deadline = max((w["reset_at"] for w in windows if w and w.get("limit_window_seconds") == 604800
+                            and type(w.get("used_percent")) in (float, int) and w["used_percent"] >= 99
+                            and type(w.get("reset_at")) is int), default=None)
+        elif path.endswith("/rate-limit-reset-credits") and "available_count" in response:
+            yield response, deadline
+
+
+def check_creditless_wait(messages, requests):
+    """Silence is expected after the fixture confirms both funding sources are empty."""
+    wall = next((i for i, r in enumerate(requests) if r["path"] == "/v1/responses" and "quotaResetUnix" in r), None)
+    require(wall is not None, "quiet wait requires the original quota wall")
+    usage_seen = False
+    empty_lists = 0
+    for request in requests[wall + 1:]:
+        path = request["path"]
+        response = request.get("response") or {}
+        if path.endswith("/usage"):
+            require((response.get("rate_limit") or {}).get("allowed") is False,
+                    "quiet wait requires exhausted plan allowance")
+            credits = response.get("credits") or {}
+            require(credits.get("has_credits") is False and credits.get("unlimited") is False
+                    and credits.get("balance") == "0",
+                    "quiet wait fixture must report its zero paid credit balance and no spending access")
+            usage_seen = True
+        elif path.endswith("/rate-limit-reset-credits"):
+            require(usage_seen, "quiet wait requires a post-wall usage reading before listing earned resets")
+            require(response.get("available_count") == 0 and response.get("credits") == [],
+                    "quiet wait requires repeated empty earned-reset inventories")
+            empty_lists += 1
+    require(empty_lists >= 2, "quiet wait requires repeated empty earned-reset inventories")
+    require(not messages, f"empty earned-reset checks printed a reset notice: {messages[:1]}")
+
+
+def spending_open(read):
+    """Evidence that the funded fixture permits a paid retry on this reading."""
+    control = read.get("spend_control")
+    if not isinstance(control, dict) or control.get("reached") is not False or read.get("rate_limit_upsell") is not None:
+        return False
+    reason = read.get("rate_limit_reached_type")
+    if reason is not None and (not isinstance(reason, dict) or reason.get("type") != "rate_limit_reached"):
+        return False
+    limit = control.get("individual_limit")
+    return limit is None or (isinstance(limit, dict) and type(limit.get("remaining_percent")) is int
+                             and limit["remaining_percent"] > 0)
+
 
 def check_reset_notice_events(name, events, requests):
     """Qualify representative printed decisions through the production JSON renderer."""
-    if name not in (*NOTICE_SUCCESS_CASES, *NOTICE_PRESERVE_CASES):
+    if name not in ("no-credit", *FUNDED_CASES, *NOTICE_SUCCESS_CASES, *NOTICE_PRESERVE_CASES):
         return
     require(not any(event.get("type") == "error"
-                    and str(event.get("message", "")).startswith(RESET_NOTICE_PREFIX)
-                    for event in events), "reset notice became a fatal JSON error")
-    messages = reset_notice_messages(events)
-    listings = [request["response"] for request in requests
-                if request.get("path", "").endswith("/rate-limit-reset-credits")
-                and "available_count" in request.get("response", {})]
+                    and str(event.get("message", "")).startswith((RESET_NOTICE_PREFIX, CREDIT_NOTICE_PREFIX))
+                    for event in events), "recovery notice became a fatal JSON error")
+    prefix = decision_prefix(name)
+    other = RESET_NOTICE_PREFIX if prefix == CREDIT_NOTICE_PREFIX else CREDIT_NOTICE_PREFIX
+    require(not notice_messages(events, other), "unexpected recovery notice label")
+    messages = notice_messages(events, prefix)
+    if name in (*FUNDED_CASES, "no-credit"):
+        for request in requests:
+            if request["path"].endswith("/usage"):
+                read = request.get("response") or {}
+                require(read.get("account_id") == ACCOUNT and read.get("user_id") == USER,
+                        "credit decision requires usage returned for the fixture account and user")
+    if name == "spend-control-blocked":
+        models = [r for r in requests if r["path"] == "/v1/responses"]
+        require(len(models) == 2 and "quotaResetUnix" in models[-1], "spending block must retain the original wall")
+        usage = [r for r in requests if r["path"].endswith("/usage")]
+        require(all(r["response"]["credits"]["balance"] == "30966.04065"
+                    and r["response"]["credits"]["has_credits"] is True
+                    and r["response"]["spend_control"]["reached"] is True for r in usage)
+                and any(r["at"] < models[0]["at"] and r["response"]["rate_limit"]["allowed"] is True for r in usage)
+                and any(r["at"] > models[1]["at"] and r["response"]["rate_limit"]["allowed"] is False for r in usage),
+                "spending block must be confirmed before sampling and after the wall with credits available")
+        require(not any("/rate-limit-reset-credits" in r["path"] for r in requests),
+                "a spending restriction triggered an earned-reset request")
+        require(messages == ["Credit retry skipped. The account spending limit was reached."],
+                "expected exactly one notice naming the spending restriction")
+        plan = next((i for i, e in enumerate(events)
+                     if e.get("type") == "item.started" and e.get("item", {}).get("type") == "todo_list"), None)
+        wait = next((i for i, e in enumerate(events)
+                     if e.get("type") == "error" and e.get("message", "").startswith("Waiting for account quota")), None)
+        require(plan is not None and wait is not None and notice_messages(events[plan + 1:wait], prefix) == messages,
+                "expected the restriction notice after tool work and before the quota wait")
+        return
+    if name in PAID_RETRY_CASES:
+        models = [request for request in requests if request["path"] == "/v1/responses"]
+        require(len(models) == 3 and "quotaResetUnix" in models[1], "paid retry must follow the original quota wall")
+        checks = [request for request in requests if models[1]["at"] < request["at"] < models[2]["at"]]
+        resets = [request for request in checks if request["path"].endswith("/rate-limit-reset-credits")]
+        reopening = name == "spend-control-reopens"
+        require(len(resets) == (2 if reopening else 1)
+                and all(r.get("response") == {"available_count": 0, "credits": []} for r in resets),
+                "paid retry must recheck the account after listing its empty earned resets")
+        usage = [request for request in checks if request["path"].endswith("/usage")]
+        before = [r["response"] for r in usage if r["at"] < resets[-1]["at"]]
+        after = [r["response"] for r in usage if r["at"] > resets[-1]["at"]]
+        require(before and after and all(read.get("credits", {}).get("has_credits") is True
+                and read.get("rate_limit", {}).get("allowed") is False for read in before + after),
+                "credit retry requires a fresh balance while the plan allowance remains exhausted")
+        if reopening:
+            require(all(read["credits"].get("balance") == "30966.04065" for read in before),
+                    "the positive balance must remain unchanged while spending is blocked and reopened")
+            initial = [r for r in usage if r["at"] < resets[0]["at"]]
+            between = [r for r in usage if resets[0]["at"] < r["at"] < resets[1]["at"]]
+            require(initial and all(spending_open(r["response"]) for r in initial)
+                    and between and between[0]["response"]["spend_control"]["reached"] is True
+                    and between[0]["at"] - resets[0]["at"] < 29,
+                    "the immediate post-list reading must observe the new spending block")
+            require(len(between) >= 2 and between[1]["at"] - between[0]["at"] >= 29
+                    and all(spending_open(r["response"]) for r in between[1:]),
+                    "a paced account poll must confirm spending reopened before selecting again")
+        require(all(spending_open(read) for read in after),
+                "a blocked reading cannot authorize a paid retry")
+        balance = after[0]["credits"].get("balance")
+        require(isinstance(balance, str) and balance != before[-1]["credits"].get("balance"),
+                "fixture must change the reported balance during the reset listing")
+        require(messages == [f"Retrying this request once with usage credits (reported balance {balance})."],
+                "paid retry must report the authorizing balance in one notice")
+        if name == "paid-retry-refused":
+            retry = models[2]
+            require("quotaResetUnix" in retry, "provider must refuse the paid retry")
+            later = [r for r in requests if r["path"].endswith("/usage") and r["at"] > retry["at"]]
+            require(has_paced_poll(later)
+                    and all(r["response"]["credits"]["has_credits"] is True
+                            and r["response"]["rate_limit"]["allowed"] is False for r in later),
+                    "refused retry must retain the funded quota wall through a second paced poll")
+        return
+    if name == "plan-renewed-before-credit-retry":
+        require(messages == ["Allowance restored; continuing the original request without spending another reset."],
+                "renewed allowance must report one ordinary retry without a paid-retry notice")
+        return
+    if name == "no-credit":
+        check_creditless_wait(messages, requests)
+        return
+    listings = list(reset_listings_with_weekly_deadlines(requests))
     require(listings, "reset notice fixture never listed earned credits")
-    inventory = listings[0]
-    expirations = [datetime.datetime.fromisoformat(credit["expires_at"].replace("Z", "+00:00")).isoformat()
-                   for credit in inventory.get("credits", [])
-                   if credit.get("status") == "available"
-                   and credit.get("reset_type") == "codex_rate_limits"
-                   and credit.get("expires_at")]
-    require(inventory["available_count"] > 0 and expirations,
-            "reset notice fixture must offer credits with explicit expiry")
-    def inventory_message(listing):
-        expiries = []
-        for credit in listing.get("credits", []):
-            if credit.get("status") != "available" or credit.get("reset_type") != "codex_rate_limits":
-                continue
-            expiry = credit.get("expires_at")
-            if expiry is None:
-                expiries.append("expiry not provided")
-            else:
-                try:
-                    expiries.append(datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00")).isoformat())
-                except ValueError:
-                    expiries.append("unknown expiry (invalid server timestamp)")
-        return (f'Considered earned usage reset: {max(listing["available_count"], 0)} available; '
-                f'expirations: {", ".join(expiries) if expiries else "none provided"}.')
-
-    expected = [inventory_message(listing) for listing in listings]
+    expected = []
+    for listing, _ in listings:
+        expiries = sorted(reset_expiry_label(credit.get("expires_at")) for credit in listing.get("credits", [])
+                          if credit.get("status") == "available" and credit.get("reset_type") == "codex_rate_limits")
+        if not expected:
+            require(listing["available_count"] > 0 and any(expiry.endswith("+00:00") for expiry in expiries),
+                    "reset notice fixture must offer credits with explicit expiry")
+        expected.append(f'Considered earned usage reset: {max(listing["available_count"], 0)} available; '
+                        f'expirations: {", ".join(expiries) if expiries else "none provided"}.')
     inventories, decisions, applied, restorations = [], [], [], []
     listing_index = 0
+    last_inventory = None
     spending = name in NOTICE_SUCCESS_CASES
     informational_inventory = (
         "Considered earned usage reset: available count and expiry unknown because authentication changed or is unavailable. No reset used.",
@@ -132,27 +283,36 @@ def check_reset_notice_events(name, events, requests):
     )
     for index, message in enumerate(messages):
         inventory_prefix = "Considered earned usage reset:"
-        if message.startswith(inventory_prefix) and message not in informational_inventory:
+        if message in informational_inventory:
+            last_inventory = None
+        elif message.startswith(inventory_prefix):
+            require(message != last_inventory, "printed reset notice repeated an unchanged inventory")
             match = next((position for position in range(listing_index, len(expected))
                           if message == expected[position]), None)
             require(match is not None,
                     "printed reset notice lost the backend's available count or expiration timestamps")
             require(inventories or match == 0,
                     "printed reset notice omitted the initial backend inventory")
-            listing_index = match  # Duplicate observations can share the same actual listing.
+            last_inventory = message
+            listing_index = match + 1
             inventories.append(index)
-        elif message.startswith("Using an earned usage reset"):
-            require(spending and re.fullmatch(
-                    r"Using an earned usage reset automatically: the weekly allowance refreshes "
-                    r"(?:at [^,\s]+, )?more than 24 hours away\."
-                    r"(?: Choosing the earliest-expiring usable reset\.)?", message),
-                    "printed reset notice contradicts the automatic spending decision")
-            decisions.append(index)
-        elif message.startswith("Reset not used"):
-            require(not spending and re.fullmatch(
-                    r"Reset not used: the weekly allowance refreshes "
-                    r"(?:within 24 hours|at \S+ \(within 24 hours\)); preserving earned resets\.", message),
-                    "printed reset notice contradicts the preservation decision")
+        elif message.startswith(("Using an earned usage reset", "Reset not used")):
+            require(inventories, "printed reset notice decision preceded its inventory")
+            deadline = listings[listing_index - 1][1]
+            require(deadline is not None, "printed reset notice has no matching weekly allowance reading")
+            try:
+                stamp = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat()
+            except (ValueError, OSError, OverflowError) as error:
+                raise RuntimeError("printed reset notice has an invalid provider weekly refresh time") from error
+            if spending:
+                decision = ("Using an earned usage reset automatically: the weekly allowance refreshes "
+                            f"at {stamp}, more than 24 hours away.")
+                require(message in (decision, decision + " Choosing the earliest-expiring usable reset."),
+                        "printed reset notice contradicts the automatic decision or weekly refresh time")
+            else:
+                require(message == f"Reset not used: the weekly allowance refreshes at {stamp} "
+                        "(within 24 hours); preserving earned resets.",
+                        "printed reset notice contradicts the preservation decision or weekly refresh time")
             decisions.append(index)
         elif message.startswith("Usage allowance restored"):
             require(spending and message == "Usage allowance restored after the earned reset; continuing the original request.",
@@ -164,14 +324,16 @@ def check_reset_notice_events(name, events, requests):
             applied.append(index)
     require(inventories,
             "printed reset notice lost the backend's available count or expiration timestamps")
-    require(decisions, "printed reset notice omitted the automatic spending decision" if spending
-            else "printed reset notice omitted the reason for preserving the available reset")
-    require(max(inventories) < min(decisions), "printed reset notice decision preceded its inventory")
+    require(len(decisions) == 1, "printed reset notice must report one decision for this reset")
+    decision = decisions[0]
+    require(max(inventories) < decision, "printed reset notice decision preceded its inventory")
     if spending:
-        require(restorations, "printed reset notice omitted confirmed restoration before continuing")
-        require(max(decisions) < min(restorations), "printed reset notice restoration preceded its decision")
-        require(all(max(decisions) < index < min(restorations) for index in applied),
+        require(len(restorations) == 1, "printed reset notice must report one confirmed restoration")
+        require(decision < restorations[0], "printed reset notice restoration preceded its decision")
+        require(len(applied) <= 1, "printed reset notice repeated the reset application")
+        require(not applied or decision < applied[0] < restorations[0],
                 "printed reset notice application preceded its decision or followed restoration")
+
 
 def file_sha256(path):
     return FILE_HASH["file_sha256"](path, error_type=RuntimeError)
@@ -234,14 +396,14 @@ class Mock:
         self.name = name
         reset_delay = (90 if name == "natural-reset" else 4 * 60 if name == "near-reset"
                        else -3600 if name == "preflight-mixed-windows"
-                       else 49 * 3600 if name in ("preflight-beyond-48h", "recovery-beyond-48h", "preflight-weekly-49h", "recovery-weekly-49h")
-                       else 25 * 3600 if name in ("preflight-weekly-25h", "recovery-weekly-25h")
+                       else 49 * 3600 if name in ("preflight-weekly-49h", "recovery-weekly-49h")
+                       else 25 * 3600 if name in ("preflight-beyond-24h", "recovery-beyond-24h", "preflight-weekly-25h", "recovery-weekly-25h")
                        else 48 * 3600 if name in ("preflight-weekly-48h", "recovery-weekly-48h")
                        else 24 * 3600 if name in ("preflight-weekly-24h", "recovery-weekly-24h") else 72 * 3600)
         now = int(time.time())
         self.reset = now + reset_delay
         self.five_hour_reset = now + 3600
-        self.credit = name not in ("no-credit", "late-credit", "natural-reset")
+        self.credit = name not in (*FUNDED_CASES, "no-credit", "late-credit", "natural-reset")
         self.consumed = name == "unused-pending"
         self.requests = []
         self.models = []
@@ -252,6 +414,7 @@ class Mock:
         self.account_key = None
         self.spent = []
         self.declined = []
+        self.renewed_after_listing = False
         self.wall_usage_reads = 0
         self.propagation_started = None
         self.partial_receipt_path = None
@@ -273,7 +436,7 @@ class Mock:
             healthy = self.stale_allowance_reads == 1
             if not healthy:
                 self.consumed = False
-        if self.name == "natural-reset" and self.wall_usage_reads >= 2:
+        if (self.name == "natural-reset" and self.wall_usage_reads >= 2) or self.renewed_after_listing:
             healthy = True
             reset += 604800
         if self.name == "stale-reset-credit" and self.wall_usage_reads == 1:
@@ -293,12 +456,17 @@ class Mock:
                 available = 2
         elif self.name == "unused-pending":
             available = int(not self.spent)
+        primary_used = 0
+        if self.name == "preflight-five-hour" and not healthy:
+            primary_used = 99 if preflight else 100
+        elif self.name == "preflight-below-99":
+            primary_used = 95
+        elif self.name == "preflight-mixed-windows":
+            primary_used = 98
         value = {"account_id": "other-account" if self.name == "identity-mismatch" else ACCOUNT,
                 "user_id": USER, "plan_type": "pro",
                 "rate_limit": {"allowed": healthy or preflight, "limit_reached": not (healthy or preflight),
-                    "primary_window": {"used_percent": (99 if self.name == "preflight-five-hour" and not healthy
-                                                       else 95 if self.name == "preflight-below-99"
-                                                       else 98 if self.name == "preflight-mixed-windows" else 0), "limit_window_seconds": 18000,
+                    "primary_window": {"used_percent": primary_used, "limit_window_seconds": 18000,
                         "reset_after_seconds": self.five_hour_reset - now, "reset_at": self.five_hour_reset},
                     "secondary_window": {"used_percent": (0 if healthy or self.name in ("preflight-five-hour", "preflight-below-99")
                                                          else 98 if self.name == "recovery-below-99"
@@ -306,6 +474,18 @@ class Mock:
                         "limit_window_seconds": 604800,
                         "reset_after_seconds": reset - now, "reset_at": reset}},
                 "rate_limit_reset_credits": {"available_count": available}}
+        if self.name in FUNDED_CASES:
+            authorizing_list = 2 if self.name == "spend-control-reopens" else 1
+            balance = "30965.02000" if self.name in PAID_RETRY_CASES and self.credit_listings >= authorizing_list else "30966.04065"
+            value["credits"] = {"has_credits": True, "unlimited": False, "balance": balance}
+            if self.name == "spend-control-reopens" and self.credit_listings:
+                self.post_selection_reads += 1
+            value["spend_control"] = {"reached": self.name == "spend-control-blocked"
+                                      or (self.name == "spend-control-reopens" and self.post_selection_reads == 1)}
+            if not healthy:
+                value["rate_limit_reached_type"] = {"type": "rate_limit_reached"}
+        elif self.name == "no-credit":
+            value["credits"] = {"has_credits": False, "unlimited": False, "balance": "0"}
         if self.name in PREPOST_CASES and self.credit_listings and not self.consumed:
             self.post_selection_reads += 1
             window = value["rate_limit"]["secondary_window"]
@@ -362,7 +542,7 @@ class Mock:
                                 {"step": PLAN, "status": "completed"},
                                 {"step": PLAN2, "status": "completed"}]})}
                     return 200, response("weekly-second-plan", item), "text/event-stream"
-                if (number == 2 or (number == 3 and self.name in ("stale-restored", "stale-allowance-credit", "spent-retry-deadline"))
+                if (number == 2 or (number == 3 and self.name in ("paid-retry-refused", "stale-restored", "stale-allowance-credit", "spent-retry-deadline"))
                         or (number == 4 and self.name in TWO_TOOLS)
                         or (number == 5 and self.name == "stale-credit-ledger")):
                     if number in (4, 5):
@@ -399,9 +579,10 @@ class Mock:
                         # Backend restoration is observed on the paced second
                         # poll, before the original wall deadline takes over.
                         self.reset = int(time.time()) + 90
-                    record["quotaResetUnix"] = self.reset
+                    wall_reset, window = (self.five_hour_reset, "five-hour") if self.name == "preflight-five-hour" else (self.reset, "weekly")
+                    record["quotaResetUnix"] = wall_reset
                     return 429, json.dumps({"error": {"type": "usage_limit_reached",
-                        "message": "Fixture weekly quota exhausted", "resets_at": self.reset}}).encode(), "application/json"
+                        "message": f"Fixture {window} quota exhausted", "resets_at": wall_reset}}).encode(), "application/json"
                 naturally_restored = ((self.name == "natural-reset" and self.wall_usage_reads >= 2)
                                       or (self.name == "prepost-recovery-restored" and self.post_selection_reads > 0))
                 if self.name in DEADLINE_OUTAGE_CASES:
@@ -409,7 +590,7 @@ class Mock:
                     naturally_restored = record["serverUnix"] >= self.reset
                 if ((number == 3 or (number == 5 and self.name in TWO_TOOLS)
                      or (number == 4 and self.name in ("stale-allowance-credit", "spent-retry-deadline")))
-                        and (self.consumed or naturally_restored)):
+                        and (self.consumed or naturally_restored or self.name in FUNDED_CASES)):
                     if self.name == "spent-retry-deadline":
                         record["serverUnix"] = int(time.time())
                         require(record["serverUnix"] >= self.reset,
@@ -453,6 +634,8 @@ class Mock:
                             value["credits"] = [credit for credit in value["credits"]
                                                 if credit["id"] not in self.spent + self.declined]
                         value["available_count"] = len(value["credits"])
+                if self.name == "plan-renewed-before-credit-retry" and len(self.models) >= 2:
+                    self.renewed_after_listing = True
                 self.credit_listings += 1
                 record["selectionNumber"] = self.credit_listings
             elif method == "POST" and path == "/backend-api/wham/rate-limit-reset-credits/consume":
@@ -611,32 +794,39 @@ def case(executable, output, name):
         try:
             # A request appearing in the server log does not prove its response
             # reached recovery. A second paced poll witnesses a completed wait loop.
-            retained = name in ("no-credit", "stale-credit-ledger", "stale-restored", *POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES)
+            expected_models, expected_consumes = {
+                "stale-restored": (3, 1), "stale-credit-ledger": (5, 2), "paid-retry-refused": (3, 0)
+            }.get(name, (2, 0))
+            retained = name in ("paid-retry-refused", "no-credit", "stale-credit-ledger", "stale-restored", *POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES)
 
             def retained_wait():
                 if not retained:
                     return False
                 with mock.lock:
-                    expected_models, expected_consumes = {"stale-restored": (3, 1),
-                        "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
-                    if (not mock.checked.is_set() or len(mock.models) != expected_models
-                            or sum(request["path"].endswith("/consume") for request in mock.requests)
-                            != expected_consumes):
+                    consumes = sum(request["path"].endswith("/consume") for request in mock.requests)
+                    require(len(mock.models) <= expected_models and consumes <= expected_consumes,
+                            f"{name}: unexpected retry or reset redemption during the wait")
+                    if not mock.checked.is_set() or len(mock.models) != expected_models or consumes != expected_consumes:
                         return False
                     last_model = max(request["at"] for request in mock.requests
                                      if request["path"] == "/v1/responses")
-                    endpoint = "/usage" if name == "stale-restored" or name in (*POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES) else "/rate-limit-reset-credits"
+                    usage_polls = ("stale-restored", "paid-retry-refused", *POLICY_POLL_CASES, *PREPOST_NEGATIVE_CASES)
+                    endpoint = "/usage" if name in usage_polls else "/rate-limit-reset-credits"
                     polls = [request for request in mock.requests
                              if request["path"].endswith(endpoint)
                              and request["at"] > last_model]
-                    return len(polls) >= 2 and polls[-1]["at"] - polls[0]["at"] >= 29
+                    return has_paced_poll(polls)
 
             deadline = time.monotonic() + 60
             buffer = b""
             while not (retained_wait() if retained else b"Waiting for account quota" in buffer):
                 remaining = deadline - time.monotonic()
-                require(remaining > 0, "retained recovery did not make a paced second poll" if retained
-                        else "native quota wait notification missing")
+                if remaining <= 0:
+                    with mock.lock:
+                        require(len(mock.models) == expected_models,
+                                f"{name}: expected {expected_models} model requests before the wait, observed {len(mock.models)}")
+                    raise RuntimeError("retained recovery did not make a paced second poll" if retained
+                                       else "native quota wait notification missing")
                 ready, _, _ = select.select([child.stdout], [], [], min(remaining, 1))
                 if ready:
                     data = os.read(child.stdout.fileno(), 65536)
@@ -648,8 +838,6 @@ def case(executable, output, name):
             with mock.lock:
                 require(mock.checked.is_set() or name == "unrelated-provider",
                         "native wait skipped fresh weekly usage check")
-                expected_models, expected_consumes = {"stale-restored": (3, 1),
-                    "stale-credit-ledger": (5, 2)}.get(name, (2, 0))
                 require(len(mock.models) == expected_models,
                         "unexpected sampling before native quota wait")
                 require(sum(request["path"].endswith("/consume") for request in mock.requests)
@@ -740,14 +928,28 @@ def case(executable, output, name):
                 and previous_post < latest["at"] < post["at"],
                 "redemption POST lacks a fresh authenticated usage GET")
         previous_post = post["at"]
+    if name in SUCCESS_CASES or name in ("paid-retry-refused", "spend-control-blocked"):
+        outputs = [item for item in mock.models[-1]["input"] if item.get("type") == "function_call_output"]
+        expected_calls = {CALL_ID, CALL_ID2} if name in TWO_TOOLS else {CALL_ID}
+        require(len(outputs) == len(expected_calls) and {item.get("call_id") for item in outputs} == expected_calls
+                and all("Plan updated" in str(item.get("output")) for item in outputs),
+                "completed plan outputs missing, duplicated or changed")
+        plans = [event for event in events if event.get("item", {}).get("type") == "todo_list"]
+        expected_plan = [{"text": PLAN, "completed": True}]
+        if name in TWO_TOOLS:
+            expected_plan.append({"text": PLAN2, "completed": True})
+        else:
+            require([event["type"] for event in plans] == ["item.started", "item.completed"],
+                    "completed plan was executed more than once")
+        require(plans[-1]["item"]["items"] == expected_plan, "completed plan was lost")
     if name in SUCCESS_CASES:
         expected_models = 2 if name in PREFLIGHT_CASES else (4 if name in ("stale-allowance-credit", "spent-retry-deadline") else 5 if name in TWO_TOOLS else 3)
         require(code == 0 and len(mock.models) == expected_models, "weekly reset did not recover")
         expected_consumes = 2 if name in ("stale-allowance-credit", "lost-ack-propagation", "pending-old-cycle", "repeated-same-cycle", "selected-no-credit") else 1
-        if name in ("natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES:
+        if name in (*FUNDED_CASES, "natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES:
             expected_consumes = 0
         require(len(consumes) == expected_consumes
-                and (mock.consumed or name in ("natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES),
+                and (mock.consumed or name in (*FUNDED_CASES, "natural-reset", "prepost-recovery-restored") or name in DEADLINE_OUTAGE_CASES),
                 "earned credit not consumed exactly once after pending reconciliation")
         if name in DEADLINE_OUTAGE_CASES:
             models = [request for request in mock.requests if request["path"] == "/v1/responses"]
@@ -818,6 +1020,24 @@ def case(executable, output, name):
             require(any(request["response"]["rate_limit"]["allowed"] is True
                         and request["at"] < retried["at"] for request in peer_usage),
                     "shared retry did not verify fresh restored allowance")
+        if name == "plan-renewed-before-credit-retry":
+            wall, retry = [request for request in mock.requests if request["path"] == "/v1/responses"][1:]
+            checks = [request for request in account_requests if wall["at"] < request["at"] < retry["at"]]
+            listings = [request for request in checks if request["path"].endswith("/rate-limit-reset-credits")]
+            require(len(listings) == 1 and listings[0].get("response") == {"available_count": 0, "credits": []},
+                    "renewal requires one empty reset listing between the wall and retry")
+            selection = checks.index(listings[0])
+            for phase, allowed in ((checks[:selection], False), (checks[selection + 1:], True)):
+                readings = [request["response"] for request in phase if request["path"].endswith("/usage")]
+                require(readings and all(read.get("credits", {}).get("has_credits") is True
+                        and read["rate_limit"]["allowed"] is allowed
+                        and read["rate_limit"]["limit_reached"] is (not allowed)
+                        and (read["rate_limit"]["secondary_window"]["used_percent"] < 100) is allowed
+                        for read in readings),
+                        "renewal requires funded exhausted usage before listing and restored usage before retry")
+            fresh = next(request for request in checks[selection + 1:] if request["path"].endswith("/usage"))
+            require(fresh["at"] - listings[0]["at"] < 29,
+                    "renewed plan was only discovered on a later quota poll")
         if name == "natural-reset":
             wall = next(request for request in mock.requests if "quotaResetUnix" in request)
             retry = [request for request in mock.requests if request["path"] == "/v1/responses"][-1]
@@ -947,35 +1167,41 @@ def case(executable, output, name):
                             and request.get("response", {}).get("rate_limit", {}).get("allowed") is True
                             and consume["at"] < request["at"] < retry["at"] for request in mock.requests),
                         "quota retry did not verify restored usage after its own reset")
-        outputs = [item for item in mock.models[-1]["input"] if item.get("type") == "function_call_output"]
-        expected_calls = {CALL_ID, CALL_ID2} if name in TWO_TOOLS else {CALL_ID}
-        require({item.get("call_id") for item in outputs} == expected_calls
-                and all("Plan updated" in str(item.get("output")) for item in outputs),
-                "completed plan outputs missing")
         require(types.count("turn.completed") == 1 and "turn.failed" not in types, "native turn failed")
         answers = [(index, event["item"].get("text")) for index, event in enumerate(events)
                    if event.get("type") == "item.completed"
                    and event.get("item", {}).get("type") == "agent_message"]
         require(len(answers) == 1 and answers[0][1] == ANSWER,
                 "weekly reset recovery lost, changed or repeated the fixture answer")
-        require(types.index("turn.started") < answers[0][0] < types.index("turn.completed"),
+        turn_start = types.index("turn.started")
+        answer_index = answers[0][0]
+        require(turn_start < answer_index < types.index("turn.completed"),
                 "weekly reset recovery answer is outside its original turn")
+        if name in (*FUNDED_CASES, *NOTICE_SUCCESS_CASES):
+            prefix = decision_prefix(name)
+            in_turn = notice_messages(events[turn_start + 1:answer_index], prefix)
+            require(in_turn and in_turn == notice_messages(events, prefix),
+                    "all recovery notices must appear in the original turn before the recovered answer")
         restored_after = consumes[-1]["at"] if consumes else next(
             request["at"] for request in mock.requests if "quotaResetUnix" in request)
-        require(name in DEADLINE_OUTAGE_CASES or any(request["path"].endswith("/usage")
+        require(name in (*PAID_RETRY_CASES, *DEADLINE_OUTAGE_CASES) or any(request["path"].endswith("/usage")
                     and request.get("response", {}).get("rate_limit", {}).get("allowed") is True
                     and request["at"] > restored_after for request in mock.requests),
                 "restored usage was not verified")
-        plans = [event for event in events if event.get("item", {}).get("type") == "todo_list"]
-        expected_plan = [{"text": PLAN, "completed": True}]
-        if name in TWO_TOOLS:
-            expected_plan.append({"text": PLAN2, "completed": True})
-        else:
-            require([event["type"] for event in plans] == ["item.started", "item.completed"],
-                    "completed plan was executed more than once")
-        require(plans[-1]["item"]["items"] == expected_plan, "completed plan was lost")
     else:
-        if name == "stale-credit-ledger":
+        if name == "paid-retry-refused":
+            require(cancelled and len(mock.models) == 3 and not consumes,
+                    "refused paid retry must stay pending without another retry or redemption")
+            require(mock.models[1]["input"] == mock.models[2]["input"], "paid retry changed retained input")
+            require(not any(event.get("item", {}).get("type") == "agent_message" for event in events),
+                    "refused paid retry reported an answer")
+            end = types.index("turn.failed") if "turn.failed" in types else len(events)
+            # Exec can finalize its plan display on interruption. The retry's model
+            # input above is the witness that the tool already completed.
+            start = types.index("turn.started")
+            require(notice_messages(events[start + 1:end], CREDIT_NOTICE_PREFIX),
+                    "paid retry notice must appear in the pending turn")
+        elif name == "stale-credit-ledger":
             require(len(mock.models) == 5 and len(consumes) == 2
                     and mock.spent == ["earned-weekly-credit", "earned-weekly-credit-2"],
                     "stale credit details caused reuse of a consumed credit")
@@ -1029,7 +1255,8 @@ def case(executable, output, name):
               "guardianTimedOut": guardian["timed_out"], "rawReturncode": guardian["returncode"],
               "authenticatedBackendRequests": len(account_requests),
               "modelRequests": len(mock.models), "consumeRequests": len(consumes),
-              "resetNotices": len(reset_notice_messages(events)),
+              "resetNotices": len(notice_messages(events, RESET_NOTICE_PREFIX)),
+              "creditNotices": len(notice_messages(events, CREDIT_NOTICE_PREFIX)),
               "postSelectionUsageReads": mock.post_selection_reads, "events": types}
     write_json(root / "result.json", result)
     return result
@@ -1068,6 +1295,8 @@ def main(args=None):
             executable = args.codex.resolve(strict=True)
         require(executable.is_file(), "Codex executable missing")
         report.update(executable=str(executable), binarySha256=file_sha256(executable))
+        if args.package:
+            check_package_executable(build, report["binarySha256"])
         for name in selected:
             report["failedCase"] = name
             result = case(executable, output, name)

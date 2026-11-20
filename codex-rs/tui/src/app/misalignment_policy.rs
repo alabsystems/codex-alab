@@ -138,6 +138,11 @@ impl App {
                 return;
             }
         };
+        // ALAB(misalignment-review): bind the person's acknowledgement to the displayed finding.
+        let acknowledgement = match &review.details.review_target {
+            Some(target) => serde_json::json!({"review_target": target}),
+            None => serde_json::json!({"timestamp": chrono::Utc::now().timestamp_millis()}),
+        };
         let mut params = TurnStartParams {
             thread_id: review.thread_id.to_string(),
             cyber_access_program: cyber_access_program.map(Into::into),
@@ -147,7 +152,7 @@ impl App {
             }],
             responsesapi_client_metadata: Some(HashMap::from([(
                 "misalignment_override".to_string(),
-                serde_json::json!({"timestamp": chrono::Utc::now().timestamp_millis()}).to_string(),
+                acknowledgement.to_string(),
             )])),
             ..Default::default()
         };
@@ -191,7 +196,7 @@ impl App {
         match result {
             Ok(response) => {
                 let store = &self.ensure_thread_channel(review.thread_id).store;
-                store.lock().await.active_turn_id = Some(response.turn.id.clone());
+                store.lock().await.set_active_turn_id(response.turn.id.clone()); // ALAB(misalignment-review): retire the reviewed finding as soon as the server accepts the continuation.
                 self.chat_widget.clear_misalignment_for_new_turn(
                     &response.turn.id,
                     MisalignmentTurnSource::AcknowledgedContinuation,

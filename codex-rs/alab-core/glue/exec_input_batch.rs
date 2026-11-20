@@ -141,6 +141,11 @@ pub(super) async fn capture(
     if frozen.thread != session.thread_id || frozen.turn != turn {
         return Err("accepted input suspension changed origin".into());
     }
+    session
+        .services
+        .local_agent_runtime
+        .require_confirmed_exec_results()
+        .map_err(|error| error.to_string())?;
     let mut input = frozen.queue.items.clone();
     let turn_count = input.len();
     let mailbox_options = {
@@ -497,6 +502,15 @@ impl PreparedExecInputBatch {
             .ok_or_else(|| "input batch frame was already attached".into())
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_turn_input_for_test(
+        &mut self,
+        thread: ThreadId,
+        turn: &str,
+    ) -> Result<Vec<TurnInput>, String> {
+        Ok(self.take(thread, turn)?.turn_input)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len() + self.idle.len()
     }
@@ -556,7 +570,7 @@ mod tests {
     fn fixture() -> (ExecInputBatch, ThreadId, ThreadId) {
         let root = ThreadId::new();
         let child = ThreadId::new();
-        let delivery = MessageDelivery::publish(root, &[]);
+        let delivery = MessageDelivery::restore_legacy_pending_for_test(root);
         let mail = TurnInput::InterAgentCommunication(crate::PendingAgentMessage::new(
             InterAgentCommunication::new(
                 AgentPath::root(),
@@ -774,7 +788,7 @@ mod tests {
                 "shared idle publication".into(),
                 false,
             ),
-            Some(MessageDelivery::publish(root, &[])),
+            Some(MessageDelivery::restore_legacy_pending_for_test(root)),
         ));
         let root_group = vec![mail.clone(), mail.clone()];
         let child_group = vec![mail];

@@ -224,6 +224,12 @@ impl Round {
         true
     }
 
+    /// This due notice may wake the idle thread again once the host can carry it.
+    pub(crate) fn retry_wake(&mut self) {
+        self.woke = None;
+        self.offered = None;
+    }
+
     /// THE REFERENCE OF THE NOTICE OFFERED NOW to the decision of thread `session` (aterm's
     /// `ready_marker`: FNV-1a/64 of the session, the target and a salt, its low 32 bits), kept
     /// until it is typed ([`Round::noticed`]).
@@ -245,16 +251,21 @@ impl Round {
     }
 
     /// A notice went in at `now` with `text`: counted where it carries the reference offered.
-    pub fn noticed(&mut self, text: &str, now: Instant) {
-        let Some(marker) = self.offered.take().filter(|m| text.contains(m.as_str())) else {
-            return;
-        };
+    pub fn noticed(&mut self, text: &str, now: Instant) -> bool {
+        if !self
+            .offered
+            .as_ref()
+            .is_some_and(|m| text.contains(m.as_str()))
+        {
+            return false;
+        }
         self.asks = self.asks.saturating_add(1);
         self.asked_at = Some(now);
-        self.marker = Some(marker);
+        self.marker = self.offered.take();
         self.matching = true;
         self.ready = false;
         self.reask_now = false;
+        true
     }
 
     /// The notice's turn did not start: the round stands as it did before [`Round::noticed`]

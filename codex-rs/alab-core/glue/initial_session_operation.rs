@@ -49,6 +49,8 @@ enum Reply {
 const MAX_PENDING_REPLAYS: usize = 128;
 #[path = "client_construction_registry.rs"]
 mod client_registry;
+#[path = "saved_resume_receipts.rs"]
+mod saved_resume_receipts;
 #[path = "selected_primary_owner.rs"]
 pub(crate) mod selected_primary;
 #[path = "retained_side_scope.rs"]
@@ -65,6 +67,7 @@ struct State {
     accepted: Option<Arc<Scope>>,
     next_claim: Option<String>,
     clients: HashMap<String, Arc<Scope>>,
+    retired_saved_resumes: saved_resume_receipts::Receipts,
     preparations: HashMap<String, Arc<client_registry::PreparedClient>>,
 }
 pub(crate) struct InitialSessionOperation {
@@ -223,6 +226,7 @@ impl InitialSessionOperation {
                 accepted: None,
                 next_claim: None,
                 clients: HashMap::new(),
+                retired_saved_resumes: saved_resume_receipts::Receipts::default(),
                 preparations: HashMap::new(),
             }),
         })
@@ -533,7 +537,7 @@ impl InitialSessionOperation {
                     processor: self.processor.clone(),
                     binding: None,
                     context: context.clone(),
-                    frozen: frozen::FrozenRequest::client(claim),
+                    frozen: frozen::FrozenRequest::client(claim, prepared.saved_opening()),
                     arguments,
                     metadata,
                     progress: Arc::new(Mutex::new(Progress {
@@ -631,6 +635,7 @@ impl InitialSessionOperation {
         if let Some(actual) = &captured {
             self.release_side_view(scope, actual);
         } // Terminal exact Core only; drop live owner outside registry locks.
+        let receipt = scope.retired_saved_resume(offer);
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state
@@ -638,6 +643,18 @@ impl InitialSessionOperation {
                 .get(&offer.claim)
                 .is_some_and(|actual| Arc::ptr_eq(actual, scope))
             {
+                if let Some((key, receipt)) = receipt
+                    && !state.closed
+                    && self.open().is_ok()
+                {
+                    let progress = scope
+                        .progress
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if !progress.worker_lost && !progress.selection_unknown {
+                        state.retired_saved_resumes.insert(key, receipt);
+                    }
+                }
                 (
                     state.clients.remove(&offer.claim),
                     state
@@ -740,11 +757,13 @@ impl InitialSessionOperation {
     /// Close new acceptance, join the SAME workers and original nested startup
     /// tasks BEFORE actual processor.shutdown_threads. Late births stay owned.
     fn stop(&self) {
-        {
+        let receipts = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.closed = true;
             self.tracker.close();
-        }
+            std::mem::take(&mut state.retired_saved_resumes)
+        };
+        drop(receipts);
         self.selection_changed.notify_waiters();
     }
     pub(crate) fn release_primary_after_threads(&self) {
@@ -781,7 +800,7 @@ impl InitialSessionOperation {
             .iter()
             .chain(state.clients.values())
             .any(|scope| {
-                if (scope.side_close_unknown() || scope.unknown_side_rollback()) {
+                if scope.side_close_unknown() || scope.unknown_side_rollback() {
                     return true;
                 }
                 let progress = scope
@@ -1402,7 +1421,7 @@ impl Scope {
                         metadata.name.clone(),
                         metadata.version.clone(),
                         metadata.extensions.clone(),
-                        alab_task_start::StartContext::Client(self.context.clone()),
+                        alab_task_start::StartContext::Client(Box::new(self.context.clone())),
                     ))
                     .await
                 }
@@ -1632,6 +1651,10 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "initial_selection_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(all(test, unix))]
+#[path = "retained_side_guard_test_fixture.rs"]
+mod side_guard_test_fixture;
 
 #[cfg(all(test, unix))]
 #[path = "client_start_policy_controls.rs"]

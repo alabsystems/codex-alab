@@ -38,7 +38,7 @@ pub(crate) async fn prepare(launch: OriginalLaunch, oss: bool) -> io::Result<Own
     }
     let controller = codex_alab_tui::frontend_control::open().await?;
     let settings = StartupSettings::new(&launch.arguments, &launch.environment)?;
-    let mut starting = StartingFrontend::new(controller, settings)?;
+    let mut starting = StartingFrontend::new(controller, settings).await?;
     let target = starting.observe().await?;
     if oss {
         // The original picker itself uses the existing protected input owner;

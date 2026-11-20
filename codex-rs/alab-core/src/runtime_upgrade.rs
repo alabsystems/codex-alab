@@ -11,7 +11,8 @@ use std::sync::Arc;
 pub type LoadFuture<'a> =
     Pin<Box<dyn Future<Output = io::Result<Arc<dyn Continuation>>> + Send + 'a>>;
 pub trait Host: Send + Sync {
-    fn load<'a>(&'a self, primary: &'a str, state: &'a [u8]) -> LoadFuture<'a>;
+    /// Bind activation to the package receipt already checked by this process.
+    fn load<'a>(&'a self, primary: &'a str, state: &'a [u8], build: u64) -> LoadFuture<'a>;
 }
 pub trait Continuation: Send + Sync {
     /// Check this exact native operation before each restored member's admission.

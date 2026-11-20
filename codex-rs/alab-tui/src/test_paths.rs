@@ -3,7 +3,7 @@
 
 //! Short, private fixture roots for native socket and path-rendering tests.
 
-#![cfg(feature = "test-support")]
+#![cfg(any(test, feature = "test-support"))]
 
 #[cfg(unix)]
 fn private_tempdir_in(

@@ -253,6 +253,7 @@ mod link_hover;
 mod loaded_threads;
 mod managed_worktree_creation;
 mod misalignment_policy;
+#[cfg(unix)] #[path = "../../alab-tui/glue/fleet_model_app.rs"] mod alab_model_policy; // ALAB(fleet-model): authenticated same-login application settings.
 mod model_defaults;
 mod new_session;
 mod quick_dials;
@@ -275,6 +276,10 @@ mod reasoning_replay;
 mod recap;
 mod reconnect;
 mod replay_filter;
+#[path = "../../alab-tui/glue/turn_chronology.rs"]
+mod turn_chronology; // ALAB(misalignment-review): establish lifecycle order before replay and live delivery.
+#[path = "../../alab-tui/glue/misalignment_terminal_hold.rs"]
+mod misalignment_terminal_hold; // ALAB(misalignment-review): retain the hold when the bounded notification buffer advances.
 mod resize_reflow;
 mod resume_config;
 mod resume_preparation;
@@ -885,6 +890,7 @@ impl App {
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         #[cfg(unix)] let retained_draw_before = tui.alab_draw_checkpoint(); // ALAB(retained-frontier): actual same-Tui successful draw, including overlays.
+        if self.alab_observe_interface_pointer(tui, &event) { return Ok(AppRunControl::Continue); } // ALAB(interface): track visible switch hover and guard a closing picker's second click.
         self.transcript_view
             .sync_patch_approval(self.chat_widget.current_patch_approval());
         // A chooser action must never decide a modal that has not been painted yet.
@@ -930,6 +936,7 @@ impl App {
             )
             && tui.shortcut_hud_contains(*mouse)
         {
+            self.chat_widget.alab_picker_mouse_covered_by_hud(*mouse); // ALAB(interface): the HUD owns its gesture even when a picker sits behind it.
             if matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)) {
                 self.cancel_pending_key_chord();
                 tui.frame_requester().schedule_frame();
@@ -1156,6 +1163,7 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
         self.cancel_primed_browsing_for_event(&event);
+        if self.alab_dispatch_picker_mouse(tui, &event)? { return Ok(AppRunControl::Continue); } // ALAB(interface): the picker and its disclosure own their painted cells before transcript selection in both renderers.
         let voice_toggle = |app: &Self, key: KeyEvent| {
             key.kind == KeyEventKind::Press
                 && app
@@ -1255,6 +1263,7 @@ impl App {
                     self.reconnect.presentation = reconnect::ReconnectPresentation::Conversation;
                 }
             } else {
+                if self.alab_open_disconnected_autopilot(*key) { return Ok(AppRunControl::Continue); } // ALAB(interface): the host-local picker shortcut also works while the server reconnects.
                 if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
                     self.reconnect.presentation = reconnect::ReconnectPresentation::Conversation;
                 }
@@ -1434,15 +1443,16 @@ impl App {
     }
 
     fn prepare_frame_images(&mut self) -> Option<crate::pets::ImageProtocol> {
-        let protocol = self.chat_widget.pet_image_support().protocol().filter(|_| {
-            !self.app_server_target.uses_remote_workspace()
-                && crate::projectless::has_only_local_environments(&self.environment_manager)
-        });
+        let protocol = self.local_image_protocol(); // ALAB(image-history): native and fullscreen image previews share the workspace boundary.
         self.chat_widget.prepare_composer_images(protocol);
         protocol
     }
 
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
+        alab_session::render_runtime_editor_frame(self, tui, screen_size) // ALAB(upgrade): bind restored editor layout to a successful draw on either screen.
+    }
+
+    fn paint_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
         alab_session::observe(self); // ALAB(session): the session record and the autopilot see each frame
         self.chat_widget
             .set_sparkle_terminal_focus(tui.is_terminal_focused());
@@ -1495,7 +1505,7 @@ impl App {
                 }
             })?;
             Ok(rendered_area)
-        }).inspect(|_| alab_session::runtime_editor_drew(self)) // ALAB(upgrade): native editor layout precedes activation and input replay.
+        })
     }
 
     fn with_chat_widget_frame<T>(

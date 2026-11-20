@@ -123,6 +123,7 @@ impl super::ChatComposer {
                     .then_some(key_hint::plain(KeyCode::Left).into()),
                 toggle_shortcuts: self.footer.toggle_shortcuts_key,
                 queue: self.footer.queue_key,
+                open_autopilot: self.footer.open_autopilot_key, // ALAB(interface): pass the current picker binding to the footer.
                 insert_newline: self.footer.insert_newline_key,
                 external_editor: self.footer.external_editor_key,
                 edit_previous: Some(key_hint::plain(KeyCode::Esc).into()),
@@ -397,6 +398,7 @@ pub(super) struct FooterState {
     pub(super) focus_activity_key: Option<ShortcutHint>,
     pub(super) insert_newline_key: Option<ShortcutHint>,
     pub(super) queue_key: Option<ShortcutHint>,
+    pub(super) open_autopilot_key: Option<ShortcutHint>, // ALAB(interface): retain the configured picker shortcut with other footer hints.
     pub(super) toggle_shortcuts_key: Option<ShortcutHint>,
     pub(super) history_search_key: Option<ShortcutHint>,
     pub(super) reasoning_down_key: Option<ShortcutHint>,

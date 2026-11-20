@@ -133,6 +133,7 @@ async fn interrupted_reclamation_releases_writer_and_resumes_without_data_loss()
             pages: PASS_PAGES,
         },
         &receiver,
+        true, // ALAB(diagnostic-storage): this fixture exercises the diagnostic database's WAL writer.
     )
     .await?;
     assert!(receiver.has_changed()?, "must reach the vacuum commit");

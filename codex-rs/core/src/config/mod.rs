@@ -649,6 +649,8 @@ pub struct Config {
 
     /// Optional override of model selection.
     pub model: Option<String>,
+    pub alab_fresh_tui_preset: bool, // ALAB(defaults): set by the interactive thread creator, never from a config file.
+    pub alab_saved_model_can_follow: Option<String>, // ALAB(defaults): remember the stored slug so changing a cloned config still selects an exact model.
 
     /// Default Daybreak preference for new threads and non-interactive turns.
     pub daybreak_enabled: bool,
@@ -1084,6 +1086,7 @@ pub struct Config {
     /// Optional full model catalog loaded from `model_catalog_json`.
     /// When set, this replaces the bundled catalog for the current process.
     pub model_catalog: Option<ModelsResponse>,
+    pub alab_packaged_kimi_catalog: bool, // ALAB(kimi): distinguish the provider default from an explicit catalog when switching providers.
 
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
@@ -1680,6 +1683,21 @@ async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<C
 }
 
 impl Config {
+    pub(crate) fn thread_persistence_metadata(
+        &self,
+    ) -> codex_thread_store::ThreadPersistenceMetadata {
+        use codex_protocol::protocol::ThreadMemoryMode;
+        codex_thread_store::ThreadPersistenceMetadata {
+            cwd: Some(self.cwd.to_path_buf()),
+            model_provider: self.model_provider_id.clone(),
+            memory_mode: if self.memories.generate_memories {
+                ThreadMemoryMode::Enabled
+            } else {
+                ThreadMemoryMode::Disabled
+            },
+        }
+    }
+
     /// Capture storage and sync preparation use one session-static rollout choice.
     pub(crate) fn guardian_context_budgeting(&self) -> codex_guardian_context::ContextBudgeting {
         if self.guardian_sync_elastic_budget.is_some() {
@@ -4197,6 +4215,7 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
+        let alab_saved_model_can_follow = alab_saved_preferences::from_layers(&config_layer_stack, model.as_deref(), cfg.model.as_deref()); // ALAB(defaults): distinguish global defaults from explicit launch selections.
         let model = model.or(cfg.model);
         let notices = cfg.notice.unwrap_or_default();
         let service_tier = match service_tier_override {
@@ -4548,6 +4567,8 @@ impl Config {
         let mut config = Self {
             plugins: cfg.plugins,
             prefer_mxc,
+            alab_fresh_tui_preset: false, // ALAB(defaults): ordinary Core and external clients keep their own collaboration instructions.
+            alab_saved_model_can_follow, // ALAB(defaults): preserve model provenance through startup and thread restoration.
             model,
             daybreak_enabled: cfg.daybreak.unwrap_or(false),
             service_tier,
@@ -4706,6 +4727,7 @@ impl Config {
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
+            alab_packaged_kimi_catalog: cfg.model_catalog_json.is_none() && model_catalog.is_some(), // ALAB(kimi): only the packaged catalog belongs to one provider.
             model_catalog,
             model_verbosity: cfg.model_verbosity,
             chatgpt_base_url_is_explicit,
@@ -5299,3 +5321,6 @@ mod running_version_tests; // ALAB(version): actual private config constructor
 #[path = "../../../alab-core/glue/exec_configuration.rs"]
 mod exec_configuration;
 pub use exec_configuration::ExecConfiguration;
+
+#[path = "../../../alab-core/glue/saved_model_preferences.rs"] mod alab_saved_preferences; // ALAB(defaults): interpret model provenance at shared configuration boundaries.
+#[path = "../../../alab-core/glue/family_config.rs"] mod alab_family_config; // ALAB(defaults): one family policy for startup, presentation and refresh.

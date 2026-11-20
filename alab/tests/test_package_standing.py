@@ -1,8 +1,8 @@
 # Copyright 2026 Andrew Yates
 # SPDX-License-Identifier: Apache-2.0
-"""A package qualifies a run only by the record a certified packager writes.
+"""A package qualifies a smoke run by its packager's recorded evidence.
 
-fixtures/package-standing/certified-native.json is the signed 0.7.0 package's own
+fixtures/package-standing/native-layout.json is the signed 0.7.0 package's own
 alab-build.json (codex-release's native layout) with its sysroot replaced by a path that
 names no home and its compiler id recomputed; certified-package-sh.json has the keys
 alab/package.sh's alab_build_json and proof_build.py write. No package.sh package with a
@@ -33,7 +33,7 @@ TRIAL = {"attestation": "unverified-development-build", "source": "2" * 40,
          "built_at": "2026-11-13T09:30:00-08:00", "evidence": "written by the unit test"}
 
 
-def certified(name="certified-native.json"):
+def qualifying(name="native-layout.json"):
     return json.loads((FIXTURES / name).read_text())
 
 
@@ -68,7 +68,7 @@ def identified(record):
 
 class StandingTests(unittest.TestCase):
     def test_changed_or_malformed_shipping_byte_observations_do_not_qualify(self):
-        record = certified("certified-package-sh.json")
+        record = qualifying("certified-package-sh.json")
         for binary in ("codex", "codex-code-mode-host", "codex-exec-server"):
             for observation in ({"built_sha256": "a" * 64, "packaged_sha256": "b" * 64},
                                 {"built_sha256": "a" * 64}, "not an observation"):
@@ -78,21 +78,34 @@ class StandingTests(unittest.TestCase):
                     self.assertIsNotNone(standing.not_qualifying(candidate))
                     self.assertFalse(standing.summary(candidate)["qualifies"])
 
-    def test_the_records_both_certified_packagers_write_qualify(self):
-        native = certified()
+    def test_qualifying_records_report_the_evidence_each_packager_supplies(self):
+        native = qualifying()
         # The signed record's own keys: what the predicate may rely on.
         self.assertEqual(set(native), {"baseline", "build_observation_sha256", "client_version",
             "compiler", "packager", "ripgrep", "ripgrep_build_observation_sha256",
             "ripgrep_features", "source", "target", "updater", "upstream", "version"})
         self.assertEqual(set(native["compiler"]), {"admitted", "binaries_sha256", "id", "rustc",
                                                    "rustc_vV", "sysroot"})
-        for name in ("certified-native.json", "certified-package-sh.json"):
+        script = qualifying("certified-package-sh.json")
+        # A separate lane label has no source or executable binding of its own.
+        native_lane = changed(native, "compiler", "lane", value="certify")
+        combined = changed(native, "compiler", "verification", value=script["compiler"]["verification"])
+        for name, record, observations, certification in (
+                ("native", native, True, False), ("native lane label", native_lane, True, False),
+                ("package.sh", script, False, True), ("both", combined, True, True)):
             with self.subTest(name=name):
-                record = certified(name)
                 self.assertIsNone(standing.not_qualifying(record))
-                self.assertEqual(standing.summary(record), {
-                    "qualifies": True, "why": standing.QUALIFIES, "trial": None})
-        self.assertIn("no signature was verified", standing.QUALIFIES)
+                report = standing.summary(record)
+                self.assertIs(report["qualifies"], True)
+                self.assertIsNone(report["trial"])
+                why = report["why"]
+                self.assertEqual("product and ripgrep build observations" in why, observations)
+                self.assertEqual("certified" in why, certification)
+                self.assertEqual("compiler.verification" in why, certification)
+                self.assertEqual("including dependencies" in why, certification)
+                self.assertEqual("report SHA-256" in why, certification)
+                self.assertEqual("matching built and packaged SHA-256" in why, certification)
+                self.assertIn("signature verification to atpkg", why)
 
     def test_a_trial_record_never_qualifies(self):
         record = trial_record()
@@ -100,22 +113,22 @@ class StandingTests(unittest.TestCase):
         self.assertIn("`trial` object", why)
         self.assertIn("'unverified-development-build'", why)
         self.assertEqual(standing.summary(record), {"qualifies": False, "why": why, "trial": TRIAL})
-        # Not even on a record that is certified in every other field, whatever it holds.
+        # Not even on an otherwise qualifying record, whatever it holds.
         for marker in (TRIAL, {}, None, False, "no"):
             with self.subTest(marker=marker):
-                record = dict(certified(), trial=marker)
+                record = dict(qualifying(), trial=marker)
                 self.assertIn("`trial` object", standing.not_qualifying(record))
                 self.assertEqual((standing.summary(record)["qualifies"],
                                   standing.summary(record)["trial"]), (False, marker))
-        # Nor is a trial without its marker taken for certified: its compiler says so.
+        # Nor is a trial without its marker taken for qualifying: its compiler says so.
         unmarked = changed(trial_record(), "trial", drop=True)
         self.assertEqual(standing.not_qualifying(unmarked), "its version '0.8.0-trial+g222222222' "
                          "names a trial")
         self.assertEqual(standing.not_qualifying(dict(unmarked, version="0.8.0")),
                          "its compiler was not admitted (compiler.admitted is not true)")
 
-    def test_a_certified_record_must_hold_every_field_a_certified_packager_writes(self):
-        native, script = certified(), certified("certified-package-sh.json")
+    def test_a_qualifying_record_must_hold_every_required_field(self):
+        native, script = qualifying(), qualifying("certified-package-sh.json")
         other = native["compiler"]["rustc_vV"].replace("binary: trustc", "binary: rustc")
         refused = {
             "admitted false": (changed(native, "compiler", "admitted", value=False), "not admitted"),
@@ -202,7 +215,7 @@ class StandingTests(unittest.TestCase):
     def test_a_package_sh_record_must_carry_its_certified_build(self):
         # package.sh wrote `admitted: true` while it still built on the unverified lane,
         # until 18a4e8404b (2026-11-12): such a record says nothing of a certified build.
-        script = certified("certified-package-sh.json")
+        script = qualifying("certified-package-sh.json")
         self.assertIsNotNone(re.fullmatch(r"[0-9a-f]{40}", script["packager"]))
         before = changed(script, "compiler", "verification", drop=True)
         self.assertEqual((before["compiler"]["admitted"], "trial" in before), (True, False))
@@ -212,7 +225,7 @@ class StandingTests(unittest.TestCase):
         self.assertEqual(standing.summary(before), {"qualifies": False, "why": why, "trial": None})
         # The native layout's evidence is its own: its record needs no `verification`,
         # and a package.sh record cannot borrow the native layout's fields instead.
-        native = certified()
+        native = qualifying()
         self.assertNotIn("verification", native["compiler"])
         self.assertIsNone(standing.not_qualifying(native))
         borrowed = dict(before, build_observation_sha256=native["build_observation_sha256"],
@@ -228,8 +241,8 @@ class StandingTests(unittest.TestCase):
     def test_a_record_that_is_not_unicode_text_is_refused_and_not_raised_on(self):
         # json.loads takes half of a surrogate pair; UTF-8, and so the compiler id, does not.
         half = json.loads('"\\ud800"')
-        native = certified()
-        why = "its record holds text that is not Unicode: no certified packager wrote it"
+        native = qualifying()
+        why = "its record holds text that is not Unicode"
         for name, record in {
                 "sysroot": changed(native, "compiler", "sysroot", value="/opt/" + half),
                 "rustc -vV": changed(native, "compiler", "rustc_vV",
@@ -250,7 +263,7 @@ class StandingTests(unittest.TestCase):
 
     def test_an_unknown_or_malformed_record_does_not_qualify(self):
         stand_in = {"version": "0.0.0-stand-in", "target": "stand-in", "source": "0" * 40}
-        refused = {"nothing": None, "a list": [certified()], "text": "certified", "a number": 1,
+        refused = {"nothing": None, "a list": [qualifying()], "text": "certified", "a number": 1,
                    "true": True, "an empty object": {}, "a stand-in": stand_in}
         for name, record in refused.items():
             with self.subTest(name=name):
@@ -308,21 +321,21 @@ class MatrixTests(unittest.TestCase):
         refused = {
             "trial": (trial_record(), None, "its record carries a `trial` object "
                       "(attestation 'unverified-development-build')"),
-            "marked": (dict(certified(), trial={}), None, "its record carries a `trial` object"),
-            "unadmitted": (changed(certified(), "compiler", "admitted", value=False), None,
+            "marked": (dict(qualifying(), trial={}), None, "its record carries a `trial` object"),
+            "unadmitted": (changed(qualifying(), "compiler", "admitted", value=False), None,
                            "its compiler was not admitted"),
             "unknown": (stand_in, None, "its record names no compiler"),
-            "unverified": (changed(certified("certified-package-sh.json"), "compiler",
+            "unverified": (changed(qualifying("certified-package-sh.json"), "compiler",
                                    "verification", drop=True), None,
                            "its record carries no build verification"),
-            "unhashable": (changed(certified(), "compiler", "sysroot",
+            "unhashable": (changed(qualifying(), "compiler", "sysroot",
                                    value="/opt/" + json.loads('"\\ud800"')), None,
                            "its record holds text that is not Unicode"),
-            "a-list": ([certified()], {"version": "0.7.0", "target": "t", "entrypoint": "bin/codex"},
+            "a-list": ([qualifying()], {"version": "0.7.0", "target": "t", "entrypoint": "bin/codex"},
                        "its records do not load: TypeError"),
             "no-record": (None, {"version": "0.7.0", "target": "t", "entrypoint": "bin/codex"},
                           "its records do not load: RuntimeError: missing regular alab-build.json"),
-            "disagreeing": (certified(), {"version": "0.7.1", "target": certified()["target"],
+            "disagreeing": (qualifying(), {"version": "0.7.1", "target": qualifying()["target"],
                                           "entrypoint": "bin/codex"},
                             "its records do not load: RuntimeError: package versions disagree"),
         }

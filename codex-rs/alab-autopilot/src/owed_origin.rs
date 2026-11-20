@@ -70,7 +70,7 @@ fn policy_instruction(text: Option<&str>, history: &NativeHistory<'_>) -> bool {
         && history.saw_regular_input
         && !history.compacting
         && matches!(history.point, NativePoint::Complete(complete)
-            if complete.error.as_ref().and_then(|error| error.codex_error_info.as_ref())
+            if complete.error.and_then(|error| error.codex_error_info.as_ref())
                 == Some(&CodexErrorInfo::CyberPolicy))
         && text
             .and_then(|text| text.strip_prefix(POLICY_CONTINUE))
@@ -115,7 +115,7 @@ fn bind(
     let current = origin(history)?;
     if !landed
         && matches!(history.point, NativePoint::Complete(complete)
-        if complete.error.as_ref().is_some_and(ErrorEvent::affects_turn_status))
+        if complete.error.is_some_and(ErrorEvent::affects_turn_status))
     {
         // Only a wall try or a separately validated fixed policy instruction may retain
         // intent at its own failed point. An ordinary act, another point or a legacy

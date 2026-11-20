@@ -104,6 +104,18 @@ fn fields(line: &str) -> Result<BTreeMap<&str, &str>, Error> {
     }
     Ok(values)
 }
+fn checkpoint_limit(checkpoint: &serde_json::Value) -> Result<Option<&str>, Error> {
+    checkpoint
+        .get("limit")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|id| codex_alab_core::wall_kind::valid_limit_id(id))
+                .ok_or_else(bad)
+        })
+        .transpose()
+}
+
 fn parse(line: &str) -> Result<Grant, Error> {
     let f = fields(line)?;
     if f.len() != 12 {
@@ -140,6 +152,7 @@ fn parse(line: &str) -> Result<Grant, Error> {
     let auth_path = PathBuf::from(decode(get("auth")?)?);
     let checkpoint: serde_json::Value =
         serde_json::from_str(&decode(get("checkpoint")?)?).map_err(|_| bad())?;
+    checkpoint_limit(&checkpoint)?;
     if !ticket.valid()
         || !origin.valid()
         || !target.valid()
@@ -207,7 +220,28 @@ pub async fn reconcile_arm(
     destination: &Identity,
     checkpoint: &serde_json::Value,
 ) -> Result<Grant, Error> {
+    if client.holds_claim() {
+        return Err(bad());
+    }
     arm_using(client, origin, destination, checkpoint, false).await
+}
+
+/// Recover a lost arm acknowledgement even if the provider wait has since ended. The
+/// fresh connection can only match existing custody; give its ticket back if it is stale.
+pub async fn reconcile_arm_if_current(
+    client: &Client,
+    origin: &Origin,
+    destination: &Identity,
+    checkpoint: &serde_json::Value,
+    current: impl FnOnce() -> bool,
+) -> Result<Option<Grant>, Error> {
+    let grant = reconcile_arm(client, origin, destination, checkpoint).await?;
+    if current() {
+        Ok(Some(grant))
+    } else {
+        cancel(client, &grant.ticket).await?;
+        Ok(None)
+    }
 }
 
 async fn arm_using(
@@ -232,8 +266,22 @@ async fn arm_using(
     if json.len() > 64 * 1024 {
         return Err(bad());
     }
-    let reply = client.on_self(&format!("codex-exec-handoff arm thread={} turn={} source_account={} source_user={} target_account={} target_user={} checkpoint={}",
-        origin.thread, origin.turn, origin.identity.account, origin.identity.user, destination.account, destination.user, encode(&json))).await?;
+    let mut request = format!(
+        "codex-exec-handoff arm thread={} turn={} source_account={} source_user={} target_account={} target_user={} checkpoint={}",
+        origin.thread,
+        origin.turn,
+        origin.identity.account,
+        origin.identity.user,
+        destination.account,
+        destination.user,
+        encode(&json)
+    );
+    let limit = checkpoint_limit(checkpoint)?;
+    if limit.is_some() {
+        client.harness_policy().await?;
+    }
+    crate::account_recovery::append_exec_limit(client, &mut request, limit)?;
+    let reply = client.on_self(&request).await?;
     let grant = parse(&reply.status)?;
     if grant.stage != Stage::Armed
         || grant.origin != *origin
@@ -519,6 +567,158 @@ mod tests {
             encode(b"/private/accounts/new/auth.json"),
             encode(checkpoint.to_string().as_bytes())
         )
+    }
+
+    #[tokio::test]
+    async fn named_exec_prepare_arm_and_reconciliation_keep_one_bucket() {
+        use crate::exec_selection::Asked;
+        use crate::exec_selection::Selection;
+        use crate::exec_selection::ask;
+        use codex_alab_core::wall_kind::WallKind;
+        let dir = tempfile::tempdir().unwrap();
+        let host = crate::fake::FakeAterm::start(dir.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap();
+        host.set_policy_key("codex_rotation", "1");
+        host.set_policy_key("accounts", "wall");
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        client.harness_policy().await.unwrap();
+        client.claim().await.unwrap();
+        let ordinary_reply = reply("armed");
+        let ordinary = parse(&ordinary_reply).unwrap();
+        let origin = &ordinary.origin;
+        let target = &ordinary.destination;
+        let limit = "codex_other";
+        let model = WallKind::Limit(limit.into());
+        let mut checkpoint = ordinary.checkpoint.clone();
+        checkpoint["limit"] = limit.into();
+        let args = format!(
+            "thread={} turn={} source_account={} source_user={}",
+            origin.thread, origin.turn, origin.identity.account, origin.identity.user
+        );
+        let dest = format!(
+            "target_account={} target_user={}",
+            target.account, target.user
+        );
+        let prefix = format!("@{} codex-exec-handoff", host.sid());
+        let prepare = format!("{prefix} prepare {args} limit={limit}");
+        let checkpoint_hex = encode(checkpoint.to_string().as_bytes());
+        let armed = format!("{prefix} arm {args} {dest} checkpoint={checkpoint_hex} limit={limit}");
+        let named_reply = ordinary_reply.replace(
+            &encode(ordinary.checkpoint.to_string().as_bytes()),
+            &checkpoint_hex,
+        );
+        let moves = || {
+            host.requests()
+                .into_iter()
+                .filter(|line| {
+                    line.contains("codex-exec-handoff prepare ")
+                        || line.contains("codex-exec-handoff arm ")
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // A client that already holds the ordinary claim checks both current grants.
+        for (general, exec) in [("0", "0"), ("1", "0"), ("0", "1"), ("1", "yes")] {
+            host.set_policy_key("codex_rotation_limits", general);
+            host.set_policy_key("codex_exec_rotation_limits", exec);
+            assert!(matches!(ask(&client, origin, &model).await, Asked::Unasked));
+            assert!(arm(&client, origin, target, &checkpoint).await.is_err());
+            assert!(
+                reconcile_arm(&client, origin, target, &checkpoint)
+                    .await
+                    .is_err()
+            );
+            assert!(moves().is_empty());
+        }
+        host.set_policy_key("codex_rotation_limits", "1");
+        host.set_policy_key("codex_exec_rotation_limits", "1");
+        assert!(matches!(
+            ask(&client, origin, &WallKind::Limit("Bad id".into())).await,
+            Asked::Unasked
+        ));
+        for invalid in [serde_json::Value::Null, "codex".into(), "bad id".into()] {
+            let mut bad = checkpoint.clone();
+            bad["limit"] = invalid;
+            assert!(arm(&client, origin, target, &bad).await.is_err());
+        }
+        assert!(moves().is_empty());
+        host.reply_once(
+            &prepare,
+            &format!("OK codex-exec-handoff state=selected {args} {dest}\n"),
+        );
+        let Asked::Answered(Ok(Selection::Selected {
+            origin: selected,
+            destination,
+        })) = ask(&client, origin, &model).await
+        else {
+            panic!("named destination not selected")
+        };
+        assert!(selected == *origin && destination == *target);
+        host.reply_once(&armed, &named_reply);
+        let grant = arm(&client, &selected, &destination, &checkpoint)
+            .await
+            .unwrap();
+        assert_eq!(grant.checkpoint, checkpoint);
+
+        let reconnected = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        assert!(!reconnected.holds_claim());
+        host.reply_once(&armed, &named_reply);
+        let grant = reconcile_arm(&reconnected, origin, target, &checkpoint)
+            .await
+            .unwrap();
+        assert_eq!(grant.checkpoint, checkpoint);
+        host.reply_once(&armed, &ordinary_reply);
+        assert!(
+            reconcile_arm(&reconnected, origin, target, &checkpoint)
+                .await
+                .is_err()
+        );
+        let cancel_request = format!(
+            "{prefix} cancel id={} cap={}",
+            grant.ticket.id, grant.ticket.capability
+        );
+        host.reply_once(&armed, &named_reply);
+        host.reply_once(&cancel_request, "OK codex-exec-handoff state=cancelled\n");
+        assert!(
+            reconcile_arm_if_current(&reconnected, origin, target, &checkpoint, || false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(host.requests().iter().any(|line| line == &cancel_request));
+        assert!(
+            reconcile_arm(&client, origin, target, &checkpoint)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            moves(),
+            [prepare, armed.clone(), armed.clone(), armed.clone(), armed]
+        );
+
+        let ticket = &grant.ticket;
+        let command = |verb| format!("{prefix} {verb} id={} cap={}", ticket.id, ticket.capability);
+        host.reply_once(
+            &command("load"),
+            &named_reply.replace("state=armed", "state=loaded"),
+        );
+        let loaded = load(&reconnected, ticket).await.unwrap();
+        assert_eq!(loaded.checkpoint, checkpoint);
+        host.reply_once(
+            &command("consume"),
+            &ordinary_reply.replace("state=armed", "state=consumed"),
+        );
+        assert!(consume(&reconnected, &loaded).await.is_err());
+        host.reply_once(
+            &command("consume"),
+            &named_reply.replace("state=armed", "state=consumed"),
+        );
+        assert!(consume(&reconnected, &loaded).await.is_ok());
     }
 
     #[test]

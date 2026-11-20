@@ -68,7 +68,7 @@ class UnitRecordObservationsTests(unittest.TestCase):
             state_dir = Path(temporary)
             status = 101 if failed else 0
             (state_dir / "round-0.status").write_text(str(status))
-            args = SimpleNamespace(state=str(state_dir), status=status, log="unused.log",
+            args = SimpleNamespace(state=str(state_dir), status=status, log="unused.log", sequential_output=False,
                                    out=str(state_dir / "out.json"))
             with mock.patch.object(RESULTS, "os", api), \
                     mock.patch.object(RESULTS, "load", side_effect=lambda path:

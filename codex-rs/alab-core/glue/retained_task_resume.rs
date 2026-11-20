@@ -300,8 +300,8 @@ pub(super) async fn probe_loaded(
     {
         RunningThreadResumeResult::BackendHandled => Ok(ControlFlow::Break(())),
         RunningThreadResumeResult::NotRunning(stored) => Ok(ControlFlow::Continue(stored)),
-        RunningThreadResumeResult::Handled(_) => Err(internal_error(
-            "backend resume received a client completion",
+        RunningThreadResumeResult::Handled(_) | RunningThreadResumeResult::RefreshModel(_) => Err(internal_error(
+            "backend resume received a client operation",
         )),
     }
 }

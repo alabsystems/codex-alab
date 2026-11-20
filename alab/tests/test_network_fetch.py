@@ -13,12 +13,78 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" "$@"\n\' \'\'\'\n'
+
+# The native front-end and its writer have separate process groups, as in Agh.
+NATIVE_CLIENT = r'''
+import fcntl, json, os, signal, subprocess, sys, time
+from pathlib import Path
+
+root = Path(os.environ["NATIVE_PACKAGE_FIXTURE"])
+fallback = root / "release-test-writer"
+stop_requested = False
+
+def stop(signum, frame):
+    global stop_requested
+    stop_requested = True
+
+signal.signal(signal.SIGTERM, stop)
+signal.alarm(60)
+if "--writer" in sys.argv:
+    (root / "writer-ready.json").write_text(json.dumps([os.getpid(), os.getpgrp()]))
+    while not (stop_requested or fallback.is_file()):
+        time.sleep(0.01)
+    if stop_requested:
+        with (root / "cache.lock").open("rb") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                (root / "writer-observed-cache-lock").touch()
+    sys.exit(0)
+if "help" in sys.argv:
+    print("--ref --into --input --anonymous")
+elif "public-refs" in sys.argv:
+    if os.environ.get("WAIT_FOR_SETUP_DEADLINE") and not (root / "allow-next-attempt").exists():
+        with (root / "metadata.lock").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            (root / "writer-ready.json").write_text(json.dumps([os.getpid(), os.getpgrp()]))
+            while not (stop_requested or fallback.is_file()):
+                time.sleep(0.01)
+        sys.exit(1)
+    prefix = sys.argv[sys.argv.index("--prefix") + 1]
+    for ref in ("refs/heads/main", "refs/tags/rust-v0.164.0"):
+        if ref.startswith(prefix):
+            print(os.environ["NATIVE_FIXTURE_HEAD"] + "\t" + ref)
+elif "fetch" in sys.argv:
+    if (root / "allow-next-attempt").is_file():
+        receiver = sys.argv[sys.argv.index("fetch") + 2]
+        for row in json.loads(Path(sys.argv[sys.argv.index("--input") + 1]).read_bytes()):
+            subprocess.run([os.environ["NATIVE_FIXTURE_GIT"], "-C", receiver, "update-ref",
+                            row["into"], row["expected_oid"]], check=True)
+        sys.exit(0)
+    (root / "native-group").write_text(str(os.getpgrp()))
+    child = subprocess.Popen([sys.executable, "-IB", __file__, "--writer"],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    while not (stop_requested or fallback.is_file()):
+        time.sleep(0.01)
+    if stop_requested:
+        child.terminate()
+    child.wait(timeout=60)
+    (root / "native-reaped-writer").touch()
+    if stop_requested:
+        print(json.dumps({"error": {"v": 1, "exit": 130, "kind": "interrupted",
+                                     "side_effect": "none"}}), file=sys.stderr)
+        sys.exit(130)
+else:
+    raise RuntimeError("unexpected native fixture request")
+'''
 
 
 def module(name, path):
@@ -47,7 +113,7 @@ class NetworkFetchTests(unittest.TestCase):
         self.repo.mkdir()
         self.git("init", "-q", "-b", "main")
         (self.repo / "alab").mkdir()
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
+        for name in ("package.sh", "lib.sh", "upstream_intake.py", "command_guard.py", "github.py", "cli_status.py", "file_hash.py"):
             shutil.copyfile(ROOT / "alab" / name, self.repo / "alab" / name)
         (self.repo / "VERSION").write_text("0.164.0\n")
         self.git("add", ".")
@@ -93,7 +159,7 @@ def expired(timeout):
 if not Path({str(self.release)!r}).exists() and "--inherited-group-timeout" in args:
     wait = subprocess.Popen.wait
     def deadline(child, timeout=None):
-        if timeout is not None:
+        if timeout is not None and not Path({str(self.expired)!r}).is_file():
             expired(timeout)
             raise subprocess.TimeoutExpired(child.args, timeout)
         return wait(child, timeout=timeout)
@@ -140,6 +206,81 @@ runpy.run_path(path, run_name="__main__")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(lock.stat().st_ino, before.st_ino)
         self.assertFalse((self.home / "cache").exists())
+
+    def test_standalone_setup_retires_ref_discovery_at_its_deadline(self):
+        shutil.copyfile(ROOT / "alab/setup.sh", self.repo / "alab/setup.sh")
+        native = self.home / "setup-native-client"
+        native.write_text(PYTHON_ENTRY + NATIVE_CLIENT)
+        native.chmod(0o755)
+        head = subprocess.check_output([self.real_git, "-C", str(self.repo), "rev-parse", "HEAD"],
+                                       text=True).strip()
+        environment = dict(self.environment, ALAB_AGH=str(native), NATIVE_PACKAGE_FIXTURE=str(self.home),
+                           WAIT_FOR_SETUP_DEADLINE="1", NATIVE_FIXTURE_HEAD=head,
+                           NATIVE_FIXTURE_GIT=self.real_git, TMPDIR=str(self.home))
+        command = ["/bin/bash", str(self.repo / "alab/setup.sh")]
+        try:
+            first = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(first.returncode, 0)
+            self.assertIn("deadline", first.stderr)
+            self.assertTrue(self.ready.is_file(), first.stderr)
+            with (self.home / "metadata.lock").open("rb") as observer:
+                fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            (self.home / "release-test-writer").touch()
+        self.release.touch()
+        retry = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        actual = subprocess.check_output([self.real_git, "-C", str(self.repo), "rev-parse",
+                                          "refs/remotes/upstream/main"], text=True).strip()
+        self.assertEqual(actual, head)
+
+    def test_package_deadline_retires_native_writer_before_unlock_and_retry(self):
+        native = self.home / "native-client"
+        native.write_text(PYTHON_ENTRY + NATIVE_CLIENT)
+        native.chmod(0o755)
+        self.git("remote", "set-url", "upstream", "https://github.com/fixture/transfer.git")
+        head = subprocess.check_output([self.real_git, "-C", str(self.repo), "rev-parse", "HEAD"],
+                                       text=True).strip()
+        environment = dict(self.environment, ALAB_AGH=str(native), NATIVE_PACKAGE_FIXTURE=str(self.home),
+                           NATIVE_FIXTURE_HEAD=head, NATIVE_FIXTURE_GIT=self.real_git, TMPDIR=str(self.home))
+        lock = self.home / "cache.lock"
+        command = [sys.executable, "-IB", str(self.repo / "alab/command_guard.py"),
+                   "--cache-lock", str(lock), "--", "/bin/bash", "-c",
+                   '. "$1/alab/package.sh"; package_main --version-only', "native-fixture", str(self.repo)]
+        retired = self.home / "native-reaped-writer"
+        try:
+            first = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
+            self.assertEqual(first.returncode, 1, first.stderr)
+            self.assertTrue(self.ready.is_file(), first.stderr)
+            budget, args = json.loads(self.expired.read_bytes())
+            self.assertEqual(args[args.index("--inherited-group-timeout") + 1], "120")
+            self.assertTrue(0 < budget <= 120)
+            self.assertIn("deadline", first.stderr)
+            self.assertTrue((self.home / "writer-observed-cache-lock").is_file(),
+                            "the writer must see the package lock held while retiring on TERM")
+            self.assertTrue(retired.is_file())
+            native_group = int((self.home / "native-group").read_bytes())
+            _, writer_group = json.loads(self.ready.read_bytes())
+            self.assertNotEqual(writer_group, native_group)
+            self.assertFalse(GUARD.group_exists(writer_group))
+            self.assertFalse(GUARD.group_exists(native_group))
+        finally:
+            # Release the two synthetic processes even when an older guardian lost ownership.
+            (self.home / "release-test-writer").touch()
+            if self.ready.exists():
+                deadline = time.monotonic() + 60
+                while not retired.is_file():
+                    if time.monotonic() >= deadline:
+                        self.fail("native fixture did not finish after release")
+                    time.sleep(0.01)
+
+        with lock.open("rb") as unlocked:
+            fcntl.flock(unlocked, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.release.touch()
+        retry = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn("0.165.0-dev", retry.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

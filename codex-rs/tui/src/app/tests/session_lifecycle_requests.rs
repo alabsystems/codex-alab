@@ -353,6 +353,8 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
         client_ids.push(client_user_message_id.clone());
     }
     let [confirmed_id, unmatched_id]: [String; 2] = client_ids.try_into().unwrap();
+    app.chat_widget
+        .apply_external_edit("parked original draft".into());
     let user_item = |client_id: String| ThreadItemPayload::UserMessage {
         id: format!("item-{client_id}"),
         client_id: Some(client_id),
@@ -422,6 +424,12 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
         while let Some(command) = commands.recv().await {
             let reply = match command.operation {
                 CloudOperation::Request(request) => match *request {
+                    ClientRequest::ThreadList { params, .. } if params.use_state_db_only => {
+                        Ok(serde_json::json!({
+                            "data": [original_thread, other_thread],
+                            "nextCursor": null
+                        }))
+                    }
                     ClientRequest::ThreadRead { params, .. } => {
                         let mut thread = if params.thread_id == original.to_string() {
                             original_thread.clone()
@@ -510,19 +518,29 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
     };
     let mut tui = crate::tui::test_support::make_test_tui()?;
     while events.try_recv().is_ok() {}
+    let mut other_input = None;
     for thread_id in [other, original] {
-        app.apply_resume_picker_selection(
-            &mut tui,
-            &mut server,
-            SessionSelection::Resume(SessionTarget {
-                backend_id,
-                path: None,
-                thread_id,
-                cwd: None,
-                history_mode: None,
-            }),
-        )
-        .await?;
+        if thread_id == other {
+            app.apply_resume_picker_selection(
+                &mut tui,
+                &mut server,
+                SessionSelection::Resume(SessionTarget {
+                    backend_id,
+                    path: None,
+                    thread_id,
+                    cwd: None,
+                    history_mode: None,
+                }),
+            )
+            .await?;
+        } else {
+            Box::pin(app.handle_event(
+                &mut tui,
+                &mut server,
+                AppEvent::ResumeSessionByIdOrName("Original".into()),
+            ))
+            .await?;
+        }
         drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
         assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
         if thread_id == other {
@@ -552,9 +570,42 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
             • Partial response
             • Live response continues
             ");
+            app.chat_widget
+                .handle_server_notification(turn_started_notification(other, "hold"), None);
+            app.chat_widget
+                .apply_external_edit("other follow-up".into());
+            app.chat_widget.handle_key_event(KeyCode::Tab.into());
+            app.chat_widget.set_queue_autosend_suppressed(true);
+            app.chat_widget.handle_server_notification(
+                turn_completed_notification(other, "hold", TurnStatus::Completed),
+                None,
+            );
+            app.chat_widget.set_queue_autosend_suppressed(false);
+            app.chat_widget
+                .apply_external_edit("foreground other draft".into());
+            other_input = app.chat_widget.capture_thread_input_state();
+            Box::pin(app.handle_event(
+                &mut tui,
+                &mut server,
+                AppEvent::ResumeSessionByIdOrName("Other".into()),
+            ))
+            .await?;
+            assert_eq!(app.chat_widget.capture_thread_input_state(), other_input);
+            assert_eq!(
+                app.chat_widget.queued_user_message_texts(),
+                ["other follow-up"]
+            );
         }
     }
 
+    assert_eq!(
+        app.agents_overview.input_states.get(&other),
+        other_input.as_ref()
+    );
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "parked original draft"
+    );
     assert_eq!(app.chat_widget.queued_user_message_texts(), ["same text"]);
     assert!(
         app.chat_widget
@@ -6192,6 +6243,9 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 
 #[path = "new_session_tests.rs"]
 mod new_session_tests;
+#[path = "../../../../alab-tui/glue/family_remote_tests.rs"]
+mod alab_family_remote; // ALAB(defaults): verify an unmarked destination receives an unpinned real thread/start.
+
 #[path = "startup_defaults_tests.rs"]
 mod startup_defaults_tests;
 
@@ -6505,6 +6559,9 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
 
 #[path = "backend_ownership_tests.rs"]
 mod backend_ownership_tests;
+
+#[path = "../../../../alab-tui/glue/selected_resume_hold_tests.rs"]
+mod alab_selected_resume_hold; // ALAB(retained-ui): named resume carries pending input across actual writer conflicts.
 
 #[tokio::test]
 async fn provider_error_preserves_partial_history_notice() -> Result<()> {

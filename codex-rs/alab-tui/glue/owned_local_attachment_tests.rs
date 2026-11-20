@@ -23,6 +23,256 @@ use color_eyre::eyre::eyre;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
 
+#[path = "saved_opening_wire_tests.rs"]
+mod saved_opening_wire_tests;
+
+#[path = "thread_read_identity_tests.rs"]
+mod thread_read_identity_tests;
+
+fn take_side_user_turns(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    side: ThreadId,
+) -> Vec<String> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| {
+            let items = match event {
+                AppEvent::CodexOp(Op::UserTurn { items, .. }) => items,
+                AppEvent::SubmitThreadOp {
+                    thread_id,
+                    op: Op::UserTurn { items, .. },
+                } => {
+                    assert_eq!(thread_id, side);
+                    items
+                }
+                _ => return None,
+            };
+            let [UserInput::Text { text, .. }] = items.as_slice() else {
+                panic!("unexpected input in the saved side turn: {items:?}");
+            };
+            Some(text.clone())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn saved_side_replay_holds_initial_input_until_a_writable_attachment() -> Result<()> {
+    use crate::app::thread_attachment::Selection;
+    use crate::app::thread_attachment::SelectionMode;
+
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let (mut server, mut commands) = channel_session();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let parent = ThreadId::new();
+    let child = ThreadId::new();
+    let target = sidebar_loading::Target {
+        backend_id: server.backend_id(),
+        parent,
+        child,
+    };
+    app.primary_thread_id = Some(parent);
+    app.side_threads
+        .insert(child, side::SideThreadState::new(parent));
+    for thread in [parent, child] {
+        let session = test_thread_session(thread, app.config.cwd.to_path_buf());
+        app.ensure_thread_channel(thread)
+            .store
+            .lock()
+            .await
+            .set_session(session, Vec::new());
+    }
+    app.activate_thread_channel(child).await;
+    app.chat_widget
+        .handle_thread_session(test_thread_session(child, app.config.cwd.to_path_buf()));
+    app.chat_widget
+        .handle_server_notification(turn_started_notification(child, "previous"), None);
+    app.chat_widget
+        .apply_external_edit("queued follow-up".into());
+    app.chat_widget.handle_key_event(KeyCode::Tab.into());
+    app.chat_widget.set_queue_autosend_suppressed(true);
+    app.chat_widget.handle_server_notification(
+        turn_completed_notification(child, "previous", TurnStatus::Completed),
+        None,
+    );
+    app.chat_widget.apply_external_edit("side draft".into());
+    app.chat_widget.initial_user_message = Some("initial side input".into());
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        ["queued follow-up"]
+    );
+
+    let select_parent = || Selection {
+        mode: SelectionMode::Live,
+        cached_session: None,
+        pending_profile_on_unavailable_thread: false,
+    };
+    crate::boxed_future!(app.commit_thread_selection(
+        &mut tui,
+        &mut server,
+        parent,
+        select_parent()
+    ))
+    .await?;
+    let read_only = response(&app, child, true)?.thread;
+    let updates = SubscriptionUpdates::default();
+    let metadata = server
+        .attachment_view(child)
+        .take_attachment_metadata(child);
+    crate::boxed_future!(app.install_saved_chat(
+        &mut tui,
+        &mut server,
+        target,
+        PreparedAttachment::ReplayOnly(Box::new(read_only)),
+        metadata,
+        &updates,
+    ))
+    .await?;
+    assert_eq!(app.current_displayed_thread_id(), Some(child));
+    assert_eq!(
+        app.thread_event_channels[&child].attachment(),
+        ThreadEventAttachment::ReplayOnly
+    );
+    app.chat_widget.submit_initial_user_message_if_pending();
+    assert!(!app.chat_widget.maybe_send_next_queued_input());
+    assert_eq!(
+        app.chat_widget.initial_user_message,
+        Some("initial side input".into())
+    );
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "side draft");
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        ["queued follow-up"]
+    );
+    assert!(take_side_user_turns(&mut events, child).is_empty());
+
+    crate::boxed_future!(app.commit_thread_selection(
+        &mut tui,
+        &mut server,
+        parent,
+        select_parent()
+    ))
+    .await?;
+    let reply = response(&app, child, false)?;
+    let (prepared, served) = tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::join!(
+            crate::app::thread_attachment::prepare_saved(
+                server.attachment_view(child),
+                &app.local_settings,
+                &app.config,
+                child
+            ),
+            serve_original_resume(&mut commands, reply, 2),
+        )
+    })
+    .await?;
+    served?;
+    let attachment = prepared.result.map_err(|error| eyre!(error))?;
+    crate::boxed_future!(app.install_saved_chat(
+        &mut tui,
+        &mut server,
+        target,
+        attachment,
+        prepared.metadata,
+        &updates,
+    ))
+    .await?;
+    assert_eq!(
+        app.thread_event_channels[&child].attachment(),
+        ThreadEventAttachment::Live
+    );
+    assert_eq!(app.current_displayed_thread_id(), Some(child));
+    app.chat_widget.submit_initial_user_message_if_pending();
+    assert!(app.chat_widget.initial_user_message.is_none());
+    assert_eq!(
+        take_side_user_turns(&mut events, child),
+        ["initial side input"]
+    );
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "side draft");
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        ["queued follow-up"]
+    );
+    app.chat_widget
+        .handle_server_notification(turn_started_notification(child, "initial"), None);
+    app.chat_widget.handle_server_notification(
+        turn_completed_notification(child, "initial", TurnStatus::Completed),
+        None,
+    );
+    // Replay-only recovery leaves this follow-up for the original edit-and-submit action.
+    assert!(!app.chat_widget.maybe_send_next_queued_input());
+    assert!(take_side_user_turns(&mut events, child).is_empty());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "queued follow-up"
+    );
+    app.chat_widget.handle_key_event(KeyCode::Enter.into());
+    assert!(app.chat_widget.queued_user_message_texts().is_empty());
+    assert_eq!(
+        take_side_user_turns(&mut events, child),
+        ["queued follow-up"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn saved_side_replay_keeps_confirmation_through_unrelated_wakes() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let (server, _commands) = channel_session();
+    let owner = server.backend_id();
+    let side = ThreadId::new();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.chat_widget
+        .apply_external_edit("confirmed side draft".into());
+    let mut draft = Some(app.chat_widget.composer_draft_snapshot());
+    app.chat_widget.apply_external_edit(String::new());
+    app.chat_widget.set_queue_autosend_suppressed(true);
+    let mut confirmed = true;
+    app.chat_widget
+        .restore_startup_input_when_ready(&mut draft, &mut confirmed);
+    assert!(draft.is_none() && !confirmed);
+    let input = app.chat_widget.capture_thread_input_state();
+    let session = test_thread_session(side, app.config.cwd.to_path_buf());
+    let channel = app.ensure_thread_channel(side);
+    channel.backend_id = Some(owner);
+    let snapshot = {
+        let mut store = channel.store.lock().await;
+        store.set_session(session, Vec::new());
+        store.input_state = input;
+        store.snapshot()
+    };
+    app.app_server_backend_id = Some(owner);
+    app.activate_thread_channel(side).await;
+    app.render_thread_snapshot(&mut tui, &server, side, snapshot, false)?;
+    app.chat_widget.set_queue_autosend_suppressed(false);
+    app.chat_widget
+        .set_initial_user_message_submit_suppressed(false);
+    for resumed in [
+        None,
+        Some((owner, ThreadId::new())),
+        Some((crate::backend_id::BackendId::new(), side)),
+    ] {
+        app.alab_release_reconnected_input(Some(side), resumed);
+        app.chat_widget
+            .restore_startup_input_when_ready(&mut draft, &mut confirmed);
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "confirmed side draft"
+        );
+        assert!(take_side_user_turns(&mut events, side).is_empty());
+    }
+    app.alab_release_reconnected_input(Some(side), Some((owner, side)));
+    app.chat_widget
+        .restore_startup_input_when_ready(&mut draft, &mut confirmed);
+    app.chat_widget
+        .restore_startup_input_when_ready(&mut draft, &mut confirmed);
+    assert_eq!(
+        take_side_user_turns(&mut events, side),
+        ["confirmed side draft"]
+    );
+    Ok(())
+}
+
 fn channel_session() -> (AppServerSession, tokio::sync::mpsc::Receiver<CloudCommand>) {
     let (client, commands, _events) =
         codex_app_server_client::CloudClient::channel(/*capacity*/ 1);

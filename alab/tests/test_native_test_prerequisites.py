@@ -80,6 +80,9 @@ elif "build" in args:
         print(json.dumps(record))
 elif "test" in args:
     assert ("--lib" in args) == (os.environ.get("MOCK_SCOPE", "lib") == "lib")
+    if "--test" in args and args[args.index("--test") + 1] == "alab_fleet_model":
+        print("running 1 test\ntest fleet_model ... ok")
+        print("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;")
 else:
     raise SystemExit("unexpected mock Cargo call: " + repr(args))
 '''
@@ -121,6 +124,36 @@ class NativeTestPrerequisitesTests(unittest.TestCase):
 
     def tearDown(self):
         self.directory.cleanup()
+
+    def test_integration_test_selects_the_workspace_test_harness(self):
+        workspace = self.tree / "codex-rs"
+        package = workspace / "code-mode-host"
+        test_source = package / "tests/stdio.rs"
+        test_source.parent.mkdir()
+        test_source.touch()
+        target = {"name": "stdio", "kind": ["test"], "src_path": str(test_source)}
+        manifest = str(package / "Cargo.toml")
+        package_id = "fixture-host"
+        metadata = self.scratch / "metadata.json"
+        metadata.write_text(json.dumps({"workspace_root": str(workspace), "target_directory": str(self.target),
+            "workspace_members": [package_id], "packages": [{"id": package_id, "name": "codex-code-mode-host",
+            "manifest_path": manifest, "targets": [target]}]}))
+        harness = self.target / "stdio-harness"
+        harness.touch(mode=0o755)
+        artifact = {"reason": "compiler-artifact", "package_id": package_id, "target": target,
+                    "profile": {"test": True}, "manifest_path": manifest, "executable": str(harness)}
+        command = [sys.executable, "-I", "-B", str(ROOT / "alab/native_helpers.py"),
+                   "--repo", str(self.tree), "--target-dir", str(self.target), "--metadata", str(metadata),
+                   "--integration-test", "codex-code-mode-host/stdio"]
+        result = subprocess.run(command, input=json.dumps(artifact), text=True, capture_output=True, check=True)
+        self.assertEqual(json.loads(result.stdout), {"stdio": str(harness)})
+        for change in ({"profile": {"test": False}}, {"package_id": "other"},
+                       {"target": dict(target, kind=["bin"])}, {"target": dict(target, src_path=manifest)}):
+            with self.subTest(change=change):
+                result = subprocess.run(command, input=json.dumps({**artifact, **change}),
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("no unique runtime helper artifact", result.stderr)
 
     def shell(self, body, *args, **environment):
         setup = '''set -euo pipefail
@@ -203,6 +236,65 @@ printf '%s\\n' "${test_command[@]}"
         self.assertEqual(len((self.helper / "helper-native.jsonl").read_text().splitlines()), 1)
         self.assertEqual(len((self.helper / "helper-cli.jsonl").read_text().splitlines()), 1)
         self.assertEqual(self.warmups.read_text().splitlines(), ["codex:--version"])
+
+    def test_wire_and_fleet_recipes_build_only_the_cli_they_launch(self):
+        candidate = self.tree / "alab"
+        candidate.mkdir()
+        for script in ("unit-tests.sh", "native_helpers.py", "focused-tests.sh", "focused_results.py",
+                       "python_test_results.py", "cli_status.py"):
+            (candidate / script).symlink_to(ROOT / "alab" / script)
+        (candidate / "lib.sh").write_text('''alab_library_root="$MOCK_TREE"
+alab_project_selected() { :; }
+alab_build_command() {
+    if [[ "$1" == --result-file ]]; then shift 2; fi
+    "$@"
+}
+''')
+        recipes = self.scratch / "feature_recipes"
+        recipes.mkdir()
+        for script in ("python_test_results.py", "cli_status.py"):
+            (recipes.parent / script).symlink_to(ROOT / "alab" / script)
+        runner = recipes / "run.sh"
+        shutil.copyfile(ROOT / "alab/feature_recipes/run.sh", runner)
+        fixtures = {"wire": "wire_controls", "model-wire": "model_wire_controls",
+                    "product-wire": "product_wire_controls", "skill-wire": "skill_wire_controls",
+                    "native-ui-wire": "native_ui_controls", "execution-wire": "execution_wire_controls"}
+        for module in fixtures.values():
+            (recipes / (module + ".py")).write_text('''import os, unittest
+class Wire(unittest.TestCase):
+    def test_cli(self):
+        self.assertEqual(os.environ["ALAB_FEATURE_BINARY"], os.environ["MOCK_EXPECTED_CLI"])
+''')
+        with (recipes / "model_wire_controls.py").open("a") as extra:
+            extra.write('    def test_unrelated(self): self.fail("unrequested control ran")\n')
+        binaries = self.target / "selected helpers"
+        for stage in (*fixtures, "fleet-cli"):
+            with self.subTest(stage=stage):
+                out = self.scratch / stage
+                out.mkdir()
+                calls = out / "cargo.jsonl"
+                names = ["model_wire_controls.Wire.test_cli"] if stage == "model-wire" else []
+                result = subprocess.run(
+                    ["/bin/bash", str(runner), "contained", str(self.tree), "a" * 40, str(out), stage, *names],
+                    env={**self.environment, "ALAB_CARGO": str(self.mock), "TMPDIR": str(self.scratch),
+                         "CARGO_TARGET_DIR": str(self.target), "MOCK_CALLS": str(calls),
+                         "MOCK_SCOPE": "default", "MOCK_EXPECTED_CLI": str(binaries / "codex")},
+                    capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                observed = [json.loads(line) for line in calls.read_text().splitlines()]
+                commands = [call["args"] for call in observed]
+                self.assertEqual(sum(args[0] == "metadata" for args in commands), 1)
+                built = [args[i + 1] for args in commands for i, flag in enumerate(args) if flag == "--bin"]
+                self.assertEqual(built, ["codex"])
+                if stage == "fleet-cli":
+                    last = observed[-1]
+                    self.assertIn("test", last["args"])
+                    self.assertEqual(last["args"][last["args"].index("-p") + 1], "codex-cli")
+                    self.assertEqual(last["args"][last["args"].index("--test") + 1], "alab_fleet_model")
+                    self.assertEqual(last["helpers"]["CARGO_BIN_EXE_codex"], str(binaries / "codex"))
+                else:
+                    tests = json.loads((out / "tests.json").read_text())["tests"]
+                    self.assertEqual([test["id"] for test in tests], [fixtures[stage] + ".Wire.test_cli"])
 
     def test_artifact_refusal_precedes_cli_warmup(self):
         for fault in ("missing", "ambiguous", "wrong_package", "wrong_source", "harness", "outside"):

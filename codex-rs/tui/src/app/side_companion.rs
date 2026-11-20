@@ -262,7 +262,7 @@ impl SideCompanion {
                             *source,
                             aggregated_output.clone(),
                         ),
-                        Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64),
+                        duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64)), // ALAB(shell-output): display measured time only.
                     )
                 {
                     return false;

@@ -146,6 +146,7 @@ impl Successor {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: self.identity.account.clone(),

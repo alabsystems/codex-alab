@@ -24,6 +24,13 @@ def git(root, *args):
     return GITHUB.git(root, *args).decode().strip()
 
 
+def disk_fixture_cli(tool, free_gib):
+    """Set capacity for a fixture subprocess that runs the production CLI."""
+    return ("import os, runpy\nfrom types import SimpleNamespace\n"
+            f"os.statvfs = lambda path: SimpleNamespace(f_bavail={free_gib}, f_frsize=2**30)\n"
+            f"runpy.run_path({str(tool)!r}, run_name='__main__')\n")
+
+
 class NativeFixture:
     def __init__(self, remote):
         self.remote = remote
@@ -95,6 +102,76 @@ class GithubTests(unittest.TestCase):
                      anonymous=True, client=self.client)
         self.assertEqual(len(self.client.requests), calls + 1, "unchanged OIDs must not refetch the graph")
 
+    def test_local_release_batch_rechecks_warm_named_refs_and_recovers_without_another_fetch(self):
+        bare = self.home / "release snapshot.git"
+        git(self.home, "init", "--bare", "-q", str(bare))
+        main, tag = "refs/heads/main", "refs/tags/v0.1.0"
+        git(bare, "fetch", "--no-tags", str(self.remote), main + ":" + main)
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "release main")
+        git(self.repo, "tag", "-a", "v0.1.0", "-m", "release annotation")
+        git(self.repo, "push", "-q", str(self.remote), main, tag)
+        url = self.remote.as_uri()
+        observed = GITHUB.list_refs(bare, url, [main, tag], anonymous=True)
+        raw_tag = git(self.repo, "rev-parse", tag)
+        self.assertNotEqual(raw_tag, observed[main])
+        snapshots = [ref + ":" + ref for ref in (main, tag)]
+        aliases = [main + ":refs/remotes/prewarmed/main", tag + ":refs/upstream-tags/v0.1.0"]
+        writers = []
+        popen = subprocess.Popen
+
+        def observe(argv, *args, **options):
+            if "fetch" in argv:
+                writers.append(argv)
+            return popen(argv, *args, **options)
+
+        with mock.patch.object(subprocess, "Popen", side_effect=observe):
+            GITHUB.fetch(bare, url, aliases, snapshot=observed, anonymous=True)
+            initial_writers = len(writers)
+            self.assertEqual(git(bare, "rev-parse", "refs/upstream-tags/v0.1.0"), raw_tag)
+            public = {ref: oid for ref, oid in GITHUB.local_refs(bare).items()
+                      if not ref.startswith("refs/agh/")}
+
+            git(self.repo, "commit", "-q", "--allow-empty", "-m", "move main after enumeration")
+            advanced = git(self.repo, "rev-parse", "HEAD")
+            git(self.repo, "push", "-q", str(self.remote), main)
+            # Both slots still match the supplied snapshot. Only another named
+            # transfer can expose the movement; no public ref may change on failure.
+            with self.assertRaisesRegex(GITHUB.Refused, "enumerated object ID"):
+                GITHUB.fetch(bare, url, snapshots, snapshot=observed, snapshot_refs=True, anonymous=True)
+            after_mismatch = len(writers)
+            self.assertEqual({ref: oid for ref, oid in GITHUB.local_refs(bare).items()
+                              if not ref.startswith("refs/agh/")}, public)
+
+            # A fresh advertisement now agrees with both imported objects.
+            no_writer = mock.Mock(side_effect=AssertionError("cache-only recovery launched a transfer"))
+            recovered = GITHUB.fetch(bare, url, snapshots, snapshot_refs=True, anonymous=True,
+                                     admit_transfer=no_writer)
+            no_writer.assert_not_called()
+        self.assertEqual(recovered, {main: advanced, tag: raw_tag})
+        self.assertEqual(git(bare, "rev-parse", main), advanced)
+        self.assertEqual(git(bare, "rev-parse", tag), raw_tag)
+        self.assertEqual((initial_writers, after_mismatch - initial_writers, len(writers) - after_mismatch),
+                         (1, 1, 0))
+
+    def test_unavailable_local_ref_preserves_every_warm_slot_and_public_ref(self):
+        url = self.remote.as_uri()
+        main, tag = "refs/heads/main", "refs/tags/rust-v0.1.0"
+        GITHUB.fetch(self.repo, url, self.specs)
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "main available for transfer")
+        git(self.repo, "push", "-q", str(self.remote), main)
+        observed = GITHUB.list_refs(self.repo, url, [main, tag])
+        git(self.remote, "config", "uploadpack.hideRefs", tag)
+        self.assertEqual(GITHUB.list_refs(self.repo, url, [main, tag]), {main: observed[main]})
+        before = GITHUB.local_refs(self.repo)
+        self.assertEqual({oid for ref, oid in before.items() if ref.startswith("refs/agh/")},
+                         {self.head, self.tag})
+        # The first source is still available. The second vanished after its
+        # listing, and an alias still needs it even though its slot is warm.
+        with self.assertRaisesRegex(GITHUB.Refused, "local Git fetch failed"):
+            GITHUB.fetch(self.repo, url, [self.specs[0], tag + ":refs/upstream-tags/alias"],
+                         snapshot=observed)
+        self.assertEqual(GITHUB.local_refs(self.repo), before)
+
     def test_non_fast_forward_main_is_refused_without_losing_its_reflog(self):
         GITHUB.fetch(self.repo, str(self.remote), self.specs)
         before = git(self.repo, "reflog", "show", "--format=%H", "refs/remotes/upstream/main")
@@ -110,7 +187,7 @@ class GithubTests(unittest.TestCase):
         batches = [args[3] for args, _ in self.client.requests if isinstance(args, tuple)]
         self.assertEqual(len(batches), 1)
         self.assertEqual({row["source"]: row["expected_oid"] for row in batches[0]},
-                         {"refs/heads/main": self.head, "refs/tags/rust-v0.1.0": self.tag})
+                         {self.head: self.head, "refs/tags/rust-v0.1.0": self.tag})
         for destination in ("refs/remotes/upstream/main", "refs/upstream-tags/rust-v0.1.0"):
             git(self.repo, "update-ref", "-d", destination)
         GITHUB.fetch(self.repo, "fixture/codex", self.specs, anonymous=True, client=self.client)
@@ -149,6 +226,51 @@ class GithubTests(unittest.TestCase):
         self.assertEqual(GITHUB.local_refs(self.repo), before)
         self.assertFalse(any(isinstance(args, tuple) for args, _ in self.client.requests))
         self.assertEqual(sum(isinstance(args, str) for args, _ in self.client.requests), 2)
+
+    def test_explicit_release_catalog_validates_once_and_checks_bare_ownership(self):
+        refs = {f"refs/tags/v1.0.{n}": self.head for n in range(16)}
+        refs["refs/tags/rust-v0.1.0"] = self.tag
+        GITHUB.git(self.remote, "update-ref", "--stdin", data="".join(
+            f"update {ref} {oid}\n" for ref, oid in refs.items()).encode())
+        bare = self.home / "local release snapshot.git"
+        git(self.home, "clone", "--bare", str(self.remote), str(bare))
+        specs = [f"{ref}:{ref}" for ref in refs]
+        original = GITHUB.local_refs(bare)
+        for supplied in (refs, None):
+            with self.subTest(supplied=supplied is not None):
+                with mock.patch.object(GITHUB, "git", wraps=GITHUB.git) as calls:
+                    observed = GITHUB.fetch(bare, str(self.remote), specs, snapshot_refs=True,
+                                            snapshot=supplied)
+                self.assertEqual(observed, refs)
+                self.assertEqual(GITHUB.local_refs(bare), original)
+                commands = [call.args[1:] for call in calls.call_args_list]
+                self.assertEqual(commands.count(("rev-parse", "--is-bare-repository")), 1)
+                self.assertLess(len(commands), 20)
+        with mock.patch.object(GITHUB, "list_refs", side_effect=AssertionError("unexpected enumeration")):
+            with self.assertRaisesRegex(GITHUB.Refused, "owned bare snapshot"):
+                GITHUB.fetch(self.repo, str(self.remote), specs, snapshot_refs=True)
+
+    def test_invalid_literal_in_a_catalog_is_refused_before_observing_the_remote(self):
+        original = GITHUB.local_refs(self.repo)
+        for invalid in ("refs/heads/bad..name:refs/remotes/upstream/other",
+                        "refs/heads/main:refs/remotes/upstream/bad..name"):
+            with self.subTest(invalid=invalid), mock.patch.object(
+                    GITHUB, "list_refs", side_effect=AssertionError("unexpected enumeration")):
+                with self.assertRaises(GITHUB.Refused):
+                    GITHUB.fetch(self.repo, "fixture/codex", [self.specs[0], invalid], client=self.client)
+        self.assertEqual(GITHUB.local_refs(self.repo), original)
+        self.assertEqual(self.client.requests, [])
+
+    def test_empty_explicit_catalog_can_be_listed_outside_a_repository(self):
+        plain = self.home / "outside a repository"
+        plain.mkdir()
+        patterns = ["refs/tags/absent-one", "refs/heads/absent-two"]
+        self.assertEqual(GITHUB.list_refs(plain, str(self.remote), patterns), {})
+
+    @unittest.skipUnless(os.name == "posix", "POSIX argv supports undecodable ref bytes")
+    def test_unmatched_literal_can_contain_an_undecodable_filesystem_byte(self):
+        opaque = os.fsdecode(b"refs/tags/absent-\xff")
+        self.assertEqual(GITHUB.list_refs(self.repo, str(self.remote), ["refs/heads/missing", opaque]), {})
 
     def test_aborted_ref_batch_matches_git_parser_and_leaves_metadata_untouched(self):
         before = GITHUB.local_refs(self.repo)
@@ -191,13 +313,12 @@ class GithubTests(unittest.TestCase):
         self.assertEqual(git(self.repo, "rev-parse", destination), self.head)
         self.assertFalse(any(isinstance(args, tuple) for args, _ in self.client.requests))
 
-    def test_setup_uses_explicit_local_transport_and_preserves_push_refusal(self):
+    def local_transport_scripts(self, free_gib):
         directory = self.repo / "alab"
         directory.mkdir()
-        for name in ("setup.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
+        for name in ("sync.sh", "setup.sh", "lib.sh", "command_guard.py", "cli_status.py"):
             (directory / name).write_bytes((ROOT / "alab" / name).read_bytes())
-        # Only the fixture's endpoint data changes; setup and the real transport
-        # execute intact, with no global Git URL rewrite or network client.
+        (directory / "github.py").write_text(disk_fixture_cli(ROOT / "alab/github.py", free_gib))
         library = directory / "lib.sh"
         library.write_text(library.read_text().replace(
             'ALAB_UPSTREAM_URL="https://github.com/openai/codex.git"',
@@ -207,6 +328,23 @@ class GithubTests(unittest.TestCase):
         env.update(ALAB_PYTHON=sys.executable,
                    ALAB_AGH=str(self.home / "unavailable-native-client"),
                    GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        return directory, env
+
+    def test_cold_sync_reports_disk_stop_before_updating_refs_or_creating_worktree(self):
+        directory, env = self.local_transport_scripts(19)
+        git(self.repo, "remote", "add", "upstream", self.remote.as_uri())
+        git(self.repo, "config", "rerere.enabled", "true")
+        refs = git(self.repo, "show-ref")
+        result = subprocess.run(["/bin/bash", str(directory / "sync.sh"), "--stepwise"],
+                                cwd=self.repo, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("20 GiB running floor", result.stderr)
+        self.assertNotIn("upstream rewrote", result.stderr)
+        self.assertEqual(git(self.repo, "show-ref"), refs)
+        self.assertFalse((self.repo / ".git/alab-sync").exists())
+
+    def test_setup_uses_explicit_local_transport_and_preserves_push_refusal(self):
+        directory, env = self.local_transport_scripts(21)
         for _ in range(2):
             done = subprocess.run(["/bin/bash", str(directory / "setup.sh")], cwd=self.repo,
                                   env=env, capture_output=True, text=True, timeout=30)
@@ -228,6 +366,35 @@ class GithubTests(unittest.TestCase):
             GITHUB.fetch(self.repo, "fixture/codex", [self.specs[0]], client=self.client)
         self.assertNotEqual(next_head, newer)
         self.assertEqual(git(self.repo, "rev-parse", "refs/remotes/upstream/main"), newer)
+
+    def test_public_prefixes_preserve_annotated_objects_without_rest(self):
+        client = object.__new__(GITHUB.Agh)
+        head = f"{self.head}\trefs/heads/main\n".encode()
+        tag = f"{self.tag}\trefs/tags/rust-v0.1.0\n{self.head}\trefs/tags/rust-v0.1.0^{{}}\n".encode()
+        with mock.patch.object(client, "call", side_effect=[head, tag]) as read, mock.patch.object(
+                client, "api", side_effect=AssertionError("unexpected REST request")):
+            observed = GITHUB.list_refs(self.repo, "fixture/codex",
+                                        ["refs/heads/main", "refs/tags/rust-v*"], anonymous=True, client=client)
+        self.assertEqual(observed, {"refs/heads/main": self.head, "refs/tags/rust-v0.1.0": self.tag})
+        self.assertEqual(read.call_args_list, [
+            mock.call("repo", "public-refs", "fixture/codex", "--prefix", prefix, anonymous=True)
+            for prefix in ("refs/heads/main", "refs/tags/rust-v")])
+
+    def test_public_prefix_failure_only_falls_back_for_an_older_client(self):
+        client = object.__new__(GITHUB.Agh)
+        old = GITHUB.Refused("old client")
+        old.native_error = {"kind": "usage", "exit": 2, "why": "unknown flag --prefix"}
+        with mock.patch.object(client, "call", side_effect=old), mock.patch.object(
+                client, "api", side_effect=self.client.api):
+            self.assertEqual(GITHUB.list_refs(self.repo, "fixture/codex", ["refs/heads/main"],
+                                              anonymous=True, client=client), {"refs/heads/main": self.head})
+        with mock.patch.object(client, "call", side_effect=GITHUB.Refused("output exceeded its bound")):
+            with self.assertRaisesRegex(GITHUB.Refused, "exceeded"):
+                GITHUB.list_refs(self.repo, "fixture/codex", ["refs/heads/main"], anonymous=True, client=client)
+        for raw in (b"partial\trefs/heads/main", f"{self.head}\trefs/heads/elsewhere\n".encode()):
+            with self.subTest(raw=raw), mock.patch.object(client, "call", return_value=raw):
+                with self.assertRaisesRegex(GITHUB.Refused, "malformed"):
+                    GITHUB.list_refs(self.repo, "fixture/codex", ["refs/heads/main"], anonymous=True, client=client)
 
     def test_changed_tag_after_enumeration_refuses_instead_of_reading_another_snapshot(self):
         bare = self.home / "public snapshot.git"

@@ -105,14 +105,14 @@ fn kill_process(pid: u32) -> io::Result<()> {
     }
 }
 
-async fn read_output_stream<R>(mut reader: R, output_tx: mpsc::Sender<Vec<u8>>)
+async fn read_output_stream<R>(mut reader: R, output_tx: mpsc::Sender<Vec<u8>>, eof: crate::NativeOutputEof, stream: u8) // ALAB(shell-output): distinguish read(0) from cancellation or read failure.
 where
     R: AsyncRead + Unpin,
 {
     let mut buf = vec![0u8; 8_192];
     loop {
         match reader.read(&mut buf).await {
-            Ok(0) => break,
+            Ok(0) => { eof.finish(stream); break; } // ALAB(shell-output): this descriptor reached EOF.
             Ok(n) => {
                 let _ = output_tx.send(buf[..n].to_vec()).await;
             }
@@ -230,16 +230,19 @@ async fn spawn_process_with_stdin_mode(
         tokio::spawn(async {})
     };
 
+    let native_eof = crate::NativeOutputEof::new(); // ALAB(shell-output): both original pipes must close normally.
     let stdout_handle = stdout.map(|stdout| {
+        let eof = native_eof.clone(); // ALAB(shell-output): record this writer independently.
         let stdout_tx = stdout_tx.clone();
         tokio::spawn(async move {
-            read_output_stream(BufReader::new(stdout), stdout_tx).await;
+            read_output_stream(BufReader::new(stdout), stdout_tx, eof, 1).await; // ALAB(shell-output): stdout receipt.
         })
     });
     let stderr_handle = stderr.map(|stderr| {
+        let eof = native_eof.clone(); // ALAB(shell-output): record this writer independently.
         let stderr_tx = stderr_tx.clone();
         tokio::spawn(async move {
-            read_output_stream(BufReader::new(stderr), stderr_tx).await;
+            read_output_stream(BufReader::new(stderr), stderr_tx, eof, 2).await; // ALAB(shell-output): stderr receipt.
         })
     });
 
@@ -294,7 +297,7 @@ async fn spawn_process_with_stdin_mode(
     );
 
     Ok(SpawnedProcess {
-        session: handle,
+        session: handle.with_native_output_eof(native_eof), // ALAB(shell-output): bind the stream proofs to this launch.
         stdout_rx,
         stderr_rx,
         exit_rx,

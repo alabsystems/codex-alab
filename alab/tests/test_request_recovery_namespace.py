@@ -29,7 +29,7 @@ def trace(recover, *, call_namespace=ABSENT, output_name=ABSENT, output_namespac
             item[name] = value
     requests[2]['body']['input'] = copy.deepcopy(requests[1]['body']['input'])
     if not recover:
-        events = [{'type': 'turn.started'}, {'type': 'turn.failed'}]
+        events = FIXTURE.refusal_events()
         requests = requests[:2]
     return events, requests
 
@@ -122,6 +122,17 @@ class RequestRecoveryNamespaceTests(unittest.TestCase):
             self.assertEqual(codex, binary)
             self.assertIn(SMOKE.probe.PROMPT, args)
             self.assertEqual(label, 'exec')
+            sessions = output / 'codex-home/sessions'
+            sessions.mkdir(parents=True, exist_ok=True)
+            records = [{'type': 'session_meta', 'payload': {'id': 'original'}},
+                       *({'type': 'event_msg', 'payload': {'type': kind, 'turn_id': 'active'}}
+                         for kind in ('task_started', 'task_complete'))]
+            if recover:
+                records[-1]['payload']['last_agent_message'] = SMOKE.probe.ANSWER
+            else:
+                records[-1]['payload']['error'] = {'message': 'Invalid tool schema', 'codex_error_info': 'invalid_prompt'}
+            records[2:2] = [{'type': 'response_item', 'payload': item} for item in requests[1]['body']['input']]
+            (sessions / 'rollout-fixture-original.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in records))
             with (output / 'exec-stdout.jsonl').open('x') as stream:
                 for event in events:
                     stream.write(json.dumps(event) + '\n')
@@ -133,7 +144,7 @@ class RequestRecoveryNamespaceTests(unittest.TestCase):
             envelope = ({'detail': 'Bad Request'} if recover else
                         {'error': {'code': 'invalid_prompt', 'message': 'Invalid tool schema'}})
             result = SMOKE.case(binary, destination, 'fixture', 400, envelope, recover)
-        configure.assert_called_once_with(destination / 'fixture', 1234, stream_max_retries=2)
+        configure.assert_called_once_with(destination / 'fixture', 1234, stream_max_retries=2, supports_websockets=False)
         server.shutdown.assert_called_once_with()
         thread.join.assert_called_once_with()
         server.server_close.assert_called_once_with()
@@ -142,6 +153,7 @@ class RequestRecoveryNamespaceTests(unittest.TestCase):
         self.assertEqual(binary.read_bytes(), b'owned data; never executed as a program\n')
         self.assertEqual(result['requestCount'], 3 if recover else 2)
         self.assertEqual(result['returncode'], 0 if recover else 1)
+        self.assertEqual(result['turnEvents'], ['turn.started', 'turn.completed' if recover else 'turn.failed'])
         return result
 
     def test_public_case_cannot_pass_conflicting_native_identity(self):

@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -29,6 +30,8 @@ class CapacityExecTimingTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="capacity-header-timing-", dir=FIXTURE_PARENT))
         FIXTURES.append(str(self.root))
+        if FIXTURE_PARENT is None:
+            self.addCleanup(shutil.rmtree, self.root)
 
     def assert_failed_start_closes(self, phase, error_type, close_fails=False):
         probe = self.probe
@@ -98,6 +101,13 @@ class CapacityExecTimingTests(unittest.TestCase):
             with self.subTest(arrival=arrival):
                 with self.assertRaisesRegex(RuntimeError, "missing or invalid"):
                     self.probe.retry_after_delay({"headerStartedAt": 13.0, "headerAt": 13.001}, arrival)
+
+    def test_ordinary_zero_advice_does_not_inherit_a_capacity_floor(self):
+        failed = {"headerStartedAt": 20.0, "headerAt": 20.001, "status": 503, "retryAfter": 0}
+        retry = {"requestStartedAt": 20.125}
+        self.assertAlmostEqual(self.probe.retry_after_delay(failed, retry, 0), 0.124)
+        with self.assertRaisesRegex(RuntimeError, "local capacity backoff bypassed"):
+            self.probe.retry_after_delay(failed, retry, 0, attempt=1)
 
     def test_handler_stamps_the_exact_response_after_headers_before_body(self):
         probe = self.probe

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "base": "92745114438c038dee88263ac4a6a91405dd85af",
+  "target": "508a42966658b4f1d018ea471522beed791537ce",
+  "frontier": "92745114438c038dee88263ac4a6a91405dd85af",
+  "commits": [
+    {
+      "sha": "508a42966658b4f1d018ea471522beed791537ce",
+      "subject": "Deduplicate large tool output strings in rollout traces (#62407)",
+      "paths": [
+        "codex-rs/rollout-trace/README.md",
+        "codex-rs/rollout-trace/src/capture_tests.rs",
+        "codex-rs/rollout-trace/src/inference.rs",
+        "codex-rs/rollout-trace/src/lib.rs",
+        "codex-rs/rollout-trace/src/payload.rs",
+        "codex-rs/rollout-trace/src/reducer/acceptance_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation/normalize.rs",
+        "codex-rs/rollout-trace/src/reducer/conversation_tests.rs",
+        "codex-rs/rollout-trace/src/reducer/mod.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/agents.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/terminal.rs",
+        "codex-rs/rollout-trace/src/reducer/tool/terminal_tests.rs",
+        "codex-rs/rollout-trace/src/shard.rs",
+        "codex-rs/rollout-trace/src/shard_tests.rs",
+        "codex-rs/rollout-trace/src/tool_content.rs",
+        "codex-rs/rollout-trace/src/tool_dispatch.rs",
+        "codex-rs/rollout-trace/src/writer.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt upstream’s bounded storage of repeated large tool results in diagnostic traces. The implementation and its reader fit entirely in the upstream trace crate.",
+      "evidence": [
+        "The writer splits JSON string values of at least 64 KiB by their original encoded bytes. It hashes each distinct value before applying limits, preserves literal keys and escapes in each parent, and reuses children within the same bundle. Parent occurrences keep separate event identities.",
+        "The writer reserves the parent event and closing-event budget and seals both content and structure shards. The reader tracks missing slots separately from literal nulls. The reducer preserves terminal exit and session fields when output is missing and distinguishes different structured tool outputs.",
+        "All 18 changed paths belong to upstream’s rollout-trace crate. The recorder remains opt-in, the fork’s session rollout and handoff checkpoint use separate formats, and adopting the change needs no ALab runtime hook."
+      ],
+      "revisit": "Run the integrated crate’s byte-exact replay, missing-slot, bounded recording and structured-output tests."
+    }
+  ]
+}

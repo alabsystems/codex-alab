@@ -14,8 +14,10 @@ use super::StatusLineItem;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Local;
+use codex_alab_core::quota::reported_credit_amount;
 use codex_alab_tui::interface;
 use codex_alab_tui::interface::InterfaceStatus;
+use codex_app_server_protocol::RateLimitReachedType;
 
 #[cfg(test)]
 #[path = "service_tier_tests.rs"]
@@ -28,7 +30,43 @@ pub(super) fn needs_branch() -> bool {
     interface::enabled()
 }
 
+fn credit_balance(
+    unlimited: bool,
+    available: bool,
+    balance: Option<&str>,
+) -> interface::CreditBalance {
+    use interface::CreditBalance;
+    if unlimited {
+        return CreditBalance::Current("unlimited credits".into());
+    }
+    match (reported_credit_amount(balance), available) {
+        (Some(value), true) => CreditBalance::Current(format!("{value} credits left")),
+        (Some(value), false) if interface::credit_amount_is_nonzero(value) => {
+            CreditBalance::Unavailable(format!("Unavailable to spend · {value} credits"))
+        }
+        (Some(_), false) => CreditBalance::Unavailable("0 credits left".into()),
+        (None, false) => {
+            CreditBalance::Unavailable("Unavailable to spend · balance unreported".into())
+        }
+        (None, true) => CreditBalance::Current("credits available".into()),
+    }
+}
+
 impl ChatWidget {
+    pub(crate) fn alab_refresh_banner_model(&self) {
+        if let Some(banner) = &self.session_header.banner {
+            let mut label = self.alab_model_with_service_tier();
+            if let Some(effort) = self.effective_reasoning_effort() {
+                label.push(' ');
+                label.push_str(effort.as_str());
+            }
+            banner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .update(label);
+        }
+    }
+
     pub(crate) fn alab_model_with_service_tier(&self) -> String {
         codex_alab_tui::service_tier::model_name(
             self.model_display_name(),
@@ -92,7 +130,7 @@ impl ChatWidget {
             let status = self.alab_interface_status_at(now);
             interface::set_status(status);
             self.alab_refresh_account_details();
-            self.alab_schedule_quota_expiry_at(now);
+            self.alab_schedule_interface_deadline_at(now);
         }
     }
 
@@ -129,17 +167,41 @@ impl ChatWidget {
         if interface::status_snapshot().is_some_and(|status| {
             (stale && !status.usage_stale)
                 || (five_hour_stale && !status.five_hour_stale)
+                || (snapshot_stale && status.individual_credit_limit.is_some())
+                || (matches!(
+                    status.individual_credit_limit,
+                    Some(interface::IndividualCreditLimit::Current(_))
+                ) && self
+                    .alab_monthly_credit_reset()
+                    .is_some_and(|reset| reset <= now))
+                || (snapshot_stale
+                    && matches!(
+                        status.credit_balance,
+                        Some(
+                            interface::CreditBalance::Current(_)
+                                | interface::CreditBalance::Unavailable(_)
+                        )
+                    ))
                 || status.reset_credits != resets
         }) {
             self.alab_refresh_interface_at(now);
         } else {
             // The native scheduler coalesces deadlines. An earlier frame must
             // re-arm this later one, just as native thread-usage settlement does.
-            self.alab_schedule_quota_expiry_at(now);
+            self.alab_schedule_interface_deadline_at(now);
         }
     }
 
-    fn alab_schedule_quota_expiry_at(&self, now: DateTime<Local>) {
+    fn alab_monthly_credit_reset(&self) -> Option<DateTime<Local>> {
+        let limit = self
+            .rate_limit_snapshots_by_limit_id
+            .get("codex")?
+            .individual_limit
+            .as_ref()?;
+        DateTime::from_timestamp(limit.alab_reset_at, 0).map(|reset| reset.with_timezone(&Local))
+    }
+
+    fn alab_schedule_interface_deadline_at(&self, now: DateTime<Local>) {
         if !interface::enabled() || !self.alab_interface_can_publish() {
             return;
         }
@@ -171,6 +233,8 @@ impl ChatWidget {
             .chain(reset_expiry)
             .chain(weekly_reset)
             .chain(five_hour_reset)
+            .chain(self.alab_monthly_credit_reset())
+            .chain(codex_alab_tui::banner::next_landing_day_change(&now))
             .filter(|at| *at > now)
             .min()
             && let Ok(delay) = (expires_at - now).to_std()
@@ -205,21 +269,55 @@ impl ChatWidget {
         }
     }
 
+    pub(in crate::chatwidget) fn alab_local_account_server(&self) -> bool {
+        #[cfg(unix)]
+        if self.alab_retained_startup.is_some() {
+            return true;
+        }
+        self.remote_connection.is_none()
+    }
+
     fn alab_interface_status_at(&mut self, now: DateTime<Local>) -> InterfaceStatus {
-        let account = match self.status_account_display.as_ref() {
+        let (account, local_subscription) = match self.status_account_display.as_ref() {
             Some(StatusAccountDisplay::ChatGpt {
                 email: Some(email), ..
-            }) if !email.trim().is_empty() => email.clone(),
-            Some(StatusAccountDisplay::ApiKey) => "API key".to_string(),
-            _ => "Account unavailable".to_string(),
+            }) if !email.trim().is_empty() => {
+                let local_subscription = self.requires_openai_auth
+                    && self.alab_local_account_server()
+                    && email.split_once('@').is_some_and(|(name, domain)| {
+                        !name.is_empty() && !domain.is_empty() && !domain.contains('@')
+                    })
+                    && !email
+                        .chars()
+                        .any(|ch| ch.is_control() || ch.is_whitespace());
+                (email.clone(), local_subscription)
+            }
+            Some(StatusAccountDisplay::ApiKey) => ("API key".to_string(), false),
+            _ => ("Account unavailable".to_string(), false),
         };
-        let plan = match self.status_account_display.as_ref() {
-            Some(StatusAccountDisplay::ChatGpt { plan, .. }) => self
-                .alab_allowance
-                .observed_plan
-                .or(self.plan_type)
-                .map(crate::status::plan_type_display_name)
-                .or_else(|| plan.clone()),
+        let (native_plan, display_plan) = match self.status_account_display.as_ref() {
+            Some(StatusAccountDisplay::ChatGpt { plan, .. }) => (
+                self.alab_allowance.observed_plan.or(self.plan_type),
+                plan.as_ref(),
+            ),
+            _ => (None, None),
+        };
+        let plan = native_plan
+            .map(crate::status::plan_type_display_name)
+            .or_else(|| display_plan.cloned());
+        let credit_history = match native_plan {
+            Some(plan)
+                if plan != codex_protocol::account::PlanType::Unknown
+                    && self.requires_openai_auth
+                    && self.has_codex_backend_auth
+                    && self.alab_local_account_server() =>
+            {
+                Some(if plan.is_workspace_account() {
+                    interface::CreditHistory::WorkspaceCredits
+                } else {
+                    interface::CreditHistory::PersonalChats
+                })
+            }
             _ => None,
         };
         // Native /statusline also supports legacy unknown-duration windows.
@@ -258,6 +356,81 @@ impl ChatWidget {
                 .format(self.clock_format.date_time_format())
                 .to_string()
         });
+        let monthly_elapsed = self
+            .alab_monthly_credit_reset()
+            .is_some_and(|reset| reset <= now);
+        let credit_balance = snapshot.and_then(|snapshot| {
+            use RateLimitReachedType::*;
+            let restriction = match self.codex_rate_limit_reached_type {
+                Some(WorkspaceOwnerCreditsDepleted | WorkspaceMemberCreditsDepleted) => {
+                    Some("Workspace out of credits")
+                }
+                Some(WorkspaceOwnerUsageLimitReached) => Some("Workspace spending limit reached"),
+                Some(WorkspaceMemberUsageLimitReached) => Some("Member spending limit reached"),
+                Some(RateLimitReached) | None if self.codex_spend_control_reached == Some(true) => {
+                    Some("Account spending limit reached")
+                }
+                Some(RateLimitReached) | None => snapshot
+                    .individual_limit
+                    .as_ref()
+                    .filter(|limit| !monthly_elapsed && limit.percent_remaining <= 0.0)
+                    .map(|_| "Monthly credit limit reached"),
+            };
+            let credits = snapshot.credits.as_ref();
+            if credits.is_none() && restriction.is_none() {
+                return None;
+            }
+            if snapshot_stale || restriction.is_some() || monthly_elapsed {
+                let amount = if credits.is_some_and(|credits| credits.unlimited) {
+                    Some("unlimited credits".to_owned())
+                } else {
+                    reported_credit_amount(credits.and_then(|credits| credits.balance.as_deref()))
+                        .map(|value| format!("{value} credits"))
+                };
+                if snapshot_stale {
+                    return Some(interface::CreditBalance::LastReported(amount.map_or_else(
+                        || "credit balance stale".to_owned(),
+                        |amount| format!("Stale balance · {amount}"),
+                    )));
+                }
+                let amount = amount.unwrap_or_else(|| "balance unreported".to_owned());
+                return Some(match restriction {
+                    Some(reason) if monthly_elapsed => interface::CreditBalance::Unavailable(
+                        format!("Last check · {reason} · {amount}"),
+                    ),
+                    Some(reason) => {
+                        interface::CreditBalance::Unavailable(format!("{reason} · {amount}"))
+                    }
+                    None => {
+                        interface::CreditBalance::LastReported(format!("Last check · {amount}"))
+                    }
+                });
+            }
+            credits.map(|credits| {
+                credit_balance(
+                    credits.unlimited,
+                    credits.has_credits,
+                    credits.balance.as_deref(),
+                )
+            })
+        });
+        let individual_credit_limit = snapshot
+            .filter(|_| !snapshot_stale)
+            .and_then(|snapshot| snapshot.individual_limit.as_ref())
+            .map(|limit| {
+                if monthly_elapsed {
+                    return interface::IndividualCreditLimit::AwaitingRefresh;
+                }
+                let mut label = format!(
+                    "Your monthly credit limit · {:.0}% left",
+                    limit.percent_remaining
+                );
+                if let Some(reset) = &limit.resets_at {
+                    label.push_str(" · resets ");
+                    label.push_str(reset);
+                }
+                interface::IndividualCreditLimit::Current(label)
+            });
         let has_weekly = weekly.is_some();
         let weekly_used_percent = weekly.map(|window| window.used_percent);
         let has_five_hour = five_hour.is_some();
@@ -288,6 +461,7 @@ impl ChatWidget {
             });
         InterfaceStatus {
             account,
+            local_subscription,
             plan,
             weekly: has_weekly
                 .then(|| {
@@ -323,6 +497,11 @@ impl ChatWidget {
                         .map(|weekly| weekly.at(now.timestamp()))
                 })
                 .flatten(),
+            credit_balance,
+            individual_credit_limit,
+            credit_history,
+            thread_credit_usage: self.alab_thread_credit_usage(),
+            thread_credit_notice: self.alab_thread_credit_notice(),
             reset_credits: self
                 .alab_allowance
                 .resets_at(now.timestamp(), self.clock_format),
@@ -355,6 +534,46 @@ mod tests {
     use chrono::TimeZone;
     use codex_app_server_protocol::RateLimitSnapshot;
 
+    #[test]
+    fn available_credit_balance_preserves_fractional_credits_and_unknown_amounts() {
+        use interface::CreditBalance::Current;
+        use interface::CreditBalance::Unavailable;
+        assert_eq!(
+            credit_balance(false, true, Some("0.0025")),
+            Current("0.0025 credits left".into())
+        );
+        assert_eq!(
+            credit_balance(false, true, None),
+            Current("credits available".into())
+        );
+        assert_eq!(
+            credit_balance(false, true, Some("NaN")),
+            Current("credits available".into())
+        );
+        for amount in ["0", "-0.00E+8", "0e-400"] {
+            assert_eq!(
+                credit_balance(false, false, Some(amount)),
+                Unavailable("0 credits left".into())
+            );
+        }
+        for amount in [None, Some("NaN")] {
+            assert_eq!(
+                credit_balance(false, false, amount),
+                Unavailable("Unavailable to spend · balance unreported".into())
+            );
+        }
+        for amount in ["12.5", "1e-400"] {
+            assert_eq!(
+                credit_balance(false, false, Some(amount)),
+                Unavailable(format!("Unavailable to spend · {amount} credits"))
+            );
+        }
+        assert_eq!(
+            credit_balance(true, false, None),
+            Current("unlimited credits".into())
+        );
+    }
+
     fn usage(used_percent: i32) -> RateLimitSnapshot {
         serde_json::from_value(serde_json::json!({
             "limitId": "codex",
@@ -370,6 +589,47 @@ mod tests {
             plan: Some("Pro".to_string()),
             workspace: None,
         })
+    }
+
+    #[tokio::test]
+    async fn disconnected_idle_timer_rearms_its_local_midnight_frame() {
+        use codex_alab_tui::session::Autopilot;
+        use codex_alab_tui::session::HarnessWord;
+        use codex_alab_tui::session::Shared;
+        let _scope = interface::scoped(Box::leak(Box::new(interface::State::new())));
+        interface::set_enabled(true);
+        let host = Box::leak(Box::new(Shared::new()));
+        let _host = codex_alab_tui::boxes::scoped(host);
+        let (mut chat, _tx, mut events, mut ops) = make_chatwidget_manual_with_sender().await;
+        chat.pause_for_disconnect();
+        chat.reconnect_failed();
+        while events.try_recv().is_ok() {}
+        while ops.try_recv().is_ok() {}
+        let (requester, mut frames) = crate::tui::FrameRequester::test_channel();
+        chat.frame_requester = requester;
+        let midnight = Local
+            .with_ymd_and_hms(2026, 11, 20, 0, 0, 0)
+            .single()
+            .unwrap();
+        host.set_autopilot_with_word(Autopilot::Active, HarnessWord::Cruise);
+        host.set_land_at(Some(
+            u64::try_from((midnight + Duration::hours(6)).timestamp()).unwrap(),
+        ));
+        for remaining in [1_000, 250] {
+            let now = midnight - Duration::milliseconds(remaining);
+            let before = std::time::Instant::now();
+            chat.alab_refresh_quota_freshness_at(now);
+            let wake = frames
+                .try_recv()
+                .expect("local day change schedules a frame");
+            let delay = std::time::Duration::from_millis(remaining as u64);
+            assert!(wake >= before + delay && wake <= std::time::Instant::now() + delay);
+            assert!(frames.try_recv().is_err());
+        }
+        host.set_land_at(None);
+        chat.alab_refresh_quota_freshness_at(midnight);
+        assert!(frames.try_recv().is_err());
+        assert!(ops.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -706,6 +966,20 @@ mod tests {
         assert_eq!(after.weekly.as_deref(), Some("weekly 73% left"));
         assert!(after.quota.as_ref().unwrap().projection.is_some());
         assert!(footer.contains("weekly ["), "{footer}");
+        let compact_area = Rect::new(2, 1, 16, 1);
+        let mut compact_buffer = Buffer::empty(Rect::new(0, 0, 20, 3));
+        interface::render_status_current(
+            compact_area,
+            &mut compact_buffer,
+            Depth::TrueColor,
+            Theme::default(),
+        );
+        let compact: String = (compact_area.x..compact_area.right())
+            .map(|x| compact_buffer[(x, compact_area.y)].symbol())
+            .collect();
+        assert_eq!(compact, "weekly 27% used ");
+        assert!(interface::account_mouse_hit(2, 1));
+        assert!(!interface::account_mouse_hit(17, 1));
         assert!(details.contains("Estimated at reset:"), "{details}");
         assert_eq!(
             chat.rate_limit_snapshots_by_limit_id["codex"].captured_at,

@@ -175,6 +175,10 @@ pub(super) fn accept_upgrade(app: &App, request: codex_alab_tui::upgrade::Upgrad
 }
 
 fn upgrade_ready(app: &App) -> bool {
+    #[cfg(unix)]
+    if app.alab_has_pending_startup_editor() {
+        return false;
+    }
     let chat = &app.chat_widget;
     !chat.is_user_turn_pending_or_running()
         && matches!(
@@ -184,11 +188,31 @@ fn upgrade_ready(app: &App) -> bool {
                 | codex_alab_tui::session::ProgramState::Error
         )
         && chat.composer_is_empty()
-        && !chat.alab_queued_input()
+        && !chat.alab_has_upgrade_input()
         && chat.no_modal_or_popup_active()
         && !chat.has_active_view()
+        && !chat.has_pending_protected_request()
         && chat.external_editor_state() == ExternalEditorState::Closed
         && app.overlay.is_none()
+}
+
+/// The source-exec frame resumes its primary and installs these bytes in that editor.
+#[cfg(unix)]
+fn prepare_primary_upgrade_capture(
+    app: &App,
+    tui: &crate::tui::Tui,
+) -> std::io::Result<codex_alab_tui::upgrade_terminal::Prepared> {
+    if displayed_primary(app).is_none()
+        || app.app_server_backend_id.is_none()
+        || app.displayed_conversation_backend_id() != app.app_server_backend_id
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "the primary editor is not displayed on its backend",
+        ));
+    }
+    tui.alab_prepare_upgrade_capture()?
+        .with_editor(app.chat_widget.alab_capture_runtime_editor()?)
 }
 
 /// Run while the TUI/runtime and event pump are alive, before ShutdownFirst.
@@ -203,15 +227,12 @@ pub(super) async fn accept_upgrade_and_capture(
     }
     overlay(app.overlay.is_some());
     observe(app);
-    if !upgrade_ready(app) {
+    if !upgrade_ready(app) || !composer_owns_input(app) {
         return Ok(false);
     }
     #[cfg(unix)]
     {
-        let input = match tui
-            .alab_prepare_upgrade_capture()
-            .and_then(|input| input.with_editor(app.chat_widget.alab_capture_runtime_editor()?))
-        {
+        let input = match prepare_primary_upgrade_capture(app, tui) {
             Ok(input) => input,
             Err(error) => {
                 codex_alab_tui::upgrade::update_pending(format!("Update pending: {error}"));
@@ -241,39 +262,170 @@ pub(super) async fn attach_runtime_editor(
     app: &mut App,
     primary: ThreadId,
 ) -> color_eyre::Result<()> {
-    if crate::app_server_session::alab_upgrade_receiver::needs_editor_restore()
-        && let Some(pending) = codex_alab_tui::upgrade_state::pending()
-    {
-        pending.validate_primary(&primary.to_string())?;
-        let frame = codex_alab_tui::upgrade_state::data(pending.bytes())?;
-        app.chat_widget
-            .alab_restore_runtime_editor(primary, frame.terminal.editor.get().as_bytes())?;
-    }
-    crate::app_server_session::alab_upgrade_receiver::attached(primary, app.chat_widget.thread_id())
-        .await
+    crate::app_server_session::alab_upgrade_receiver::attached(
+        primary,
+        app.chat_widget.thread_id(),
+        app.app_server_backend_id,
+        &app.app_event_tx,
+        |pending| {
+            let frame = codex_alab_tui::upgrade_state::data(pending.bytes())?;
+            app.chat_widget
+                .alab_restore_runtime_editor(primary, frame.terminal.editor.get().as_bytes())?;
+            Ok(())
+        },
+    )
+    .await
 }
 #[cfg(not(unix))]
 pub(super) async fn attach_runtime_editor(
     app: &mut App,
     primary: ThreadId,
 ) -> color_eyre::Result<()> {
-    crate::app_server_session::alab_upgrade_receiver::attached(primary, app.chat_widget.thread_id())
-        .await
+    crate::app_server_session::alab_upgrade_receiver::attached(
+        primary,
+        app.chat_widget.thread_id(),
+        app.app_server_backend_id,
+        &app.app_event_tx,
+        |_| Ok(()),
+    )
+    .await
 }
 
-pub(super) fn runtime_editor_drew(app: &App) {
+pub(super) fn render_runtime_editor_frame(
+    app: &mut App,
+    tui: &mut crate::tui::Tui,
+    size: ratatui::layout::Size,
+) -> color_eyre::Result<ratatui::layout::Rect> {
+    // A server event can replace the composer before another pointer event arrives.
+    app.alab_clear_covered_switch_hover(tui);
     #[cfg(unix)]
     if codex_alab_tui::upgrade_editor_startup::deferred()
-        && app.chat_widget.alab_runtime_editor_has_layout()
+        && let Some((owner, sdk_was_active)) =
+            crate::app_server_session::alab_upgrade_receiver::editor_before_paint()?
     {
-        let frames = app.chat_widget.alab_frame_requester();
-        let events = app.app_event_tx.clone();
-        crate::app_server_session::alab_upgrade_receiver::activate_after_layout(move |result| {
-            match result {
-                Ok(()) => codex_alab_tui::upgrade_editor_startup::release_after_activation(),
-                Err(error) => events.send(crate::app_event::AppEvent::FatalExitRequest(error)),
+        return draw_attached_editor(app, tui, size, owner, sdk_was_active, |app, action| {
+            let frames = app.chat_widget.alab_frame_requester();
+            match action {
+                AfterEditorPaint::ReleaseInput => {
+                    codex_alab_tui::upgrade_editor_startup::release_after_activation();
+                    frames.schedule_frame();
+                }
+                AfterEditorPaint::Activate => {
+                    let events = app.app_event_tx.clone();
+                    crate::app_server_session::alab_upgrade_receiver::activate_after_layout(
+                        owner,
+                        move |result| {
+                            if let Err(error) = result {
+                                events.send(crate::app_event::AppEvent::FatalExitRequest(error));
+                            }
+                            // Physical input stays deferred until the actor paints this live owner again.
+                            frames.schedule_frame();
+                        },
+                    );
+                }
             }
-            frames.schedule_frame();
         });
     }
+    app.paint_chat_widget_frame(tui, size)
 }
+
+#[cfg(unix)]
+fn displayed_primary(app: &App) -> Option<ThreadId> {
+    app.primary_thread_id.filter(|primary| {
+        app.current_displayed_thread_id() == Some(*primary)
+            && app.chat_widget.thread_id() == Some(*primary)
+    })
+}
+
+#[cfg(unix)]
+fn draw_restoring_editor(
+    app: &mut App,
+    tui: &mut crate::tui::Tui,
+    draw: impl FnOnce(&mut App, &mut crate::tui::Tui) -> color_eyre::Result<ratatui::layout::Rect>,
+    after_layout: impl FnOnce(&App, ThreadId),
+) -> color_eyre::Result<ratatui::layout::Rect> {
+    let Some(primary) = displayed_primary(app) else {
+        return draw(app, tui);
+    };
+    let before = tui.alab_draw_checkpoint();
+    // A failed write or a frame that covers the editor can leave its old hit-test
+    // geometry behind. During input deferral only this paint's geometry counts.
+    app.chat_widget.alab_clear_runtime_editor_layout();
+    let area = draw(app, tui)?;
+    if tui.alab_completed_draw_after(&before)
+        && displayed_primary(app) == Some(primary)
+        && app.chat_widget.alab_runtime_editor_has_layout()
+    {
+        after_layout(app, primary);
+    }
+    Ok(area)
+}
+
+// The sidebar can own input while the primary composer is still painted. The
+// App's active key contexts also distinguish transcript browsing from typing.
+fn composer_owns_input(app: &App) -> bool {
+    use crate::keymap::KeymapContext;
+    let contexts = app.active_keymap_contexts();
+    !app.reconnect.offline
+        && app.pending_thread_switch_resets == 0
+        && app.overlay.is_none()
+        && !app.sidebar_has_focus()
+        && !app.sidebar().is_some_and(|pane| pane.close.is_some())
+        && app.pane_resize.is_none()
+        && app.chat_widget.no_modal_or_popup_active()
+        && !app.chat_widget.has_active_view()
+        && app.chat_widget.external_editor_state() == ExternalEditorState::Closed
+        && (contexts.contains(KeymapContext::Composer)
+            || (contexts.contains(KeymapContext::Editor)
+                && !app.transcript_view.is_search_editing()
+                && app
+                    .chat_widget
+                    .keymap_contexts()
+                    .contains(KeymapContext::Editor)))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterEditorPaint {
+    Activate,
+    ReleaseInput,
+}
+
+#[cfg(unix)]
+fn draw_attached_editor(
+    app: &mut App,
+    tui: &mut crate::tui::Tui,
+    size: ratatui::layout::Size,
+    owner: &crate::app_server_session::alab_upgrade_receiver::AttachedEditor,
+    sdk_was_active: bool,
+    after_layout: impl FnOnce(&App, AfterEditorPaint),
+) -> color_eyre::Result<ratatui::layout::Rect> {
+    if !owner.matches(owner.primary, app.app_server_backend_id, &app.app_event_tx)
+        || !composer_owns_input(app)
+    {
+        return app.paint_chat_widget_frame(tui, size);
+    }
+    draw_restoring_editor(
+        app,
+        tui,
+        |app, tui| app.paint_chat_widget_frame(tui, size),
+        |app, painted| {
+            if owner.matches(painted, app.app_server_backend_id, &app.app_event_tx)
+                && composer_owns_input(app)
+            {
+                after_layout(
+                    app,
+                    if sdk_was_active {
+                        AfterEditorPaint::ReleaseInput
+                    } else {
+                        AfterEditorPaint::Activate
+                    },
+                );
+            }
+        },
+    )
+}
+
+#[cfg(all(test, unix))]
+#[path = "runtime_editor_frame_tests.rs"]
+mod runtime_editor_frame_tests;

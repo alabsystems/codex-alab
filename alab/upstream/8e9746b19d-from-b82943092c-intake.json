@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "base": "b82943092cf52b69ab13ab1a5bb2beb7820deef7",
+  "target": "8e9746b19d20539ab3fbce5d69a4e0cd09b27305",
+  "frontier": "b82943092cf52b69ab13ab1a5bb2beb7820deef7",
+  "commits": [
+    {
+      "sha": "7d458c8fc5cfc99ec447e3af6c173949660c268b",
+      "subject": "Preserve sandbox writable roots across client and server platforms (#62376)",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/v2/permissions.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs",
+        "codex-rs/app-server/src/request_processors/turn_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_start.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/tui/src/app/tests/permission_selection_tests.rs",
+        "codex-rs/tui/src/app/thread_settings.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/chatwidget/settings.rs",
+        "codex-rs/tui/src/dynamic_tools.rs",
+        "codex-rs/tui/src/dynamic_tools_tests.rs",
+        "codex-rs/tui/src/temporary_structured_request.rs"
+      ],
+      "classes": [
+        "protocol",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt the server's path convention for writable roots. Keep the received sandbox on the generated turn and perform native validation at the server that enforces it. Preserve ALab's retained delegated tool output and named sandbox profiles.",
+      "evidence": [
+        "The permissions protocol now uses LegacyAppPathString for writableRoots with the existing JSON and TypeScript field shapes. permission_profile_template uses path URIs for display. Native enforcement rejects relative roots, and command/exec and turn/start propagate the conversion error.",
+        "The TUI constructs the first delegated turn with the server sandbox. The ALab task tool can reuse that turn template while still setting the exact thread, tool output and background program. Its retained backend has the original native sandbox available."
+      ],
+      "revisit": "Run the foreign writable-root template and native rejection tests, including the TUI dynamic task path."
+    },
+    {
+      "sha": "b967993f35239b86ee3c6a9c8f54b8146e31ddfa",
+      "subject": "Preserve workspace roots across client and server platforms (#62377)",
+      "paths": [
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/compaction.rs",
+        "codex-rs/app-server/tests/suite/v2/selected_environment.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_environments.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_resume.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_revert.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_start.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/misalignment_policy.rs",
+        "codex-rs/tui/src/app/safety_buffering.rs",
+        "codex-rs/tui/src/app/safety_recourse.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/fork_workspace_roots_tests.rs",
+        "codex-rs/tui/src/app/tests/permission_selection_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/side_chat_policy_tests.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app/thread_session_state.rs",
+        "codex-rs/tui/src/app/working_directory.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/app_server_session/provider_selection_tests.rs",
+        "codex-rs/tui/src/app_server_session/rollout_history.rs",
+        "codex-rs/tui/src/app_server_session/rollout_history_tests.rs",
+        "codex-rs/tui/src/app_server_session/workspace_roots_tests.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/session_flow.rs",
+        "codex-rs/tui/src/chatwidget/settings.rs",
+        "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+        "codex-rs/tui/src/managed_worktree_tools_tests.rs",
+        "codex-rs/tui/src/session_state.rs",
+        "codex-rs/utils/path-uri/src/api_path_string.rs"
+      ],
+      "classes": [
+        "protocol",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "native-session",
+        "execution-continuity",
+        "model-discovery"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt server-native runtime workspace roots through start, resume and fork. Preserve ALab's original local paths and retained side-session checkpoints, current thread identity and the model family on resume.",
+      "evidence": [
+        "The wire carries LegacyAppPathString and the app-server normalizes each native root with native_runtime_workspace_roots, including an error for a nonabsolute root. The TUI uses the server platform to form PathUri and carries those roots into remote forks and side chats.",
+        "ALab shares the real app-server startup preparation with prospective local creation and constructs retained backend task starts from a native config snapshot. Apply the same upstream conversion at each boundary. The saved TUI side state also reads legacy native roots."
+      ],
+      "revisit": "Run local and foreign start/resume/fork cases, compare native relative-root rejection, verify old retained UI data, and repeat remote and saved-model public requests."
+    },
+    {
+      "sha": "8e9746b19d20539ab3fbce5d69a4e0cd09b27305",
+      "subject": "Remove the 4,000-byte prompt limit for `thread/sample` (#62378)",
+      "paths": [
+        "codex-rs/app-server/src/thread_sample.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_sample.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Allow long thread/sample prompts. Retain the required nonblank expected turn and prompt, active-turn matching, output cap and deadline.",
+      "evidence": [
+        "generate_sample removes its 4,000-byte prompt guard and retains its 30-second deadline and 64 KiB output bound. The app-server test now checks blank input at this validation point.",
+        "A public stdio comparison on an earlier integrated executable accepted 4,000 multibyte UTF-8 bytes, refused 8,075, and retained the source conversation. The post-change observation must exercise the actual sampler and preserve original turns."
+      ],
+      "revisit": "Check an 8,075-byte prompt, nonblank validation, stale turn refusal and the actual sampling reply against the integrated CLI."
+    }
+  ]
+}

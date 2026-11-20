@@ -34,6 +34,7 @@ impl ChatWidget {
         {
             bail!("retained startup has no actual activation observation");
         }
+        self.alab_recover_restored_finding_input();
         self.submit_initial_user_message_if_pending();
         self.maybe_send_next_queued_input();
         Ok(())

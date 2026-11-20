@@ -224,19 +224,27 @@ async fn run_child(root: &Path, case: &str) -> color_eyre::Result<CaseOutcome> {
     )?;
     handshake_witness.persist()?;
     if hung {
-        color_eyre::eyre::bail!("{case}: one-minute child hang detector; output retained");
+        color_eyre::eyre::bail!(
+            "{case}: one-minute child hang detector; output retained; ordinary child stderr:\n{}",
+            upgrade_fixture_trace::ordinary_child_stderr(&stderr)
+        );
     }
     let text = String::from_utf8(stdout)?;
     let completed = text.lines().find_map(|line| line.strip_prefix(OUTCOME));
     let Some(completed) = completed else {
         color_eyre::eyre::bail!(
-            "{case}: child setup/cleanup did not produce its outcome; {status}; see {}",
-            case_root.display()
+            "{case}: child setup/cleanup did not produce its outcome; {status}; see {}; ordinary child stderr:\n{}",
+            case_root.display(),
+            upgrade_fixture_trace::ordinary_child_stderr(&stderr)
         );
     };
     let outcome: CaseOutcome = serde_json::from_str(completed)?;
     assert_eq!(outcome.case, case);
-    assert!(status.success(), "{case}: fixture child failed: {status}");
+    assert!(
+        status.success(),
+        "{case}: fixture child failed: {status}; ordinary child stderr:\n{}",
+        upgrade_fixture_trace::ordinary_child_stderr(&stderr)
+    );
     Ok(outcome)
 }
 

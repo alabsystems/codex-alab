@@ -159,6 +159,9 @@ pub struct RefreshedModelCatalog {
 
 /// Coordinates model discovery plus cached metadata on disk.
 pub trait ModelsManager: fmt::Debug + Send + Sync {
+    fn alab_peer_cache_file(&self) -> Option<&std::path::Path> { None } // ALAB(model-poll): managers without a shared cache have no disk notifications.
+    fn alab_prepare_mantle_thread(&self) -> ModelsManagerFuture<'_, ()> { Box::pin(std::future::ready(())) } // ALAB(defaults): resolve a metadata-only region at real thread admission.
+    fn alab_confirmed_mantle_region(&self) -> Option<String> { None } // ALAB(defaults): the new inference provider reuses its own catalog's admitted region.
     /// Initialize a newly selected catalog without replacing an already-loaded snapshot.
     /// Stateful managers must check readiness for their current provider and credentials;
     /// a successful empty catalog is initialized too. Static catalogs need no work.
@@ -372,6 +375,7 @@ impl CatalogSource {
 /// Cache policy and live feature state shared by catalogs with different request credentials.
 #[derive(Clone, Debug, Default)]
 pub struct ModelCatalogSettings {
+    pub alab_registered_openai_api: bool, // ALAB(defaults): selected by provider ID for this catalog instance.
     cache: Option<Arc<dyn ModelsCache>>,
     pub api_key_model_discovery_default: bool,
     // Before the host publishes a live change, each thread uses its configured default.
@@ -517,6 +521,7 @@ impl StaticModelsManager {
 }
 
 impl ModelsManager for OpenAiModelsManager {
+    fn alab_peer_cache_file(&self) -> Option<&std::path::Path> { self.settings.cache.as_ref()?.alab_peer_file() } // ALAB(model-poll): expose the cache selected for this manager.
     fn ensure_initialized(
         &self,
         http_client_factory: HttpClientFactory,

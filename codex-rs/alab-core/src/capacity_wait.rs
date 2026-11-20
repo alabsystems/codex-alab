@@ -6,11 +6,20 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use std::time::Instant;
 
 /// Shared by the live capacity error and an exact active-turn reconnect snapshot.
 pub const CAPACITY_RETRY_NOTICE: &str =
     "Model is at capacity; retrying automatically (interrupt to stop)...";
+
+/// Snapshot taken when the notice is produced, including any provider-advised wait.
+pub fn retry_timing(remaining: Duration) -> String {
+    let seconds = remaining
+        .as_secs()
+        .saturating_add(u64::from(remaining.subsec_nanos() > 0));
+    format!("Retry scheduled in {seconds}s.")
+}
 
 /// The exact capacity failure that owns a live wait, independent of any API crate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,22 +95,22 @@ impl LiveCapacityWait {
         clock: impl FnOnce() -> Instant,
         publish: impl FnOnce() -> R,
     ) -> Option<R> {
-        self.publish_reason_if_current(clock, |_| publish())
+        self.publish_reason_if_current(clock, |_, _| publish())
     }
 
     /// Publish the exact current reason under the same lock as its deadline check.
     pub fn publish_reason_if_current<R>(
         &self,
         clock: impl FnOnce() -> Instant,
-        publish: impl FnOnce(CapacityReason) -> R,
+        publish: impl FnOnce(CapacityReason, Duration) -> R,
     ) -> Option<R> {
         let wait = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = clock();
-        wait.deadline.filter(|deadline| *deadline > now)?;
-        Some(publish(wait.reason))
+        let deadline = wait.deadline.filter(|deadline| *deadline > now)?;
+        Some(publish(wait.reason, deadline - now))
     }
 }
 
@@ -180,17 +189,23 @@ mod tests {
         assert!(!old.update(now + Duration::from_secs(60)));
         assert!(current.update(now + Duration::from_secs(20)));
         assert_eq!(
-            state.publish_reason_if_current(|| now, |reason| reason),
-            Some(CapacityReason::PolicyCapacityUnavailable)
+            state.publish_reason_if_current(
+                || now + Duration::from_millis(1250),
+                |reason, remaining| (reason, retry_timing(remaining)),
+            ),
+            Some((
+                CapacityReason::PolicyCapacityUnavailable,
+                "Retry scheduled in 19s.".to_string(),
+            ))
         );
         drop(old);
         assert_eq!(
-            state.publish_reason_if_current(|| now, |reason| reason),
+            state.publish_reason_if_current(|| now, |reason, _| reason),
             Some(CapacityReason::PolicyCapacityUnavailable)
         );
         drop(current);
         assert_eq!(
-            state.publish_reason_if_current(|| now, |reason| reason),
+            state.publish_reason_if_current(|| now, |reason, _| reason),
             None
         );
     }

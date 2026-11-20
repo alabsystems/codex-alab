@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "base": "508a42966658b4f1d018ea471522beed791537ce",
+  "target": "cf881a627dd52e7aecef63416c1acd2a89c4dfbd",
+  "frontier": "508a42966658b4f1d018ea471522beed791537ce",
+  "commits": [
+    {
+      "sha": "cf881a627dd52e7aecef63416c1acd2a89c4dfbd",
+      "subject": "Enable network access in the shell snapshot filesystem test (#62415)",
+      "paths": [
+        "codex-rs/core/src/shell_snapshot_sandbox_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the upstream workspace-denial test fixture so its filesystem check reaches the shell on remote runners.",
+      "evidence": [
+        "Only the second-workspace-root denial fixture selects the platform sandbox here. It keeps the denied filesystem rule and enables test network access to avoid requiring a nested network namespace before shell startup.",
+        "The other five fixture modes retain their existing profile. The dedicated network-denial case still uses its cancellation token. The production shell snapshot, permission profiles, credential handling and ALab-owned rules are outside this patch."
+      ],
+      "revisit": "Use a supported platform runner to observe the second-workspace-root denial and descendant cleanup."
+    }
+  ]
+}

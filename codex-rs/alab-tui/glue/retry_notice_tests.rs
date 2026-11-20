@@ -8,6 +8,8 @@ use super::*;
 use crate::chatwidget::QueuedUserMessage;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use codex_alab_core::capacity::CAPACITY_RETRY_NOTICE as NOTICE;
+use codex_alab_core::capacity::retry_timing;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -24,10 +26,9 @@ use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
+use std::time::Duration;
 
 const TURN: &str = "capacity-wait-turn";
-const NOTICE: &str = "Model is at capacity; retrying automatically (interrupt to stop)...";
-const DETAILS: &str = "The selected model is at capacity.";
 
 fn scope(enabled: bool) -> interface::Scope {
     let state = Box::leak(Box::new(interface::State::new()));
@@ -65,7 +66,7 @@ fn start(chat: &mut ChatWidget) {
     );
 }
 
-fn retry(chat: &mut ChatWidget) {
+fn retry(chat: &mut ChatWidget, seconds: u64) {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             thread_id: thread_id(chat),
@@ -73,8 +74,8 @@ fn retry(chat: &mut ChatWidget) {
             will_retry: true,
             error: TurnError {
                 message: NOTICE.into(),
-                codex_error_info: None,
-                additional_details: Some(DETAILS.into()),
+                codex_error_info: Some(codex_app_server_protocol::CodexErrorInfo::ServerOverloaded),
+                additional_details: Some(retry_timing(Duration::from_secs(seconds))),
                 misalignment: None,
             },
         }),
@@ -177,7 +178,12 @@ async fn metadata_retains_the_live_notice_only_when_enhanced() {
                 "queued follow-up",
             )));
         let queued = chat.input_queue.queued_user_messages.clone();
-        retry(&mut chat);
+        retry(&mut chat, 324);
+        assert_eq!(
+            chat.bottom_pane.status_widget().unwrap().details(),
+            Some("Retry scheduled in 324s.")
+        );
+        retry(&mut chat, 301);
         for notification in metadata(&chat) {
             assert_eq!(
                 ChatWidget::alab_preserve_retry_notice(&notification),
@@ -189,7 +195,10 @@ async fn metadata_retains_the_live_notice_only_when_enhanced() {
                 .status_widget()
                 .expect("visible capacity wait");
             assert_eq!(status.header(), if enabled { NOTICE } else { "Working" });
-            assert_eq!(status.details(), enabled.then_some(DETAILS));
+            assert_eq!(
+                status.details(),
+                enabled.then_some("Retry scheduled in 301s.")
+            );
             assert_eq!(
                 chat.status_state.retry_status_header.as_deref(),
                 enabled.then_some("Working")
@@ -214,7 +223,7 @@ async fn inactive_metadata_keeps_the_upstream_restoration() {
     let (mut chat, _tx, _events, _ops) = make_chatwidget_manual_with_sender().await;
     start(&mut chat);
     for notification in metadata(&chat) {
-        retry(&mut chat);
+        retry(&mut chat, 324);
         assert!(!ChatWidget::alab_preserve_retry_notice(&notification));
         chat.handle_server_notification(notification, None);
         assert_eq!(chat.status_state.current_status.header, "Working");
@@ -230,7 +239,7 @@ async fn actual_content_and_item_progress_restore_the_previous_status() {
     let _scope = scope(true);
     let (mut chat, _tx, _events, _ops) = make_chatwidget_manual_with_sender().await;
     start(&mut chat);
-    retry(&mut chat);
+    retry(&mut chat, 324);
     chat.handle_server_notification(
         ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
             thread_id: thread_id(&chat),
@@ -244,7 +253,7 @@ async fn actual_content_and_item_progress_restore_the_previous_status() {
     assert_eq!(chat.status_state.current_status.details, None);
     assert!(chat.status_state.retry_status_header.is_none());
     assert!(chat.bottom_pane.is_task_running());
-    retry(&mut chat);
+    retry(&mut chat, 324);
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: thread_id(&chat),
@@ -263,7 +272,7 @@ async fn actual_content_and_item_progress_restore_the_previous_status() {
         chat.bottom_pane.status_widget().unwrap().header(),
         "Compacting context"
     );
-    retry(&mut chat);
+    retry(&mut chat, 324);
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(&chat),
@@ -288,7 +297,7 @@ async fn terminal_error_and_completion_end_the_retry_display() {
         let _scope = scope(false);
         let (mut chat, _tx, _events, _ops) = make_chatwidget_manual_with_sender().await;
         start(&mut chat);
-        retry(&mut chat);
+        retry(&mut chat, 324);
         let notification = if failed {
             ServerNotification::Error(ErrorNotification {
                 thread_id: thread_id(&chat),

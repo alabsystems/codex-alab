@@ -38,6 +38,42 @@ class GuardResultTests(unittest.TestCase):
         self.assertEqual(result["timeout_seconds"], timeout)
         return code, result
 
+    def test_unresponsive_term_controller_keeps_timeout_status_after_hard_stop(self):
+        command = ["release-controller"]
+        timeout = subprocess.TimeoutExpired(command, 120)
+        child = mock.Mock()
+        child.wait.side_effect = [timeout, timeout, -signal.SIGKILL]
+        record = self.root / "timeout.json"
+        with mock.patch.object(subprocess, "Popen") as spawn, mock.patch.object(sys, "stderr") as error:
+            spawn.return_value.__enter__.return_value = child
+            status = GUARD.run_inherited(command, timeout=120, result_file=record, retire_on_term=True)
+        self.assertEqual(status, 124)
+        self.assertEqual(child.method_calls, [mock.call.wait(timeout=120), mock.call.terminate(),
+                         mock.call.wait(timeout=120), mock.call.kill(), mock.call.wait()])
+        self.assertTrue(any("retirement is unconfirmed" in str(call) for call in error.write.call_args_list))
+        self.assertEqual(json.loads(record.read_bytes()), {"schema": 1, "argv": command,
+                         "timeout_seconds": 120, "returncode": None, "timed_out": True})
+
+    def test_closed_timeout_diagnostic_preserves_cli_status_and_receipt(self):
+        child = [sys.executable, "-IB", "-c", "import time; time.sleep(60)"]
+        for closed_fd in (False, True):
+            with self.subTest(closed_fd=closed_fd):
+                record = self.root / f"closed-stderr-{closed_fd}.json"
+                command = [sys.executable, "-IB", str(ROOT / "alab/command_guard.py"),
+                           "--result-file", str(record), "--inherited-group-timeout", "0.1",
+                           "--retire-on-term", "--", *child]
+                if closed_fd:
+                    command = ["/bin/sh", "-c", 'exec 2>&-; exec "$@"', "sh", *command]
+                reader, writer = os.pipe()
+                os.close(reader)
+                try:
+                    done = subprocess.run(command, stderr=writer, timeout=60)
+                finally:
+                    os.close(writer)
+                self.assertEqual(done.returncode, 124)
+                self.assertEqual(json.loads(record.read_bytes()), {"schema": 1, "argv": child,
+                                 "timeout_seconds": 0.1, "returncode": None, "timed_out": True})
+
     def anonymous_result(self, initial=b"", offset=0, read_only=False):
         writer, name = tempfile.mkstemp(dir=self.root, prefix="anonymous-")
         path = Path(name)

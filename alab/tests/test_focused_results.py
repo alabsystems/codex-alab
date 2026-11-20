@@ -127,6 +127,25 @@ class FocusedResultsTests(unittest.TestCase):
                     result = subprocess.run(command, capture_output=True, text=True)
                     self.assertEqual(result.returncode, status, result.stderr)
 
+    def test_cli_sgr_styles_do_not_create_a_named_completion_boundary(self):
+        output = named_suite('module::wanted')
+        colored = '\x1b[32mtest module::wanted\x1b[0m ... \x1b[32mok\x1b[0m'
+        variants = [
+            ('plain-prefix', 'ordinary visible text test module::wanted ... ok', 1),
+            ('styled-prefix', 'ordinary visible text ' + colored, 1),
+            ('styled-line', colored, 0),
+            ('cursor-and-style', 'visible TUI frame\x1b[?25h' + colored, 0),
+        ]
+        with tempfile.TemporaryDirectory() as scratch:
+            log = Path(scratch) / 'test.log'
+            command = [sys.executable, '-I', '-B', str(Path(module.__file__)),
+                       '--log', str(log), '--status', '0', '--require-test', 'module::wanted']
+            for name, line, status in variants:
+                with self.subTest(variant=name):
+                    log.write_text(output.replace('test module::wanted ... ok', line))
+                    done = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(done.returncode, status, done.stdout + done.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

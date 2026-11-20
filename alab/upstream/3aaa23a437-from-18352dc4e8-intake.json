@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "base": "18352dc4e8757d652e4102a17abc76601847b8da",
+  "target": "3aaa23a437f6a0e6ab224163a2e36fd95ff73804",
+  "frontier": "18352dc4e8757d652e4102a17abc76601847b8da",
+  "commits": [
+    {
+      "sha": "2f7c5a858865b413f5b56ebe1af70fbeb349b218",
+      "subject": "Cancel Cloud overview refreshes that block TUI navigation (#62150)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agents_overview.rs",
+        "codex-rs/tui/src/app/agents_overview_actions_tests.rs",
+        "codex-rs/tui/src/app/agents_overview_discovery_tests.rs",
+        "codex-rs/tui/src/app/agents_overview_new.rs",
+        "codex-rs/tui/src/app/agents_overview_tests.rs",
+        "codex-rs/tui/src/app/agents_overview_threads.rs",
+        "codex-rs/tui/src/app/backend_selection.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/session_picker.rs",
+        "codex-rs/tui/src/app/tests/navigation_reconnect_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/voice_owner.rs"
+      ],
+      "classes": [
+        "fix",
+        "background"
+      ],
+      "features": [
+        "native-ui",
+        "provider-recovery",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Let navigation abandon a Cloud inventory refresh that owns the worker slot. Preserve cancellation on the original backend and preserve existing ALab refresh ownership and displayed-session guards.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 6241be8604c539b5e43b4aa24836cea55a85ca952ca8076d566a5d124f07d505.",
+        "The active refresh owns a join handle. Matching Cloud navigation aborts and joins only the affected refresh, and the picker clears queued refreshes before aborting the active one.",
+        "Dropping the list caller releases the existing Cloud worker's cancellable read. Pending conversation writes and other backend owners stay outside this route."
+      ],
+      "revisit": "Run the existing current-chat return and plan implementation tests with a held list. Verify retained overview restoration and switching between two backend owners."
+    },
+    {
+      "sha": "1c2e4cd45f15ea7d9576d638f6a1112b8fa58f77",
+      "subject": "Limit recovery after repeated cloud reply stream disconnects (#62151)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud_backend/idle.rs",
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs"
+      ],
+      "classes": [
+        "fix",
+        "background"
+      ],
+      "features": [
+        "provider-recovery",
+        "native-session",
+        "account-isolation",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Bound repeated short-lived Cloud reply stream recoveries. Keep the original account permit through the retry delay and attach, preserving existing state ownership.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 58cc059cd3b889a368e654cbb40703477dac297bbe0968029dd456ee1787644b.",
+        "An acknowledged replacement increments its recovery count. Stable stream lifetime or an explicit reset clears the count. Later attempts delay before attaching under the same credential permit.",
+        "The limit applies to acknowledged replacement streams rather than every failed connection attempt. Terminal refusal leaves the visible transcript and draft intact."
+      ],
+      "revisit": "Verify the third replacement and the next refusal, stable reset, canceled delay, and simultaneous account retirement using the actual Cloud worker."
+    },
+    {
+      "sha": "3aaa23a437f6a0e6ab224163a2e36fd95ff73804",
+      "subject": "Reduce overhead in CLI integration tests (#62153)",
+      "paths": [
+        "codex-rs/core/tests/common/responses.rs",
+        "codex-rs/core/tests/common/test_codex_exec.rs",
+        "codex-rs/core/tests/suite/cli_stream.rs",
+        "codex-rs/core/tests/suite/websocket_fallback.rs",
+        "codex-rs/exec/tests/suite/agents_md.rs",
+        "codex-rs/exec/tests/suite/auth_env.rs",
+        "codex-rs/exec/tests/suite/resume.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "build-and-adoption",
+        "exec-handoff",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Reduce per-CLI test runtime work and HTTP fallback retries while keeping standalone command and resume coverage under the maintained bounded runner.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 8ae3e7c9ead04e17ab39c5f440183e3469c91aca68f8b3961db28d21d52a98cd.",
+        "The CLI fixtures set two Tokio workers, use isolated temporary working directories and return 426 for the SSE-only mock's WebSocket upgrades. Production transport configuration and CLI defaults are untouched.",
+        "The stdin control keeps stdin physically open until the child exits and now relies on the suite runner's timeout. Resume coverage still checks the recorded thread, state DB repair and outbound behavior."
+      ],
+      "revisit": "Run equivalent loopback CLI stream, upgrade-required fallback and exec resume cases with explicit suite bounds, including stdin-open exit."
+    }
+  ]
+}

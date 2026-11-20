@@ -25,14 +25,21 @@ pub(crate) fn run(module: &str) -> std::io::Result<Vec<String>> {
         let world = tempfile::Builder::new()
             .prefix("alab-running-version-")
             .tempdir()?;
+        // Alias setup needs an existing CODEX_HOME outside the child's temporary directory.
+        let codex_home = world.path().join("codex");
+        let temp = world.path().join("tmp");
+        std::fs::create_dir(&codex_home)?;
+        std::fs::create_dir(&temp)?;
         let mut command = Command::new(std::env::current_exe()?);
         command
             .args(["--exact", &name, "--nocapture", "--test-threads=1"])
             .env_clear()
             .env(CHILD, mode)
             .env("HOME", world.path())
-            .env("CODEX_HOME", world.path().join("codex"))
-            .env("TMPDIR", world.path())
+            .env("CODEX_HOME", codex_home)
+            .env("TMPDIR", &temp)
+            .env("TMP", &temp)
+            .env("TEMP", &temp)
             .env("USER", "alab-test")
             .env("LOGNAME", "alab-test")
             .env("PATH", "/usr/bin:/bin")

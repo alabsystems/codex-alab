@@ -149,19 +149,44 @@ pub fn leaves_refusals(policy: &crate::policy::HarnessPolicy) -> bool {
     policy_allows(policy, Purpose::WeeklyQuota) && policy.get(ROTATION_REFUSAL) == Some("1")
 }
 
-/// Whether this host, by its own policy reply, moves an exec run that stands at a wall of `kind`:
-/// an ordinary wall under the rotation policy ([`policy_allows`]), a workspace's wall only where
-/// the host also leaves refusals ([`leaves_refusals`]), and a model's own limit nowhere until a
-/// host can judge one (gap 4, steps S4 and S5). An exec run claims its tab for a move only where
-/// this holds ([`crate::exec_route::admit`]).
+/// Whether the host accepts a model's own bucket on an interactive quota rotation prepare.
+pub fn leaves_limits(policy: &crate::policy::HarnessPolicy) -> bool {
+    policy_allows(policy, Purpose::WeeklyQuota) && policy.get("codex_rotation_limits") == Some("1")
+}
+
+/// A named exec move requires both the general model rotation contract and the exec arm contract.
+pub(crate) fn leaves_exec_limits(policy: &crate::policy::HarnessPolicy) -> bool {
+    leaves_limits(policy) && policy.get("codex_exec_rotation_limits") == Some("1")
+}
+
 pub fn leaves_exec_wall(policy: &crate::policy::HarnessPolicy, kind: &WallKind) -> bool {
-    if !kind.asked() {
-        false
-    } else if kind.host_kept() {
-        leaves_refusals(policy)
-    } else {
-        policy_allows(policy, Purpose::WeeklyQuota)
+    match kind {
+        WallKind::Ordinary => policy_allows(policy, Purpose::WeeklyQuota),
+        WallKind::Workspace(_) => leaves_refusals(policy),
+        WallKind::Limit(id) => {
+            codex_alab_core::wall_kind::valid_limit_id(id) && leaves_exec_limits(policy)
+        }
     }
+}
+
+/// Apply the same wire grammar and advertised policy at prepare, arm, and replay of a lost arm.
+pub(crate) fn append_exec_limit(
+    client: &Client,
+    request: &mut String,
+    limit: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(id) = limit {
+        if !codex_alab_core::wall_kind::valid_limit_id(id)
+            || !client
+                .policy()
+                .is_some_and(|policy| leaves_exec_limits(&policy))
+        {
+            return Err(Error::BadRequest("unsupported exec rotation limit".into()));
+        }
+        request.push_str(" limit=");
+        request.push_str(id);
+    }
+    Ok(())
 }
 
 /// The bound a host's policy reply advertises for leaving a five-hour wall
@@ -245,6 +270,23 @@ pub async fn prepare(
     wall: &str,
     identity: &renewal::Identity,
 ) -> Result<Outcome, Error> {
+    prepare_with_limit(client, purpose, thread, wall, identity, None).await
+}
+
+/// Prepare a quota rotation for the named model bucket, or ordinary recovery when omitted.
+pub async fn prepare_with_limit(
+    client: &Client,
+    purpose: Purpose,
+    thread: &str,
+    wall: &str,
+    identity: &renewal::Identity,
+    limit: Option<&str>,
+) -> Result<Outcome, Error> {
+    if limit.is_some() && purpose != Purpose::WeeklyQuota {
+        return Err(Error::BadRequest(
+            "model limit requires quota rotation".into(),
+        ));
+    }
     let origin = || rotation::Origin {
         thread: thread.into(),
         turn: wall.into(),
@@ -256,7 +298,10 @@ pub async fn prepare(
             .renewal_prepare(thread, wall, identity)
             .await
             .map(Into::into),
-        Purpose::WeeklyQuota => client.rotation_prepare(&origin()).await.map(moved),
+        Purpose::WeeklyQuota => client
+            .prepare_move(rotation::Protocol::Quota, &origin(), limit)
+            .await
+            .map(moved),
         Purpose::LoginRotation => client.login_rotation_prepare(&origin()).await.map(moved),
     }
 }
@@ -481,6 +526,7 @@ mod tests {
         };
         let handoff = AccountHandoff {
             purpose: Purpose::WeeklyQuota,
+            limit: None,
             openai_scope: true,
             local: false,
             account: receipt.identity.account.clone(),
@@ -612,6 +658,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_named_prepare_requires_the_advertised_bucket_and_binds_the_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let host = crate::fake::FakeAterm::start(directory.path(), crate::fake::Mode::Current)
+            .await
+            .unwrap();
+        host.set_policy_key("accounts", "wall");
+        host.set_policy_key("codex_rotation", "1");
+        let client = Client::connect(host.endpoint(), crate::Options::default())
+            .await
+            .unwrap();
+        client.harness_policy().await.unwrap();
+        client.claim().await.unwrap();
+        let identity = renewal::Identity {
+            account: "a".repeat(64),
+            user: "b".repeat(64),
+        };
+        let thread = "00000000-0000-0000-0000-000000000001";
+        let turn = "00000000-0000-0000-0000-000000000002";
+        let limit = "codex_other";
+        let ask = |purpose, limit| {
+            prepare_with_limit(&client, purpose, thread, turn, &identity, Some(limit))
+        };
+        let requests = host.requests();
+        assert!(matches!(
+            ask(Purpose::WeeklyQuota, limit).await,
+            Err(Error::BadRequest(_))
+        ));
+        assert_eq!(host.requests(), requests);
+
+        host.set_policy_key("codex_rotation_limits", "1");
+        client.harness_policy().await.unwrap();
+        let requests = host.requests();
+        for (purpose, id) in [
+            (Purpose::Login, limit),
+            (Purpose::LoginRotation, limit),
+            (Purpose::WeeklyQuota, "codex"),
+            (Purpose::WeeklyQuota, "x target_account=y"),
+        ] {
+            assert!(matches!(ask(purpose, id).await, Err(Error::BadRequest(_))));
+        }
+        assert_eq!(host.requests(), requests);
+        let command = format!(
+            "@{} codex-rotation prepare thread={thread} turn={turn} source_account={} source_user={} limit={limit}",
+            host.sid(),
+            identity.account,
+            identity.user
+        );
+        let reply = format!(
+            "OK codex-rotation state=ready id={} thread={thread} turn={turn} source_account={} source_user={} target_account={} target_user={}\n",
+            "1".repeat(32),
+            identity.account,
+            identity.user,
+            "c".repeat(64),
+            "d".repeat(64)
+        );
+        host.reply_once(&command, &reply);
+        assert!(
+            matches!(ask(Purpose::WeeklyQuota, limit).await, Ok(Outcome::Ready(receipt)) if receipt.identity == identity)
+        );
+        host.reply_once(&command, &reply.replace(&identity.user, &"e".repeat(64)));
+        assert!(matches!(
+            ask(Purpose::WeeklyQuota, limit).await,
+            Err(Error::Malformed(_))
+        ));
+        assert_eq!(
+            &host.requests()[requests.len()..],
+            [command.clone(), command]
+        );
+    }
+
     /// ONLY A USAGE WALL'S MOVE REPORTS ITS COMPLETION: a renewal and a lost login's move answer
     /// unsupported and send nothing, whatever the id; a usage wall's move sends its one
     /// `codex-rotation complete` line (which the fake, knowing no such verb, does not take).
@@ -733,7 +850,7 @@ mod tests {
         assert!(!policy_allows(&only, Purpose::LoginRotation));
         assert_eq!(five_hour_bound(&only), None);
         // An exec run's wall, by kind: an ordinary one under the rotation policy alone, a
-        // workspace's only with the word, a model's own limit under none.
+        // workspace's only with the workspace word, a model's own limit with separate grants.
         use codex_alab_core::wall_kind::Workspace;
         let credits = WallKind::Workspace(Workspace::MemberCreditsDepleted);
         let model = WallKind::Limit("codex_other".into());
@@ -749,6 +866,30 @@ mod tests {
         for kind in [&WallKind::Ordinary, &credits, &model] {
             assert!(!leaves_exec_wall(&off, kind), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn model_buckets_require_the_exact_capability_and_effective_quota_rotation() {
+        let key = "codex_rotation_limits";
+        let enabled = rotating(&[(key, "1")]);
+        assert!(leaves_limits(&enabled));
+        assert!(!leaves_limits(&rotating(&[])));
+        for value in ["0", "true", "", "01", " 1"] {
+            assert!(!leaves_limits(&rotating(&[(key, value)])), "{value:?}");
+        }
+        for (key, off) in [
+            ("codex_rotation", "0"),
+            ("accounts", "off"),
+            ("relaunch", "false"),
+            ("resume_limits", "false"),
+        ] {
+            let mut host = enabled.clone();
+            host.keys.insert(key.into(), off.into());
+            assert!(!leaves_limits(&host), "{key}={off}");
+        }
+        let mut standby = enabled;
+        standby.effective = false;
+        assert!(!leaves_limits(&standby));
     }
 
     /// A DEFINITE NO, OR NO ANSWER YET: a host that knows no such verb, an invalid request, a

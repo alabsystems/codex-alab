@@ -44,6 +44,9 @@ use tracing::info_span;
 #[path = "shell_snapshot_sandbox.rs"]
 mod sandbox;
 
+#[path = "../../alab-core/glue/shell_snapshot_staging.rs"] mod snapshot_staging; // ALAB(shell-snapshot): keep provisional files owned when async capture is cancelled.
+#[cfg(test)] use snapshot_staging::write_shell_snapshot; // ALAB(shell-snapshot): exercise the same writer for captures to a requested test path.
+
 pub(crate) use sandbox::ShellSnapshotSandbox;
 pub(crate) use sandbox::snapshot_read_permissions;
 
@@ -284,7 +287,7 @@ impl ShellSnapshot {
         });
 
         // Make the new snapshot.
-        let credentials = write_shell_snapshot(
+        let (staged, credentials) = stage_shell_snapshot( // ALAB(shell-snapshot): retain the temporary file through validation.
             shell,
             &temp_path,
             session_cwd,
@@ -315,13 +318,11 @@ impl ShellSnapshot {
         .await
         {
             tracing::error!("Shell snapshot validation failed: {err:?}");
-            remove_snapshot_file(&temp_path).await;
             return Err("validation_failed");
         }
 
-        if let Err(err) = fs::rename(&temp_path, &path).await {
+        if let Err(err) = staged.persist_noclobber(&path) { // ALAB(shell-snapshot): publish without a cancellable gap or replacing another generation.
             tracing::warn!("Failed to finalize shell snapshot: {err:?}");
-            remove_snapshot_file(&temp_path).await;
             return Err("write_failed");
         }
 
@@ -537,14 +538,14 @@ impl Drop for ShellSnapshotFile {
     }
 }
 
-async fn write_shell_snapshot(
+async fn stage_shell_snapshot(
     shell: &Shell,
     output_path: &AbsolutePathBuf,
     cwd: &AbsolutePathBuf,
     shell_environment_policy: &ShellEnvironmentPolicy,
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
-) -> Result<Option<SnapshotCredentials>> {
+) -> Result<(tempfile::TempPath, Option<SnapshotCredentials>)> {
     let shell_type = shell.shell_type;
     if shell_type == ShellType::PowerShell || shell_type == ShellType::Cmd {
         bail!("Shell snapshot not supported yet for {shell_type:?}");
@@ -558,19 +559,8 @@ async fn write_shell_snapshot(
     )
     .await?;
 
-    if let Some(parent) = output_path.parent() {
-        let parent_display = parent.display();
-        fs::create_dir_all(&parent)
-            .await
-            .with_context(|| format!("Failed to create snapshot parent {parent_display}"))?;
-    }
-
-    let snapshot_path = output_path.display();
-    fs::write(output_path, snapshot)
-        .await
-        .with_context(|| format!("Failed to write snapshot to {snapshot_path}"))?;
-
-    Ok(credentials)
+    let staged = snapshot_staging::write(output_path, snapshot).await?; // ALAB(shell-snapshot): the blocking writer owns its result even if this future is dropped.
+    Ok((staged, credentials))
 }
 
 async fn capture_snapshot(
@@ -1210,3 +1200,7 @@ fn snapshot_session_id_from_file_name(file_name: &str) -> Option<&str> {
 #[cfg(test)]
 #[path = "shell_snapshot_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "../../alab-core/glue/shell_snapshot_tests.rs"]
+mod alab_snapshot_tests; // ALAB(shell-snapshot): exercise cancellation while a staged generation is being validated.

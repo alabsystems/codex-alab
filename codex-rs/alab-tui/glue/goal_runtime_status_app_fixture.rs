@@ -43,6 +43,19 @@ pub(crate) fn backend() -> (
     )
 }
 
+pub(crate) async fn connect_remote(
+    app: &mut App,
+    endpoint: crate::RemoteAppServerEndpoint,
+) -> AppServerSession {
+    let owner = BackendId::new();
+    let client = crate::connect_remote_app_server(endpoint.clone())
+        .await
+        .unwrap();
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    app.app_server_backend_id = Some(owner);
+    AppServerSession::new(owner, client, ThreadParamsMode::Remote)
+}
+
 pub(crate) fn select(app: &mut App, owner: BackendId, thread: ThreadId) {
     assert!(app.backend_registry.observe(owner, thread));
     app.alab_backend_bookkeeping.displayed(owner);
@@ -80,17 +93,27 @@ pub(crate) async fn event(
     claimed: BackendId,
     event: AppServerEvent,
 ) {
-    let mut parked = Default::default();
-    app.handle_polled_backend_event(
+    dispatch(
+        app,
         session,
         displayed,
-        &mut parked,
         AppServerSessionEvent {
             backend_id: claimed,
             event,
         },
     )
     .await;
+}
+
+pub(crate) async fn dispatch(
+    app: &mut App,
+    session: &AppServerSession,
+    displayed: BackendId,
+    event: AppServerSessionEvent,
+) {
+    let mut parked = Default::default();
+    app.handle_polled_backend_event(session, displayed, &mut parked, event)
+        .await;
 }
 
 pub(crate) fn observe(app: &App) {

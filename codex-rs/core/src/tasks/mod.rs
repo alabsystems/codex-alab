@@ -65,6 +65,8 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::turn_input::NotSubmittedReason;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_thread_store::PersistContext;
 
 pub(crate) use admission::HostTurnStarted;
@@ -285,23 +287,33 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
+    ) -> TurnInputSubmission {
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
         self.clear_connector_selection().await;
-        self.start_task(turn_context, input, task).await;
+        self.start_task(turn_context, input, task).await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with task registration"
-    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
-        let Some(assignment_activity) = crate::session::alab_assignment::task_activity(self, &turn_context).await else { return; }; // ALAB(accounts): admit before plugin or MCP work and hold through actual task completion.
+    ) -> TurnInputSubmission {
+        self.start_task_in_slot(turn_context, input, task, None).await // ALAB(queue-review): ordinary registrations keep their existing slot semantics.
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "register the turn and its pending input atomically with the suspension fence"
+    )]
+    pub(crate) async fn start_task_in_slot<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        expected: Option<&Arc<Mutex<TurnState>>>,
+    ) -> TurnInputSubmission {
+        let Some(assignment_activity) = crate::session::alab_assignment::task_activity(self, &turn_context).await else { return TurnInputSubmission::NotSubmitted { reason: NotSubmittedReason::ServerDraining }; }; // ALAB(accounts): admit before plugin or MCP work and hold through actual task completion.
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -341,11 +353,15 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = crate::session::input_queue::exec_input_state::startup_mailbox(self, &turn_context).await; // ALAB(exec-input): native recovery retains the ongoing turn's mailbox phase.
         let turn_state = {
             let mut active = self.active_turn.lock().await;
-            if self.outcome_handoffs_closed() {
-                return;
+            if expected.is_some_and(|slot| active.as_ref().is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, slot))) { // ALAB(queue-review): an interrupted or replaced relay cannot recreate its reservation.
+                return TurnInputSubmission::NotSubmitted { reason: NotSubmittedReason::Superseded };
+            }
+            if self.turn_starts_closed() {
+                return TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::ServerDraining,
+                };
             }
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
@@ -353,9 +369,6 @@ impl Session {
             Arc::clone(&turn.turn_state)
         };
         turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
-        self.input_queue
-            .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
-            .await;
         self.emit_turn_start_lifecycle(
             turn_context.as_ref(),
             Some(&token_usage_at_turn_start),
@@ -365,16 +378,35 @@ impl Session {
 
         let mut active = self.active_turn.lock().await;
         // Shutdown closes registration before taking this same lock to abort active work.
-        let outcome_handoff = if let Some(reporting) = &self.outcome_reporting {
-            if reporting.handoffs.is_closed() {
-                return;
-            }
-            Some(reporting.handoffs.token())
-        } else {
-            None
+        if self.turn_starts_closed() {
+            return TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::ServerDraining,
+            };
+        }
+        let outcome_handoff = self
+            .outcome_reporting
+            .as_ref()
+            .filter(|reporting| {
+                reporting.reporter.is_some()
+                    || turn_context.multi_agent_version == MultiAgentVersion::V2
+                        && (!turn_context.session_source.is_non_root_agent()
+                            || turn_context.session_source.get_agent_path().is_some())
+            })
+            .map(|reporting| reporting.handoffs.token());
+        let Some(turn) = active
+            .as_mut()
+            .filter(|turn| Arc::ptr_eq(&turn.turn_state, &turn_state))
+        else {
+            return TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::Superseded,
+            };
         };
-        let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
+        // Keep mail in its queue until a task owns it. Suspension can save it if it wins this lock.
+        let (pending_items, _) = crate::session::input_queue::exec_input_state::startup_mailbox(self, &turn_context).await; // ALAB(exec-input): native recovery retains the ongoing turn's mailbox phase after registration admission.
+        self.input_queue
+            .extend_pending_input_for_turn_state(&turn_state, pending_items)
+            .await;
         // Record lineage only when the task starts: settings changes can invalidate a reservation.
         self.record_started_turn(
             &turn_context.sub_id,
@@ -501,6 +533,10 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        TurnInputSubmission::Started {
+            turn_id: turn_context.sub_id.clone(),
+            root_turn_id: turn_context.root_turn_id(),
+        }
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -568,19 +604,10 @@ impl Session {
             }
             None
         };
-        let (input, mut start_options) =
-            self.input_queue.get_pending_input(&self.active_turn).await;
-        let triggered = input.iter().any(
-            |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
-        );
-        if !triggered {
-            // Queue-only wakes retain the previous turn context without selecting a new task.
-            start_options = previous_options;
-            start_options.cyber_access_program = self
-                .reference_context_item()
-                .await
-                .and_then(|context| context.cyber_access_program);
-        }
+        // Read the routing options now and leave the mail queued until task registration.
+        let wake_options = self.input_queue.pending_wake_options().await;
+        let triggered = wake_options.is_some();
+        let start_options = wake_options.unwrap_or(previous_options);
         let options = NewTurnContextOptions {
             direct_only_tool_namespaces: start_options.direct_only_tool_namespaces,
             final_output_json_schema: start_options.final_output_json_schema,
@@ -600,18 +627,7 @@ impl Session {
             turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }
         if let Some(id) = start_options.parent_turn_id {
-            if let Some(initiating_agent_path) = input
-                .iter()
-                .find_map(|item| {
-                    let TurnInput::InterAgentCommunication(communication) = item else {
-                        return None;
-                    };
-                    communication
-                        .trigger_turn
-                        .then(|| communication.author.clone())
-                })
-                .or(start_options.initiating_agent_path)
-            {
+            if let Some(initiating_agent_path) = start_options.initiating_agent_path {
                 turn_context
                     .turn_metadata_state
                     .set_initiating_agent_path(initiating_agent_path);
@@ -622,10 +638,6 @@ impl Session {
             turn_context.turn_metadata_state.set_root_turn_id(id);
         }
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
-            .await;
-        // Task completion must still save this mail if pre-turn compaction fails.
-        self.input_queue
-            .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
             .await;
         // Context construction can outlive an interrupt or replacement. Do not let
         // start_task recreate a turn whose reservation is no longer ours.
@@ -998,6 +1010,7 @@ impl Session {
                 && active_turn.task.is_none()
                 && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
             {
+                self.record_finished_review(&event).await; // ALAB(queue-review): publish the matching native terminal before its idle reservation opens for any producer.
                 *active = None;
                 true
             } else {

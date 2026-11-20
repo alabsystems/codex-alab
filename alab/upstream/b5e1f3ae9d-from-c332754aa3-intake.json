@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "base": "c332754aa3a764ae89352aa5903119281ae32e5a",
+  "target": "b5e1f3ae9d810dec3fe005fcc55552766b577bdb",
+  "frontier": "c332754aa3a764ae89352aa5903119281ae32e5a",
+  "commits": [
+    {
+      "sha": "b5e1f3ae9d810dec3fe005fcc55552766b577bdb",
+      "subject": "Highlight clickable links and controls on hover in the fullscreen TUI (#62390)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/link_hover.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__tests__clickable_transcript_foreground_follows_mouse_motion.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/status_surface.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/warning_notice.rs",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/warnings.rs",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/warnings.rs",
+        "codex-rs/tui/src/custom_terminal.rs",
+        "codex-rs/tui/src/style.rs",
+        "codex-rs/tui/src/transcript_view/disclosure.rs",
+        "codex-rs/tui/src/transcript_view/input.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt upstream’s visible pointer feedback for fullscreen controls while preserving the fork’s footer and the point at which a retained terminal frame becomes authoritative.",
+      "evidence": [
+        "The upstream change derives link spans from the drawn terminal cells, including continuation cells for wide text, and recomputes the foreground when a stationary pointer lies over content that moved. Its native test exercises the transcript, status link, warning and disclosure control, then verifies foreground restoration.",
+        "The combined source records the actual allocated status rectangle before the fork’s focused footer renderer can return. Upstream consults the painted hyperlink in the buffer, so the rectangle alone cannot identify an unrendered link.",
+        "The native retained companion frame is acknowledged after the synchronized draw succeeds. Upstream’s comparison and possible follow-up redraw then use that same frame. The input and disclosure changes do not replace the fork’s input owner."
+      ],
+      "revisit": "Run the upstream hover and restoration test on the integrated terminal alongside the retained-paint and footer controls. Check the optional fullscreen mode with wide text and a stationary pointer after the content moves."
+    }
+  ]
+}

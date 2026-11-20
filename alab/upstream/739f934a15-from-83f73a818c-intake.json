@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "83f73a818cb319a19aab0b2d99ee3c1d562e6110",
+  "target": "739f934a15983c3d117ce9677c20bcc99370713f",
+  "frontier": "83f73a818cb319a19aab0b2d99ee3c1d562e6110",
+  "commits": [
+    {
+      "sha": "739f934a15983c3d117ce9677c20bcc99370713f",
+      "subject": "Add Windows MXC sandbox launch diagnostics (#62439)",
+      "paths": [
+        "codex-rs/mxc-sandbox/src/lib.rs",
+        "codex-rs/mxc-sandbox/src/native.rs",
+        "codex-rs/mxc-sandbox/src/policy.rs",
+        "codex-rs/mxc-sandbox/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/logging.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Import upstream’s Windows launcher diagnostics so a stalled command can be traced through preparation, spawn and wait. All five files follow upstream unchanged.",
+      "evidence": [
+        "The MXC launcher writes phase, process ID, elapsed time, grant counts, command category and outcome to the Windows runtime log. The command category distinguishes the filesystem helper without logging its argument vector.",
+        "The process reuses its rolling appender for the initialized runtime directory. The setup logger retains its separate preopened writer. The existing exit-code and timeout handling remain in the native launcher.",
+        "The five input blobs on the integration branch match the official parent. The launcher, Windows platform roots and runtime appender require a Windows host for execution. The portable policy request and transport tests can run on macOS."
+      ],
+      "revisit": "Verify the local Windows runtime log on an MXC-capable host for ordinary completion, timeout and filesystem-helper execution, including phase ordering and appender reuse."
+    }
+  ]
+}

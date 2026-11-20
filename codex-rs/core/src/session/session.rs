@@ -62,9 +62,10 @@ use tokio_util::task::TaskTracker;
 type McpToolApprovalMetadataMap =
     HashMap<(codex_mcp::McpServerKey, String), std::sync::Weak<McpToolApprovalContext>>;
 
-/// A thread's installed reporter and the tasks that may still hand it an outcome.
+/// Joins terminal publishers before their session writer closes. Native child results
+/// and optional host reporters both use this barrier.
 pub(crate) struct AgentOutcomeReporting {
-    pub(super) reporter: Arc<dyn AgentTurnOutcomeReporter>,
+    pub(crate) reporter: Option<Arc<dyn AgentTurnOutcomeReporter>>,
     pub(crate) handoffs: TaskTracker,
 }
 
@@ -688,10 +689,15 @@ async fn warm_plugins_and_skills_for_session_init(
 }
 
 impl Session {
-    pub(crate) fn outcome_handoffs_closed(&self) -> bool {
-        self.outcome_reporting
-            .as_ref()
-            .is_some_and(|reporting| reporting.handoffs.is_closed())
+    pub(crate) fn turn_starts_closed(&self) -> bool {
+        self.services
+            .local_agent_runtime
+            .suspension_root()
+            .is_some()
+            || self
+                .outcome_reporting
+                .as_ref()
+                .is_some_and(|reporting| reporting.handoffs.is_closed())
     }
 
     pub(crate) fn new_item_id_generator() -> ItemIdGenerator {
@@ -1198,15 +1204,7 @@ impl Session {
                                 .window_id
                                 .clone(),
                             runtime_workspace_roots: Some(config.workspace_roots.clone()),
-                            metadata: ThreadPersistenceMetadata {
-                                cwd: Some(config.cwd.to_path_buf()),
-                                model_provider: config.model_provider_id.clone(),
-                                memory_mode: if config.memories.generate_memories {
-                                    ThreadMemoryMode::Enabled
-                                } else {
-                                    ThreadMemoryMode::Disabled
-                                },
-                            },
+                            metadata: config.thread_persistence_metadata(),
                         };
                         if is_paginated_subagent
                             && matches!(
@@ -1235,15 +1233,7 @@ impl Session {
                             rollout_path: resumed_history.rollout_path.clone(),
                             history: Some(resumed_history.history.clone()),
                             include_archived: true,
-                            metadata: ThreadPersistenceMetadata {
-                                cwd: Some(config.cwd.to_path_buf()),
-                                model_provider: config.model_provider_id.clone(),
-                                memory_mode: if config.memories.generate_memories {
-                                    ThreadMemoryMode::Enabled
-                                } else {
-                                    ThreadMemoryMode::Disabled
-                                },
-                            },
+                            metadata: config.thread_persistence_metadata(),
                         };
                         let store = Arc::clone(&thread_store);
                         let history_mode = session_configuration.history_mode;
@@ -1661,6 +1651,8 @@ impl Session {
                 ),
             );
             if matches!(initial_history, InitialHistory::Resumed(_)) {
+                state.alab_queue_review = super::queue_review::restore(initial_history.get_rollout_items()); // ALAB(queue-review): restore the original thread's hold before the queue watcher can see it.
+                super::shell_resume_exits::arm(&thread_extension_data, state_db_ctx.as_ref(), &session_configuration.session_source); // ALAB(shell-invocation): only an original durable thread can report its outstanding exits.
                 state.persisted_dynamic_tools = initial_history
                     .get_dynamic_tools()
                     .unwrap_or_default()
@@ -1852,10 +1844,14 @@ impl Session {
                     .await;
             }
 
-            let outcome_reporting = thread_extension_data
+            let reporter = thread_extension_data
                 .get::<Arc<dyn AgentTurnOutcomeReporter>>()
-                .map(|reporter| AgentOutcomeReporting {
-                    reporter: Arc::clone(&reporter),
+                .map(|reporter| Arc::clone(reporter.as_ref()));
+            // The turn's resolved version determines whether it publishes a native result.
+            let local_durable = live_thread.is_some() && !has_provided_agent_control;
+            let outcome_reporting =
+                (reporter.is_some() || local_durable).then(|| AgentOutcomeReporting {
+                    reporter,
                     handoffs: TaskTracker::new(),
                 });
             let (agent_runtime, mut startup_error) =
@@ -1957,7 +1953,7 @@ impl Session {
                 mcp_handler_cache: Default::default(),
                 unified_exec_manager: UnifiedExecProcessManager::new(
                     config.background_terminal_max_timeout,
-                ),
+                ).with_shell_history(&initial_history), // ALAB(shell-invocation): restored numbers belong to earlier writers.
                 elicitations: crate::elicitation::ElicitationService::new(),
                 analytics_events_client,
                 hooks: arc_swap::ArcSwap::from_pointee(hooks),

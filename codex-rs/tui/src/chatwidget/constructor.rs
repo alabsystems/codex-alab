@@ -133,6 +133,7 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            alab_observed_thread_mode: None, // ALAB(defaults): wait for the destination thread settings.
             has_chatgpt_account,
             requires_openai_auth,
             has_codex_backend_auth,
@@ -147,7 +148,7 @@ impl ChatWidget {
             permission_profiles_menu_opened: false,
             model_popup_model_ids: Vec::new(),
             session_telemetry,
-            session_header: SessionHeader::new(header_model),
+            session_header: SessionHeader::default(),
             initial_user_message,
             status_account_display,
             remote_connection: None,
@@ -163,6 +164,7 @@ impl ChatWidget {
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             alab_goal_runtime: Default::default(), // ALAB(storage-status): old peers/unobserved backends remain unknown.
+            alab_controls: Default::default(), // ALAB(interface): new conversations start without a picker or a pending control press.
             alab_allowance: Default::default(), // ALAB(interface): account-scoped quota presentation starts empty.
             refreshing_status_outputs: Vec::new(),
             next_status_refresh_request_id: 0,
@@ -201,6 +203,7 @@ impl ChatWidget {
             suppress_image_paste_until: Instant::now(),
             copy_last_response_binding,
             running_commands: HashMap::new(),
+            alab_finding_commands: Default::default(), // ALAB(misalignment-review): begin with no observed commands.
             collab_agent_metadata: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),

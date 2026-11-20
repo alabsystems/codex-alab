@@ -62,6 +62,7 @@ fn stdout_color_level_for_terminal(
     has_force_color_override: bool,
 ) -> StdoutColorLevel {
     if has_wt_session && !has_force_color_override {
+        if stdout_level == StdoutColorLevel::Unknown && codex_alab_tui::banner::explicit_monochrome() { return stdout_level; } // ALAB(banner): honor explicit monochrome in Windows Terminal.
         return StdoutColorLevel::TrueColor;
     }
 

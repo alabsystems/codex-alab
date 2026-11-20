@@ -7,6 +7,7 @@ use super::super::PreparedExecInputBatch;
 use super::super::tree_wire::ExecTreeRecords;
 use super::*;
 use crate::UpgradeManagerBarrier;
+use crate::session::input_queue::exec_input_state::results::ForestResults;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -21,6 +22,7 @@ pub struct PreparedUpgradeForest {
     barrier: UpgradeManagerBarrier,
     primary: ThreadId,
     roots: Vec<Root>,
+    results: ForestResults,
     readers: Option<Arc<codex_alab_core::manager_catalog::CommittedUpgrade>>,
 }
 
@@ -28,6 +30,7 @@ pub struct CommittedUpgradeForest {
     inventory: crate::CommittedUpgradeInventory,
     primary: ThreadId,
     roots: Vec<Root>,
+    results: ForestResults,
     outcome: OnceLock<tokio::sync::watch::Receiver<Option<ForestResult>>>,
     readers: Option<Arc<codex_alab_core::manager_catalog::CommittedUpgrade>>,
 }
@@ -111,6 +114,7 @@ impl CodexThread {
             }
             // Preflight storage and codecs while preparation remains revocable.
             // Final producer-stopped capture is a separate committed operation.
+            let results = ForestResults::prepare(&roots, &threads)?;
             for members in groups {
                 let mut nodes = Vec::new();
                 for member in members {
@@ -119,9 +123,9 @@ impl CodexThread {
                 }
                 ExecTreeSnapshot::preflight_idle_nodes(&nodes)?;
             }
-            Ok::<_, String>(roots)
+            Ok::<_, String>((roots, results))
         };
-        let roots = tokio::select! {
+        let (roots, results) = tokio::select! {
             biased;
             () = barrier.invalidated() => return Err("forest preparation was superseded".into()),
             result = prepare => result?,
@@ -131,6 +135,7 @@ impl CodexThread {
         }
         Ok(PreparedUpgradeForest {
             readers: None,
+            results,
             barrier,
             primary,
             roots: roots
@@ -162,7 +167,9 @@ impl PreparedUpgradeForest {
     }
     /// Commit Core data custody only; no native reader retirement is implied.
     pub fn commit_if(&mut self, decide: impl FnOnce() -> bool) -> bool {
-        self.barrier.commit_if(decide)
+        self.results
+            .commit_if(&mut self.barrier, decide)
+            .unwrap_or(false)
     }
 
     /// Join this exact manager inventory with the process's actual source-reader
@@ -176,20 +183,19 @@ impl PreparedUpgradeForest {
         }
         let mut readers = None;
         let mut refusal = None;
-        let committed =
-            self.barrier.commit_if(|| {
-                match codex_alab_core::manager_catalog::global().commit_upgrade_if(decide) {
-                    Ok(Some(owner)) => {
-                        readers = Some(owner);
-                        true
-                    }
-                    Ok(None) => false,
-                    Err(error) => {
-                        refusal = Some(format!("source reader census refused: {error:?}"));
-                        false
-                    }
+        let committed = self.results.commit_if(&mut self.barrier, || {
+            match codex_alab_core::manager_catalog::global().commit_upgrade_if(decide) {
+                Ok(Some(owner)) => {
+                    readers = Some(owner);
+                    true
                 }
-            });
+                Ok(None) => false,
+                Err(error) => {
+                    refusal = Some(format!("source reader census refused: {error:?}"));
+                    false
+                }
+            }
+        })?;
         if let Some(error) = refusal {
             return Err(error);
         }
@@ -202,6 +208,7 @@ impl PreparedUpgradeForest {
             inventory: self.barrier.into_committed().map_err(|e| e.to_string())?,
             primary: self.primary,
             roots: self.roots,
+            results: self.results,
             readers: self.readers,
             outcome: OnceLock::new(),
         }))
@@ -254,6 +261,7 @@ impl CommittedUpgradeForest {
         if let Some(error) = failure {
             return Err(error);
         }
+        self.results.finish().await?;
         let mut records = Vec::new();
         let mut members = Vec::new();
         for root in &self.roots {
@@ -299,6 +307,7 @@ impl CommittedUpgradeForest {
                 .await
                 .map_err(|error| format!("source reader retirement refused: {error:?}"))?;
         }
+        self.results.captured();
         Ok(forest)
     }
 }

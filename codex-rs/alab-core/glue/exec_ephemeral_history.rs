@@ -219,6 +219,11 @@ pub(crate) async fn restore_context_if_pending(session: &Session) {
         .thread_extension_data
         .remove::<RestoreContext>()
     {
+        session
+            .services
+            .unified_exec_manager
+            .import_shell_history()
+            .await;
         let mut state = session.state.lock().await;
         state.history = context.0.clone().install(
             std::sync::Arc::clone(&session.item_id_generator),

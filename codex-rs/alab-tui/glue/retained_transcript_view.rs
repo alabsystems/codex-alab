@@ -40,5 +40,4 @@ pub(crate) mod complete;
 pub(crate) use super::bookmark::alab_retained_bookmark::Data as BookmarkData;
 pub(crate) use super::text::alab_retained_layout as layouts;
 pub(crate) use tables::Capture as CaptureGraph;
-pub(crate) use tables::Data as CapturedTables;
 pub(crate) use tables::Restore as RestoreGraph;

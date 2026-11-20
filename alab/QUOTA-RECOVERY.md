@@ -13,14 +13,53 @@ permission, nonordinary quota and explicit spend denial do not authorize this
 action. These checks apply to preflight, reactive recovery and uncertain request
 retries alike. No AI prompt chooses or redeems the reset.
 
-At a usage wall, Codex prints that it considered an earned reset, how many are
-available, each expiration, and the decision to redeem or the reason to preserve
-them. It reports the redemption result and only resumes when a fresh usage read
-confirms restoration. Failed inventory reads are reported as unavailable rather
-than as zero credits. This notice appears in the live TUI transcript and exec output.
-These warning events are transient: upstream's rollout persistence policy drops
-them, so reopening a saved thread does not restore earlier reset notices. Reset
-custody and receipts remain durable independently of this presentation.
+The direct request says: “hey! you didn't automatically use the usage reset even
+though you have more than 24h before a reset. fix that behavior in codex-alab in
+parallel and resume your work”. The [later record](reviews/reset-48h-authority-2026-11-17.md)
+quotes: “if there is more than
+48 hours remaining, to automatically use the reset (or else explain why not to
+use the reset)”. That conditional does not forbid using an earned reset between
+24 and 48 hours. The strict 24-hour boundary honors both requests; the later
+record's exclusive 48-hour cutoff was an AI interpretation.
+
+Routine preflight checks, failed passive lookups and empty earned-reset inventories stay silent. Account
+usage displays the balance and reset inventory. The transcript reports earned
+reset decisions when there is a usable reset to redeem or preserve at a wall,
+redemption failures, and confirmed restoration. Exec receives the same events.
+
+For an ordinary quota refusal, recovery checks for an earned reset under the
+existing policy first. When the account has usable paid usage credits, it can
+retry the original request once per turn on those credits. The authenticated
+read must match the account and user, include a known ordinary permission and
+report usable or unlimited credits on the ordinary Codex bucket. A workspace
+restriction, spend control or upsell blocks the retry. If checking earned
+inventory took a network round trip, a new usage read confirms the credits.
+Pending earned-reset custody takes precedence. A durable retry marker keeps
+repeated refusals from spending another attempt on the same signal. The retry
+notice includes the balance from the reading that authorized it, preserving the
+reported precision. Unlimited credits are named explicitly. If the amount is
+unavailable, the notice reports availability alone.
+
+Open `/alab account` to see the latest balance. For a local personal account,
+the inspector also shows what billing has charged to this chat and the report
+cutoff when available. `Chat spending unreported` means the report has no
+entry for this chat. Open `/usage` → **View analytics** → **Chats** for the
+breakdown, or **Credits** for workspace spending.
+
+In the conversation and in exec output, `[codex-alab credits]` identifies a
+paid retry or a confirmed restriction on spending. `[codex-alab reset]`
+identifies decisions about the earned reset or restored plan allowance.
+
+With no redemption pending, a routine preflight leaves a confirmed spending
+restriction in account status without printing a reset warning. When an ordinary
+quota refusal triggers recovery and the authenticated usage read confirms an
+account spending limit, depleted workspace credits or a workspace spending
+limit, the turn reports that reason once. If spending becomes blocked during
+the empty earned-reset lookup, the turn keeps its paid retry available. A
+later account check can authorize that retry once spending reopens.
+When the model request itself reports depleted workspace credits or a workspace
+spending cap, the provider error gives the remedy. Earned-reset recovery returns
+without adding another warning.
 
 Immediately before every consumption POST, including a pending operation's retry,
 Codex fetches usage again and checks the same account and reset cycle. Credit-list
@@ -46,8 +85,10 @@ A live usage wall normally waits for its provider reset and retry backoff. It ca
 resume earlier when an accepted full account usage read explicitly permits
 ordinary usage and includes the matching quota bucket without an explicit denial. The request must
 start after the wall, match its native account and identity generation, and be
-less than thirty seconds old. Display counters, absent windows and credit balances
-do not override the backend permission. Paid credits alone never authorize recovery;
+at most thirty seconds old. On macOS and Linux that age includes system sleep,
+both when binding a denial to a new wall and when using a later reading to
+resume work. Display counters, absent windows and credit balances
+do not override the backend permission for this Autopilot wake;
 missing permission, upsell or an explicit limit blocks it.
 
 A credit-only usage error can also receive one ordinary-usage retry after a

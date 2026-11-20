@@ -24,7 +24,7 @@ def rejected(reason="fetch first", ref=REF):
 
 class PushRaceTests(unittest.TestCase):
     def run_loop(self, *, pushes=None, tips=None, fetch_rc=0, forward_rc=0,
-                 behind_rc=1, merge_rc=0, check_rc=0):
+                 behind_rc=1, merge_rc=0, check_rc=0, qualified=None):
         # Keep the recording fixtures; no real push, checkout, build or cleanup is invoked.
         scratch = Path(tempfile.mkdtemp(prefix="alab-push-race-", suffix=".noindex"))
         fake = scratch / "git"
@@ -71,19 +71,19 @@ sys.exit(rc)
         harness.write_text("set -euo pipefail\n. " + shlex.quote(str(ROOT / "alab/lib.sh")) + "\n" + source[begin:end] + '''
 wt=candidate
 in_wt() { git -C "${wt}" "$@"; }
-sync_push() { in_wt push --porcelain origin HEAD:refs/heads/main; }
+sync_push() { printf '%s\\n' "$1" >>"${RACE_FIXTURE}/leases"; in_wt push --porcelain origin HEAD:refs/heads/main; }
 sync_fetch() { git fetch --quiet "$1"; }
 alab_die() { printf '%s\\n' "$*" >&2; exit 1; }
 alab_say() { printf '%s\\n' "$*"; }
 sleep() { printf 'sleep %s\\n' "$1" >>"${RACE_FIXTURE}/actions"; }
-take_concurrent_main() {
+check_current_main() {
   echo merge >>"${RACE_FIXTURE}/actions"
   [[ "${MERGE_RC}" == 0 ]] || exit "${MERGE_RC}"
-}
-run_check() {
+  checked_main="$(git rev-parse origin/main)"
   echo check >>"${RACE_FIXTURE}/actions"
   [[ "${CHECK_RC}" == 0 ]] || exit "${CHECK_RC}"
 }
+checked_main="$QUALIFIED_BASE"
 push_main
 ''')
         plan = dict(pushes=pushes or [rejected(), rejected(), [0, "landed\n"]],
@@ -91,12 +91,22 @@ push_main
                     forward_rc=forward_rc, behind_rc=behind_rc)
         (scratch / "plan.json").write_text(json.dumps(plan))
         env = dict(os.environ, PATH=str(scratch) + os.pathsep + os.environ["PATH"],
-                   RACE_FIXTURE=str(scratch), MERGE_RC=str(merge_rc), CHECK_RC=str(check_rc))
+                   RACE_FIXTURE=str(scratch), MERGE_RC=str(merge_rc), CHECK_RC=str(check_rc),
+                   QUALIFIED_BASE=qualified or plan["tips"][0])
         result = subprocess.run(["/bin/bash", str(harness)], env=env,
                                 capture_output=True, text=True, timeout=60)
         commands = [json.loads(line) for line in (scratch / "git.jsonl").read_text().splitlines()]
         actions = (scratch / "actions").read_text().splitlines() if (scratch / "actions").exists() else []
+        if result.returncode == 0:
+            self.assertEqual((scratch / "leases").read_text().splitlines(),
+                             [env["QUALIFIED_BASE"], *plan["tips"][1:]])
         return result, commands, actions
+
+    def test_publication_uses_the_checked_base_after_a_concurrent_fetch(self):
+        result, commands, _ = self.run_loop(pushes=[[0, "landed"]], tips=["new-tracking-tip"],
+                                            qualified="checked-parent")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any("rev-parse" in command for command in commands))
 
     def test_repeated_races_merge_and_check_every_new_tip_before_landing(self):
         result, commands, actions = self.run_loop()
@@ -126,8 +136,18 @@ push_main
                 self.assertEqual(actions, [])
                 self.assertFalse(any("fetch" in command for command in commands))
 
+    def test_transfer_stops_propagate_without_retry(self):
+        for code in (75, 143):
+            for pushes, fetch_code in (([[code, ""]], 0), ([rejected()], code)):
+                with self.subTest(code=code, fetch_code=fetch_code):
+                    result, commands, actions = self.run_loop(pushes=pushes, fetch_rc=fetch_code)
+                    self.assertEqual(result.returncode, code, result.stderr)
+                    self.assertEqual(actions, [])
+                    self.assertEqual(sum("push" in call for call in commands), 1)
+                    self.assertEqual(sum("fetch" in call for call in commands), int(bool(fetch_code)))
+
     def test_failed_fetch_no_advance_rewrite_or_covered_tip_never_retries(self):
-        for options in [dict(fetch_rc=128), dict(tips=["old", "old"]),
+        for options in [dict(fetch_rc=1), dict(tips=["old", "old"]),
                         dict(forward_rc=1), dict(behind_rc=0), dict(behind_rc=128)]:
             with self.subTest(options=options):
                 result, commands, actions = self.run_loop(pushes=[rejected()], **options)

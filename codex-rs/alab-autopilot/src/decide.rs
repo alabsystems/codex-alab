@@ -46,6 +46,7 @@
 //!   stand ([`ThreadState::needs`], put on the person's screen by the runtime), and the point's
 //!   own act carries the ack ([`crate::needs::NEEDS_ACK`]) once per new set.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -450,6 +451,8 @@ pub enum Wall {
     Overlong { what: String },
     /// A usage window, with the reset it names (`resets_at`) as this clock and as words.
     Usage {
+        /// The provider evidence available to authorize an account rotation.
+        limit_class: LimitClass,
         reset_at: Option<Instant>,
         reset_label: Option<String>,
     },
@@ -1113,7 +1116,7 @@ pub struct GoAheads {
 /// One thread's memory (the runtime keeps one per root thread, in its thread store).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThreadState {
-    /// A person's turn exists (no act until one does: the taskless rule).
+    /// A person supplied work or an active goal started a native continuation.
     pub task: bool,
     /// The bounded independent-work continuation was submitted in this person's task
     /// sequence. Native attributed history restores it across a restart; successful work,
@@ -1437,7 +1440,7 @@ pub struct Decision {
     pub act: Act,
     pub not_before: Option<Instant>,
     pub why: String,
-    /// A wait a person should see ("waiting for the usage reset at 14:05"): an `appnotice`, and
+    /// A wait a person should see ("usage reset at 14:05 · automatic retry follows"): an `appnotice`, and
     /// aterm's Waiting rows under `owner=codex-alab-wait kind=wait` once its timer is armed
     /// (amended 2026-10-27 after the parity sweep, gap 2).
     pub shown_wait: Option<String>,
@@ -1482,6 +1485,24 @@ pub struct Decision {
 }
 
 impl Decision {
+    /// Park a usage resume for its advertised reset or its own saved retry deadline.
+    /// At that time the existing policy evaluates whether the account may continue.
+    pub(crate) fn can_park_usage_resume(&self, state: &ThreadState) -> bool {
+        if !matches!(self.act, Act::ResumeLimit { .. }) {
+            return false;
+        }
+        match state.point.as_ref().and_then(|point| point.wall.as_ref()) {
+            Some(Wall::Usage {
+                reset_at: Some(_), ..
+            }) => true,
+            None => state
+                .owed
+                .as_ref()
+                .is_some_and(|owed| owed.resume_goal && self.not_before == Some(owed.not_before)),
+            Some(_) => false,
+        }
+    }
+
     fn nothing(why: impl Into<String>) -> Decision {
         Decision {
             act: Act::Nothing,
@@ -3949,11 +3970,15 @@ fn settle_after_wake(
     );
     decision.not_before = Some(settled);
     decision.why = format!("{}; {words}", decision.why);
-    // The earlier wait's clock time is not when the act types now (review of f134d2b2cb,
-    // finding 2): its words stay, its time goes.
-    decision.shown_wait = Some(match decision.shown_wait.take() {
-        Some(shown) => format!("{}; {words}", words::without_clock(&shown)),
-        None => words,
+    // The wake now sets the retry time. Other acts retain their reason, with
+    // any time they previously advertised removed.
+    decision.shown_wait = Some(if matches!(decision.act, Act::ResumeLimit { .. }) {
+        words::usage_retry_at("the host just woke", settled, now)
+    } else {
+        match decision.shown_wait.take() {
+            Some(shown) => format!("{}; {words}", words::without_clock(&shown)),
+            None => words,
+        }
     });
 }
 
@@ -4044,7 +4069,7 @@ fn decide_inner(
         return Decision::nothing("no turn this process ran has ended here");
     };
     if !s.task {
-        return Decision::nothing("taskless: no person's turn yet");
+        return Decision::nothing("taskless: no user task or native goal continuation yet");
     }
     // A PERSON'S ESC HOLDS THE POINT FOR `human_grace`, THEN IT IS A TURN END (aterm's
     // `person_hold`; owner 2026-10-27: "you need to keep working even if the user interrupted a
@@ -4137,6 +4162,13 @@ fn decide_inner(
             || matches!(decision.act, Act::ResumeLimit { .. }))
             && !(restored && matches!(wall, Wall::Usage { .. } | Wall::Entitlement))
         {
+            if let Some(floor) = s.recovery_not_before
+                && floor > now
+                && decision.not_before.is_none_or(|at| at < floor)
+                && matches!(decision.act, Act::ResumeLimit { .. })
+            {
+                decision.shown_wait = Some(words::usage_retry_at("usage limit", floor, now));
+            }
             decision.not_before = decision.not_before.max(s.recovery_not_before);
         }
         return decision;
@@ -4656,7 +4688,13 @@ fn owed_act(s: &ThreadState, p: &Policy, owed: &Owed, now: Instant) -> Decision 
         act: owed.act(text),
         not_before: (!due).then_some(owed.not_before),
         why: format!("{} the previous image owed at its re-exec", owed.rule),
-        shown_wait: (!due).then(|| words::types_again_at(words::OWED_ACT, owed.not_before, now)),
+        shown_wait: (!due).then(|| {
+            if owed.resume_goal {
+                words::usage_retry_at("usage limit", owed.not_before, now)
+            } else {
+                words::types_again_at(words::OWED_ACT, owed.not_before, now)
+            }
+        }),
         repo_owed: owed.repo_owed.clone().filter(|_| !due),
         in_record: None,
         held: None,
@@ -5089,6 +5127,7 @@ fn decide_wall(
         Wall::Usage {
             reset_at,
             reset_label,
+            ..
         } => {
             if !p.resume_limits || !p.limit_wait {
                 return Decision::attention("limit", USAGE_OFF);
@@ -5125,7 +5164,8 @@ fn decide_wall(
                 (true, _) => {
                     "fresh included-usage permission allows a recovery attempt".to_string()
                 }
-                (false, Some(label)) => format!("waiting for the usage reset at {label}"),
+                // This row can stay posted through grace without another timer tick.
+                (false, Some(label)) => format!("usage reset at {label} · automatic retry follows"),
                 (false, None) => "waiting for the usage reset".to_string(),
             };
             let (at, words) = match (at_reset, after_retry) {
@@ -5145,11 +5185,19 @@ fn decide_wall(
                     "waiting out the usage limit".to_string(),
                 ),
             };
+            // The provider's reset can pass while grace, jitter or retry pacing
+            // still holds the attempt. Show the time that remains to be waited for.
+            let shown_wait = if !restored && reset_at.is_some_and(|reset| reset <= now) && at > now
+            {
+                words::usage_retry_at("usage limit", at, now)
+            } else {
+                words.clone()
+            };
             Decision {
                 act: Act::ResumeLimit { text },
                 not_before: Some(at),
-                why: words.clone(),
-                shown_wait: Some(words),
+                why: words,
+                shown_wait: Some(shown_wait),
                 repo_owed: None,
                 in_record: None,
                 held: None,

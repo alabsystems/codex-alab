@@ -67,7 +67,7 @@ impl Write {
         let handle = server.request_handle();
         let tx = app.app_event_tx.clone();
         let offline = app.reconnect.offline;
-        tokio::spawn(async move {
+        server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the same provider write through original completion publication.
             let result = if offline {
                 Err("Could not save provider: Reconnect to the app server and try again.".into())
             } else {

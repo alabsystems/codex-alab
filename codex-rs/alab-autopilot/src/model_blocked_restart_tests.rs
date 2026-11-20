@@ -68,6 +68,74 @@ async fn history(h: &Harness, binding: &WallGoal) -> Vec<RolloutItem> {
 }
 
 #[test]
+fn a_paginated_rollout_fallback_refuses_partial_history_until_repaired() {
+    use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_thread_store::ThreadStoreError;
+    use std::io::Write;
+
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let server = responses::start_mock_server().await;
+            let test = core_test_support::test_codex::test_codex()
+                .with_history_mode(ThreadHistoryMode::Paginated)
+                .build(&server)
+                .await
+                .expect("start native Core with paginated history");
+            let thread = &test.codex;
+            thread.ensure_rollout_materialized().await;
+            thread
+                .flush_rollout()
+                .await
+                .expect("flush the owned rollout");
+            let path = thread.rollout_path().expect("the native rollout path");
+            assert!(matches!(
+                thread.load_history(false).await,
+                Err(ThreadStoreError::Unsupported {
+                    operation: "paginated_threads"
+                })
+            ));
+            let healthy = super::super::resumed_history(thread)
+                .await
+                .expect("read the clean paginated fallback");
+            assert!(!healthy.is_empty());
+            let healthy = serde_json::to_value(healthy).expect("encode the healthy history");
+            let file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open the test's owned rollout");
+            let original_len = file.metadata().unwrap().len();
+            for invalid in [
+                b"\n{\n".as_slice(),
+                br#"
+{"timestamp":"2026-11-18T00:00:00Z","type":"unknown_test_fixture_record","payload":{}}
+"#,
+            ] {
+                (&file)
+                    .write_all(invalid)
+                    .expect("append an unreadable test record");
+                let (_, _, errors) = codex_core::RolloutRecorder::load_rollout_items(&path)
+                    .await
+                    .expect("the underlying rollout loader reports partial success");
+                assert_eq!(errors, 1);
+                let error = super::super::resumed_history(thread)
+                    .await
+                    .expect_err("recovery cannot use only the readable records");
+                assert!(error.contains("unreadable records (count 1)"), "{error}");
+                file.set_len(original_len)
+                    .expect("restore the original bytes");
+                let repaired = super::super::resumed_history(thread)
+                    .await
+                    .expect("the clean rollout is readable again");
+                assert_eq!(serde_json::to_value(repaired).unwrap(), healthy);
+            }
+            thread.shutdown_and_wait().await.expect("native shutdown");
+        })
+        .await
+        .expect("paginated fallback hang detector");
+    });
+}
+
+#[test]
 fn an_unrelated_native_reply_before_the_resume_scan_preserves_model_stop_custody() {
     native_test(|| async {
         tokio::time::timeout(HANG, async {

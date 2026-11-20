@@ -7,7 +7,6 @@
 use super::*;
 use codex_app_server_client::ClientConstructionCheckpoint;
 use codex_app_server_client::ClientConstructionOperation;
-use codex_app_server_client::ClientPresentation;
 use codex_app_server_client::SideRollbackCheckpoint;
 use codex_app_server_client::SideRollbackOperation;
 use color_eyre::eyre::bail;

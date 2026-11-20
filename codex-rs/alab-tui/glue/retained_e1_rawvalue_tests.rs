@@ -3,6 +3,7 @@
 //! Direct original JSON decoder controls only. Opaque test leaf DATA is not
 //! a whole App, installed UI, callback/resource owner or Native/Source proof.
 use super::*;
+use crate::owned_local_entered_readers::constructor::InitialMessageData;
 use pretty_assertions::assert_eq;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
@@ -243,6 +244,184 @@ fn terminal_data() -> io::Result<(TerminalData, [std::fs::File; 2])> {
     ))
 }
 
+async fn saved_chooser_checkpoints(
+    child: ThreadId,
+    opening: &str,
+) -> io::Result<Vec<Arc<ClientConstructionCheckpoint>>> {
+    use codex_app_server_client::ClientConstructionSelection;
+    use codex_app_server_client::ClientPresentation;
+    use codex_app_server_protocol::RequestId;
+    use codex_app_server_protocol::ThreadResumeParams;
+    use futures::SinkExt;
+    use futures::StreamExt;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let child = child.to_string();
+    let selection = ClientConstructionSelection {
+        presentation: ClientPresentation::SideConversation,
+        prospective_create: Default::default(),
+        prepared: None,
+    };
+    let waiting = ClientConstructionOperation::for_saved_resume(
+        selection.clone(),
+        &uuid::Uuid::new_v4().simple().to_string(),
+        &child,
+    )?;
+    let ordinary = ClientConstructionOperation::new(selection.clone())?;
+    let issued = ClientConstructionOperation::for_saved_resume(selection, opening, &child)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint =
+        crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?)).map_err(invalid)?;
+    let expected_opening = opening.to_owned();
+    let expected_child = child.clone();
+    // Capture the original client's actual sent request, then lose its reply.
+    let peer = tokio::spawn(async move {
+        let (io, _) = listener.accept().await?;
+        let mut socket = tokio_tungstenite::accept_async(io).await.map_err(invalid)?;
+        while let Some(message) = socket.next().await {
+            let Message::Text(text) = message.map_err(invalid)? else {
+                continue;
+            };
+            let request: serde_json::Value = serde_json::from_str(&text)?;
+            let result = match request["method"].as_str() {
+                Some("initialize") => json!({"userAgent":"saved-opening-test/1.0"}),
+                Some("initialized") => continue,
+                Some("config/read") => {
+                    let prepare = &request["params"]["_meta"]["alab.clientConstructionPrepare"];
+                    assert_eq!(prepare["preparation"], expected_opening);
+                    assert_eq!(prepare["parameters"]["threadId"], expected_child);
+                    json!({"config":{}, "origins":{}, "layers":[], "_meta":{"alab.clientConstructionPrepared":{
+                        "phase":"prepared", "preparation":expected_opening, "claim":"a".repeat(32),
+                        "sourceOperation":"b".repeat(32), "selection":"c".repeat(32)
+                    }}})
+                }
+                Some("thread/resume") => {
+                    assert_eq!(request["params"]["threadId"], expected_child);
+                    assert_eq!(
+                        request["params"]["_meta"]["alab.clientConstruction"]["prepared"]["preparation"],
+                        expected_opening
+                    );
+                    socket.close(None).await.map_err(invalid)?;
+                    return Ok(());
+                }
+                other => panic!("unexpected original request {other:?}"),
+            };
+            let reply = json!({"id":request["id"],"result":result});
+            socket
+                .send(Message::Text(reply.to_string().into()))
+                .await
+                .map_err(invalid)?;
+        }
+        Err(invalid("original saved resume was never sent"))
+    });
+    let client = crate::connect_remote_app_server(endpoint)
+        .await
+        .map_err(invalid)?;
+    let handle = client.request_handle();
+    let (result, unreadable, lost) = tokio::time::timeout(
+        Duration::from_secs(60),
+        issued.run(handle.request_saved_resume_observed(
+            RequestId::Integer(19),
+            ThreadResumeParams {
+                thread_id: child,
+                model: Some("original-model".into()),
+                ..Default::default()
+            },
+        )),
+    )
+    .await
+    .map_err(invalid)?;
+    assert!(result.is_err() && !unreadable && lost);
+    client.shutdown().await?;
+    tokio::time::timeout(Duration::from_secs(60), peer)
+        .await
+        .map_err(invalid)?
+        .map_err(invalid)??;
+    Ok(vec![
+        Arc::new(ordinary.checkpoint()),
+        Arc::new(waiting.checkpoint()),
+        Arc::new(issued.checkpoint()),
+    ])
+}
+
+async fn pending_widget_section(selected: bool) -> io::Result<NativeSection> {
+    let (mut widget, _sender, _events, mut commands) =
+        crate::boxed_future!(crate::chatwidget::tests::make_chatwidget_manual_with_sender()).await;
+    while commands.try_recv().is_ok() {}
+    widget.set_queue_autosend_suppressed(true);
+    assert!(widget.queue_user_message_with_options(
+        crate::chatwidget::UserMessage::from("pending compiler follow-up"),
+        crate::bottom_pane::QueuedInputAction::Literal,
+        Vec::new(),
+    ));
+    assert!(commands.try_recv().is_err());
+    if selected {
+        Ok(NativeSection::captured(
+            widget.alab_capture_retained_messages()?,
+        ))
+    } else {
+        InitialMessageData::from_widget(&widget, &None)?.section()
+    }
+}
+
+fn assert_pending_input_preflight(bytes: &[u8], service: &str, selected: bool) -> io::Result<()> {
+    let valid: serde_json::Value = serde_json::from_slice(&bytes[MAGIC.len()..])?;
+    let field = if selected {
+        "messages"
+    } else {
+        "initial_message"
+    };
+    for remove_field in [false, true] {
+        let mut altered = valid.clone();
+        let body = &mut altered["ui"][field]["body"];
+        let pending = if selected {
+            body
+        } else {
+            &mut body["widgetMessages"]
+        };
+        let queue = &mut pending["input_queue"];
+        assert_eq!(queue["suppress_queue_autosend"], true);
+        assert_eq!(
+            queue["queued_user_messages"][0]["user_message"]["text"],
+            "pending compiler follow-up"
+        );
+        if remove_field {
+            queue
+                .as_object_mut()
+                .unwrap()
+                .remove("suppress_queue_autosend");
+        } else {
+            queue["queued_user_messages"]
+                .as_array_mut()
+                .unwrap()
+                .clear();
+        }
+        let mut bad = MAGIC.to_vec();
+        bad.extend(serde_json::to_vec(&altered)?);
+        // The outer frame is complete. Both ends must also validate the input it carries.
+        let frame = decode(&bad, service)?;
+        assert!(
+            matches!(decode_with_pending_input(&bad, service), Err(error) if error.kind() == io::ErrorKind::InvalidData)
+        );
+        let refused = encode(
+            service,
+            EncodeInputs {
+                configuration: frame.configuration,
+                selection: frame.selection,
+                terminal: frame.terminal,
+                ui: frame.ui,
+                editor: frame.editor,
+                image_custody: frame.image_custody,
+                clipboard: frame.clipboard,
+            },
+        );
+        assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requested_raw_payload()
 -> io::Result<()> {
@@ -262,16 +441,27 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
     for selected in [false, true] {
         let (terminal, _actual_pty) = terminal_data()?;
         let thread = ThreadId::new();
+        let opening = uuid::Uuid::new_v4().simple().to_string();
+        let initial = Some(
+            InitialConstructionOperation::new(
+                codex_app_server_client::InitialSessionSelection {
+                    claim: uuid::Uuid::new_v4().simple().to_string(),
+                    prospective_create: None,
+                },
+                codex_app_server_client::InitialAction::Resume(thread.to_string()),
+            )?
+            .checkpoint(),
+        );
         let (selection, ui) = if selected {
             (
                 SelectionData::Selected {
                     primary: thread,
                     displayed: thread,
-                    initial: None,
-                    later: Vec::new(),
+                    initial,
+                    later: saved_chooser_checkpoints(thread, &opening).await?,
                 },
                 UiData::Selected {
-                    messages: section(),
+                    messages: pending_widget_section(true).await?,
                     composer: section(),
                     questions: section(),
                     pending_views: section(),
@@ -280,11 +470,11 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
             )
         } else {
             (
-                SelectionData::NoPrimary { initial: None },
+                SelectionData::NoPrimary { initial },
                 UiData::NoPrimary {
                     startup: section(),
                     pending_views: section(),
-                    initial_message: section(),
+                    initial_message: pending_widget_section(false).await?,
                     presentation: section(),
                 },
             )
@@ -307,7 +497,27 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
                 clipboard: ClipboardData::test_joined_original()?,
             },
         )?;
-        let actual = decode(&bytes, SERVICE)?;
+        let (actual, _messages) = decode_with_pending_input(&bytes, SERVICE)?;
+        assert_pending_input_preflight(&bytes, SERVICE, selected)?;
+        // Compare the previous v2 encoding and the bounded writer on the same
+        // original raw sections. The complete frame includes the magic header.
+        let mut previous = MAGIC.to_vec();
+        previous.extend(serde_json::to_vec(&actual).map_err(io::Error::other)?);
+        let encode_at = |limit| {
+            upgrade_frame::encode(
+                MAGIC,
+                &actual,
+                limit,
+                "retained UI exceeds Native E1 input limit",
+            )
+        };
+        assert_eq!(encode_at(previous.len())?, previous);
+        let oversized = encode_at(previous.len() - 1).unwrap_err();
+        assert_eq!(oversized.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            oversized.to_string(),
+            "retained UI exceeds Native E1 input limit"
+        );
         actual.configuration.validate_data()?;
         assert_eq!(
             actual.configuration.selected_cwd,
@@ -318,11 +528,33 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
             b"original accepted parser suffix"
         );
         assert_eq!(matches!(actual.ui, UiData::Selected { .. }), selected);
-        let EditorData::Requested { original_request } = actual.editor else {
+        let handoffs = actual.selection.saved_resume_queries()?;
+        if selected {
+            assert_eq!(handoffs.len(), 1);
+            assert_eq!(handoffs[0].query().opening(), opening);
+            assert_eq!(handoffs[0].query().child(), thread.to_string());
+
+            let mut raw: serde_json::Value =
+                serde_json::from_slice(&bytes[MAGIC.len()..]).map_err(io::Error::other)?;
+            let later = raw["selection"]["later"].as_array_mut().unwrap();
+            later.push(later.last().unwrap().clone());
+            let mut duplicate = MAGIC.to_vec();
+            duplicate.extend(serde_json::to_vec(&raw).map_err(io::Error::other)?);
+            assert!(decode(&duplicate, SERVICE).is_err());
+            let later = raw["selection"]["later"].as_array_mut().unwrap();
+            later.truncate(later.len() - 1);
+            later[0]["schema"] = 42.into();
+            let mut wrong_schema = MAGIC.to_vec();
+            wrong_schema.extend(serde_json::to_vec(&raw).map_err(io::Error::other)?);
+            assert!(decode(&wrong_schema, SERVICE).is_err());
+        } else {
+            assert!(handoffs.is_empty());
+        }
+        let EditorData::Requested { original_request } = &actual.editor else {
             panic!("original Requested state changed")
         };
         assert_eq!(original_request.body().get(), section().body().get());
-        for mutation in 0..4 {
+        for mutation in 0..5 {
             let mut raw: serde_json::Value = serde_json::from_slice(&bytes[MAGIC.len()..]).unwrap();
             match mutation {
                 0 => {
@@ -342,8 +574,13 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
                         serde_json::json!({"noPrimary":null})
                     };
                 }
-                _ => {
+                3 => {
                     raw["editor"]["unknownOriginal"] = true.into();
+                }
+                _ => {
+                    raw["selection"]["initial"]["request"] = serde_json::json!({
+                        "method": "thread/start", "hadParams": false, "params": null
+                    });
                 }
             }
             let mut bad = MAGIC.to_vec();
@@ -365,7 +602,72 @@ async fn production_full_frame_encode_decode_preserves_both_ui_arms_and_requeste
         let mut bad = MAGIC.to_vec();
         bad.extend_from_slice(duplicate.as_bytes());
         assert!(decode(&bad, SERVICE).is_err());
+        if let Some(handoff) = handoffs.first() {
+            assert_second_saved_opening_frame(actual, handoff, &bytes)?;
+        }
     }
+    Ok(())
+}
+
+fn assert_second_saved_opening_frame(
+    frame: Frame,
+    handoff: &SavedResumeHandoff,
+    first: &[u8],
+) -> io::Result<()> {
+    let SelectionData::Selected {
+        primary,
+        displayed,
+        initial,
+        later,
+    } = frame.selection
+    else {
+        panic!("expected the original selected frame");
+    };
+    let issued = later
+        .iter()
+        .find(|checkpoint| {
+            checkpoint.saved_opening().is_some_and(|(opening, child)| {
+                opening == handoff.query().opening() && child == handoff.query().child()
+            })
+        })
+        .expect("original issued checkpoint");
+    assert!(Arc::ptr_eq(issued, handoff.checkpoint()));
+
+    // An old v2 array encoded the plain checkpoint values. Keep the expected
+    // second frame's other bytes and replace only that array with the issued row.
+    let plain: Vec<_> = later.iter().map(Arc::as_ref).collect();
+    let before = format!("\"later\":{}", serde_json::to_string(&plain)?);
+    let after = format!("\"later\":{}", serde_json::to_string(&[issued.as_ref()])?);
+    let first = std::str::from_utf8(first).map_err(invalid)?;
+    assert_eq!(first.matches(&before).count(), 1);
+    let expected = first.replacen(&before, &after, 1);
+
+    let second = encode(
+        &frame.service,
+        EncodeInputs {
+            configuration: frame.configuration,
+            selection: SelectionData::Selected {
+                primary,
+                displayed,
+                initial,
+                later: vec![Arc::clone(handoff.checkpoint())],
+            },
+            terminal: frame.terminal,
+            ui: frame.ui,
+            editor: frame.editor,
+            image_custody: frame.image_custody,
+            clipboard: frame.clipboard,
+        },
+    )?;
+    assert_eq!(second.as_slice(), expected.as_bytes());
+    let (frame, _messages) = decode_with_pending_input(&second, &frame.service)?;
+    let reentered = frame.selection.saved_resume_queries()?;
+    assert_eq!(reentered.len(), 1);
+    assert_eq!(reentered[0].query().as_ref(), handoff.query().as_ref());
+    assert_eq!(
+        serde_json::to_vec(reentered[0].checkpoint())?,
+        serde_json::to_vec(issued)?
+    );
     Ok(())
 }
 
@@ -395,7 +697,7 @@ async fn production_frame_requires_observed_null_instead_of_missing_policy_or_in
                     later: Vec::new(),
                 },
                 UiData::Selected {
-                    messages: section(),
+                    messages: pending_widget_section(true).await?,
                     composer: section(),
                     questions: section(),
                     pending_views: section(),
@@ -408,7 +710,7 @@ async fn production_frame_requires_observed_null_instead_of_missing_policy_or_in
                 UiData::NoPrimary {
                     startup: section(),
                     pending_views: section(),
-                    initial_message: section(),
+                    initial_message: InitialMessageData::from_actual(&None).section()?,
                     presentation: section(),
                 },
             )
@@ -500,7 +802,7 @@ async fn production_frame_requires_explicit_image_census_and_rejects_malformed_l
             ui: UiData::NoPrimary {
                 startup: section(),
                 pending_views: section(),
-                initial_message: section(),
+                initial_message: InitialMessageData::from_actual(&None).section()?,
                 presentation: section(),
             },
             editor: EditorData::Requested {
@@ -586,7 +888,7 @@ async fn production_frame_requires_original_joined_clipboard_data_and_rejects_om
             ui: UiData::NoPrimary {
                 startup: section(),
                 pending_views: section(),
-                initial_message: section(),
+                initial_message: InitialMessageData::from_actual(&None).section()?,
                 presentation: section(),
             },
             editor: EditorData::Requested {

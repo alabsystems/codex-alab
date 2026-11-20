@@ -13,8 +13,9 @@ it, collection holds atpkg's existing <prefix>/store.lock BSD flock across its e
 census and deletion; a manual selection cannot move between the snapshot and deletion.
 A missing, special, unreadable or contended lock defers collection without creating it.
 
-A package is a directory directly under --root holding a regular alab-build.json; they are
-ordered by its "built_at", newest first, and every one past the newest <n> (default 3) is
+A package is a directory directly under --root holding a regular alab-build.json with a
+timezone-aware build time. Unrankable directories stay in place. Packages are ordered
+by their build instant, newest first, and every one past the newest <n> (default 3) is
 removed, unless it is IN USE:
 
   linked   atpkg links it as codex. Read, never followed into a binary:
@@ -61,6 +62,7 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 import ctypes.util
+from datetime import datetime
 import json
 import os
 import re
@@ -77,6 +79,7 @@ except ImportError:
 
 
 cleanup_allowed = runpy.run_path(os.path.join(os.path.dirname(__file__), "retention.py"))["cleanup_allowed"]
+parse_link_marker = runpy.run_path(os.path.join(os.path.dirname(__file__), "promote.py"))["parse_link_marker"]
 
 # A shim or a marker larger than this is not one (a copied binary, say): never read whole.
 SMALL_TEXT = 64 * 1024
@@ -133,50 +136,43 @@ def store_guard(prefix):
         os.close(directory)
 
 
-def small_text(path):
+def small_text(path, *, strict_utf8=False):
     """The text of a small regular file at `path` (never through a symlink), else None."""
     try:
-        st = os.lstat(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode) or st.st_size > SMALL_TEXT:
-        return None
     try:
-        with open(path, "rb") as f:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_size > SMALL_TEXT:
+                return None
             data = f.read(SMALL_TEXT + 1)
+            if len(data) > SMALL_TEXT:
+                return None
     except OSError:
         return None
     if b"\0" in data:
         return None
-    return data.decode("utf-8", "replace")
-
-
-def toml_string(value):
-    """A TOML basic ("...") or literal ('...') string's value, else None."""
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == "'":
-        return value[1:-1]
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        try:
-            return json.loads(value)
-        except ValueError:
-            return None
-    return None
+    try:
+        return data.decode("utf-8", "strict" if strict_utf8 else "replace")
+    except UnicodeDecodeError:
+        return None
 
 
 def marker_paths(text):
     """The package paths atpkg's link marker names: its checkout, and checkout/<bin> for
     each bin. None when it names no checkout (an unreadable marker)."""
-    checkout = None
-    bins = []
-    for line in text.splitlines():
-        m = re.match(r"\s*checkout\s*=\s*(.+?)\s*$", line)
-        if m:
-            checkout = toml_string(m.group(1))
-        m = re.match(r"\s*bins\s*=\s*\[(.*)\]\s*$", line)
-        if m:
-            bins = [b for b in (toml_string(x) for x in re.findall(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'", m.group(1))) if b]
-    if not checkout or not os.path.isabs(checkout):
+    try:
+        marker = parse_link_marker(text)
+    except ValueError:
+        return None
+    checkout, bins = marker.get("checkout"), marker.get("bins", [])
+    if (not isinstance(checkout, str) or not checkout or "\0" in checkout
+            or not os.path.isabs(checkout) or not isinstance(bins, list)
+            or any(not isinstance(b, str) or not b or "\0" in b for b in bins)
+            or "schema" in marker and (type(marker["schema"]) is not int or marker["schema"] != 1)
+            or "program" in marker and marker["program"] != PROGRAM):
         return None
     return [checkout] + [os.path.join(checkout, b) for b in bins]
 
@@ -237,8 +233,15 @@ def linked(prefix):
     paths = []
     known = False
     marker = os.path.join(prefix, "links", PROGRAM)
-    if os.path.lexists(marker):
-        text = small_text(marker)
+    try:
+        os.lstat(marker)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        say(f"cannot inspect the link marker {marker} ({error.strerror})")
+        return None
+    else:
+        text = small_text(marker, strict_utf8=True)
         named = marker_paths(text) if text is not None else None
         if named is None:
             say(f"the link marker {marker} stands but cannot be read")
@@ -270,6 +273,32 @@ RECORD_MAX = 1024 * 1024
 # Keep the same filenames as alab-tui's record::owner_pid. A quarantine can be the only
 # durable witness; its nonce is opaque, and the owning pid is an ASCII u32.
 RECORD_NAME = re.compile(r"([0-9]+)\.json(?:\..*\.tmp)?", re.DOTALL)
+RECORD_GUARDED_MEMBERS = frozenset((
+    "v", "pid", "version", "execGeneration", "env", "status", "draftEmpty", "autopilot",
+    "statusUpdatedAt", "updatedAt", "kind", "entrypoint", "exe", "launchArgv0", "resumeArgv",
+))
+
+
+class _RecordObject(dict):
+    """A decoded JSON object, retaining its duplicate keys separately."""
+
+    __slots__ = ("duplicate_keys",)
+
+    def __init__(self, pairs):
+        super().__init__()
+        self.duplicate_keys = set()
+        for key, value in pairs:
+            if key in self:
+                self.duplicate_keys.add(key)
+            self[key] = value
+
+
+def record_document(text):
+    """Reject repeated core/path members at the root; nested metadata stays unchanged."""
+    record = json.loads(text, object_pairs_hook=_RecordObject)
+    if not isinstance(record, _RecordObject) or record.duplicate_keys & RECORD_GUARDED_MEMBERS:
+        return None
+    return record
 
 
 def default_homes():
@@ -304,6 +333,46 @@ def record_text(path):
         return None
 
 
+def record_string(value):
+    """A native String contains Unicode scalar values, including empty text."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def recognized_record_core(record):
+    """Recognize the native v1 core and consumed paths, leaving extensions alone."""
+    if not isinstance(record, dict) or type(record.get("v")) is not int or record["v"] != 1:
+        return False
+    for field, maximum in (("pid", (1 << 32) - 1),
+                           ("execGeneration", (1 << 64) - 1),
+                           ("statusUpdatedAt", (1 << 64) - 1),
+                           ("updatedAt", (1 << 64) - 1)):
+        value = record.get(field)
+        if type(value) is not int or not 0 <= value <= maximum:
+            return False
+    if not all(record_string(record.get(field)) for field in ("version", "kind", "entrypoint")):
+        return False
+    env = record.get("env")
+    if not isinstance(env, dict) or not all(record_string(key) and record_string(value)
+                                          for key, value in env.items()):
+        return False
+    if (record.get("status") not in ("busy", "idle", "waiting", "upgrading", "exited")
+            or record.get("autopilot") not in ("off", "passive", "active")
+            or type(record.get("draftEmpty")) is not bool):
+        return False
+    for field in ("exe", "launchArgv0"):
+        value = record.get(field)
+        if value is not None and not record_string(value):
+            return False
+    argv = record.get("resumeArgv")
+    return argv is None or isinstance(argv, list) and all(record_string(value) for value in argv)
+
+
 def owed(homes):
     """The paths the codex-alab session records under `homes` name (each one's resumeArgv[0],
     exe and launchArgv0, and what a shim among them names), or None when the captured
@@ -330,10 +399,10 @@ def owed(homes):
             path = os.path.join(sessions, name)
             text = record_text(path)
             try:
-                record = json.loads(text) if text is not None else None
+                record = record_document(text) if text is not None else None
             except ValueError:
                 record = None
-            if not isinstance(record, dict):
+            if not recognized_record_core(record):
                 say(f"the session record {path} stands but cannot be read")
                 return None
             argv = record.get("resumeArgv")
@@ -404,13 +473,22 @@ def packages(root):
         d = os.path.join(root, name)
         if os.path.islink(d) or not os.path.isdir(d):
             continue
-        text = small_text(os.path.join(d, "alab-build.json"))
+        text = small_text(os.path.join(d, "alab-build.json"), strict_utf8=True)
         if text is None:
             continue
         try:
-            built = str(json.loads(text).get("built_at", ""))
-        except ValueError:
-            built = ""
+            record = json.loads(text)
+            stamp = record.get("built_at") if isinstance(record, dict) else None
+            if not isinstance(stamp, str) or "T" not in stamp:
+                continue
+            # The macOS system Python accepts UTC as an offset, not a trailing Z.
+            if stamp.endswith("Z"):
+                stamp = stamp[:-1] + "+00:00"
+            built = datetime.fromisoformat(stamp)
+        except (ValueError, RecursionError):
+            continue
+        if built.tzinfo is None:
+            continue
         found.append((built, d))
     found.sort(reverse=True)
     return [d for _, d in found]
@@ -439,12 +517,11 @@ def main():
     if not cleanup_allowed(args.repo):
         say("the clone's cleanup policy preserves all packages")
         return 0
-    candidates = packages(root)[args.keep :]
-    if not candidates:
-        return 0
     try:
         with store_guard(prefix):
-            prune_candidates(args, candidates, prefix)
+            candidates = packages(root)[args.keep :]
+            if candidates:
+                prune_candidates(args, candidates, prefix)
     except OSError as error:
         say(f"pruning stopped ({error}); no further packages removed")
     return 0

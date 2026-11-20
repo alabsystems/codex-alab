@@ -45,11 +45,19 @@ pub use retained::RetainedPhase;
 pub use retained::RetainedStart;
 pub use retained::ServiceObservation;
 
-pub fn prepare_start(
+/// Observe construction policy before allocating the callback for a new intent.
+/// Once issued, the intent reconciles through its original owner and operation.
+pub async fn prepare_start(
     controller: &Controller,
     operation: &str,
     settings: StartupSettings,
 ) -> io::Result<RetainedStart> {
+    if controller.startup_mode().await? != super::StartupMode::Retained {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "native controller selected embedded startup",
+        ));
+    }
     controller.prepare_retained_start(operation, settings)
 }
 

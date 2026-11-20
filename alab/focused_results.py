@@ -24,6 +24,8 @@ PASSED = re.compile(r'^test (\S+) \.\.\. ok$', re.MULTILINE)
 
 def libtest_output(raw):
     output = raw.decode('utf-8')
+    # Styling cannot create a record boundary or hide a preceding cursor command.
+    output = ANSI.sub(lambda control: '' if control.group().endswith('m') else control.group(), output)
     # A cursor command can end a TUI frame immediately before libtest's line.
     # Preserve that boundary without treating ordinary visible text as a record.
     return ANSI.sub(lambda control: '\n' if output.startswith('test ', control.end()) else '', output)
@@ -32,7 +34,10 @@ def libtest_output(raw):
 def completed_names(output, suites):
     passed = []
     for start, result, suite in zip(START.finditer(output), RESULT.finditer(output), suites):
-        names = PASSED.findall(output[start.end():result.start()])
+        # With --show-output, libtest prints captured stdout after the progress
+        # lines. A test can print another test's verdict there.
+        progress = output[start.end():result.start()].partition('\nsuccesses:\n')[0]
+        names = PASSED.findall(progress)
         if len(names) != suite['passed']:
             raise ValueError('executed test names disagree with suite counts')
         passed.extend(names)

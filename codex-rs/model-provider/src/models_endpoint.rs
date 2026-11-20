@@ -72,6 +72,7 @@ fn supports_gateway_catalog(info: &ModelProviderInfo) -> bool {
 /// Provider-owned OpenAI-compatible `/models` endpoint.
 #[derive(Debug)]
 pub(crate) struct OpenAiModelsEndpoint {
+    pub(super) alab_default_api: Option<crate::alab_openai_api_catalog::DefaultApi>, // ALAB(defaults): only a registered catalog can adopt the account's default metadata route.
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
     gateway_auth_manager: Option<Result<Arc<GatewayAuthManager>, String>>,
@@ -101,7 +102,9 @@ impl OpenAiModelsEndpoint {
         } else {
             ClientRedirectPolicy::Default
         };
+        let redirect_policy = crate::alab_picker_provider::redirect_policy(redirect_policy); // ALAB(accounts): preserve the signed destination on catalog requests.
         Self {
+            alab_default_api: None, // ALAB(defaults): standalone endpoints have no registered provider ID.
             runtime_auth: None,
             provider_info,
             auth_manager,
@@ -184,13 +187,12 @@ impl OpenAiModelsEndpoint {
             "codex.remote_models.fetch_update.duration_ms",
             &[("auth_mode", metric_auth_mode)],
         );
-        let identity = crate::models_identity::identity(&self.provider_info, auth.as_ref())?;
+        let identity = crate::alab_openai_api_catalog::identity(&self.provider_info, auth.as_ref(), self.alab_default_api)?; // ALAB(defaults): bind refreshed models to this registered endpoint.
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let mut api_provider = resolve_api_provider(&self.provider_info, auth.as_ref())?;
         if (auth.as_ref().is_some_and(CodexAuth::is_api_key_auth) || self.has_provider_api_key())
-            && self.supports_api_key_models()
-            && self.provider_info.base_url.is_none()
             && self.provider_info.model_catalog_url.is_none()
+            && crate::alab_openai_api_catalog::admit(&self.provider_info, self.alab_default_api, auth.as_ref())? // ALAB(defaults): recheck the resolved API key before using its default model catalog.
         {
             // Codex metadata is served by the Codex backend, not the public /v1/models API.
             api_provider.base_url = if uses_fedramp_api_key(auth.as_ref(), &self.provider_info)? {
@@ -306,6 +308,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
             headers.retain(|name, _| !name.eq_ignore_ascii_case("originator"));
         }
         Some(Arc::new(Self {
+            alab_default_api: self.alab_default_api, // ALAB(defaults): originators retain their provider's registration.
             provider_info,
             auth_manager: self.auth_manager.clone(),
             gateway_auth_manager: self.gateway_auth_manager.clone(),
@@ -317,6 +320,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
     fn supports_api_key_models(&self) -> bool {
         self.provider_info.model_catalog_url.is_some()
             || (self.provider_info.is_openai() && self.provider_info.base_url.is_none())
+            || crate::alab_openai_api_catalog::supports_explicit(self.alab_default_api, self.auth_manager.as_deref()) // ALAB(defaults): an explicit matching default API endpoint can discover models.
     }
 
     fn has_provider_api_key(&self) -> bool {
@@ -339,7 +343,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
             .auth_manager
             .as_ref()
             .and_then(|manager| manager.auth_cached());
-        crate::models_identity::identity(&self.provider_info, auth.as_ref()).ok()
+        crate::alab_openai_api_catalog::identity(&self.provider_info, auth.as_ref(), self.alab_default_api).ok() // ALAB(defaults): read only this endpoint's cached metadata.
     }
 
     fn has_command_auth(&self) -> bool {

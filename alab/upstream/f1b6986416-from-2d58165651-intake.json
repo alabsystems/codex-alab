@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "base": "2d581656514cf4d87a43e20f3a8be4a0a2696025",
+  "target": "f1b69864161866a111610c4b4351d397fb644b6f",
+  "frontier": "2d581656514cf4d87a43e20f3a8be4a0a2696025",
+  "commits": [
+    {
+      "sha": "f1b69864161866a111610c4b4351d397fb644b6f",
+      "subject": "Support optional Apps tool results in Responses requests (#62388)",
+      "paths": [
+        "codex-rs/codex-api/src/common.rs",
+        "codex-rs/codex-api/src/endpoint/responses.rs",
+        "codex-rs/codex-api/src/endpoint/responses_websocket.rs",
+        "codex-rs/codex-api/src/lib.rs",
+        "codex-rs/codex-api/tests/clients.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tool_metadata.rs",
+        "codex-rs/http-client/src/request.rs",
+        "codex-rs/http-client/src/request_draft.rs",
+        "codex-rs/http-client/src/route_aware_client_pool/execution.rs",
+        "codex-rs/http-client/src/route_aware_tls_fallback_tests.rs",
+        "codex-rs/http-client/src/transport.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/models/executed_tool_calls.rs",
+        "codex-rs/protocol/src/models/executed_tool_calls_tests.rs"
+      ],
+      "classes": [
+        "protocol",
+        "feature"
+      ],
+      "features": [
+        "provider-recovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt optional Apps tool results on Responses HTTP and WebSocket requests. Keep the ordinary Codex caller unopted and preserve the fork’s content-free request diagnostics on both transports.",
+      "evidence": [
+        "Callers explicitly select an input row and executed call. The projection retains plaintext and an optional bounded structured object from a successful eligible result. The bounds are 1 MiB per result, 64 levels for structured content, and 15 MiB for the enriched message. Default Core sampling and ordinary request serialization attach no bodies.",
+        "Observers and ALab request-shape diagnostics receive the canonical serialization. An enriched WebSocket send suppresses payload tracing while the selected error still keeps the original request correlation. The two retained ALab socket controls use the upstream typed send command.",
+        "HTTP transport retains the enriched body on same-endpoint retries. A 307 or 308 with a Location is retried with the canonical body, including after a route-aware TLS fallback. Upstream supplies the real HTTP peer and redirect controls. The combined fork adds a loopback WebSocket control comparing the actual frame, observer and terminal failure diagnostics."
+      ],
+      "revisit": "Require the HTTP retry/redirect, WebSocket peer/observer and receiver-bound controls on the combined source. Review which caller supplies eligible results before enabling this optional transport feature for ordinary sessions."
+    }
+  ]
+}

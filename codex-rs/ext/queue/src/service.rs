@@ -216,6 +216,9 @@ impl QueuedItemService {
                             let Ok(thread) = manager.get_thread(thread_id).await else {
                                 return;
                             };
+                            if thread.alab_queue_review_pending().await { // ALAB(queue-review): stop polling retained items until an explicit turn resumes dispatch.
+                                return;
+                            }
                             if matches!(
                                 thread.agent_status().await,
                                 AgentStatus::Running
@@ -422,7 +425,10 @@ impl QueuedItemService {
         };
         let submission = thread
             .start_turn_if_idle(
-                TurnInputRequest::new(input)
+                TurnInputRequest {
+                    alab_queue_dispatch: Some(codex_protocol::turn_input::QueueDispatch::Explicit), // ALAB(queue-review): this is the actual manual selection.
+                    ..TurnInputRequest::new(input)
+                }
                     .with_responses_metadata(item.responsesapi_client_metadata)
                     .with_trace(trace)
                     .on_start(TurnStartOptions {
@@ -444,6 +450,9 @@ impl QueuedItemService {
         let Ok(thread) = manager.get_thread(thread_id).await else {
             return Ok(());
         };
+        if thread.alab_queue_review_pending().await { // ALAB(queue-review): every automatic idle source preserves the held queue.
+            return Ok(());
+        }
 
         loop {
             let Some(record) = self
@@ -473,7 +482,10 @@ impl QueuedItemService {
 
             match thread
                 .start_turn_if_idle(
-                    TurnInputRequest::new(item.input)
+                    TurnInputRequest {
+                        alab_queue_dispatch: Some(codex_protocol::turn_input::QueueDispatch::Automatic), // ALAB(queue-review): Core rechecks under the idle reservation.
+                        ..TurnInputRequest::new(item.input)
+                    }
                         .with_responses_metadata(item.responsesapi_client_metadata)
                         .on_start(TurnStartOptions {
                             turn_trigger: Some("queue".to_string()),

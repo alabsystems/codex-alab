@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from feature_evidence import read_record, snapshot, validate
+from feature_evidence import read_record, scoped_snapshot, snapshot, validate
 from upstream_gate import admission as review_admission
 from upstream_intake import git
 
@@ -28,7 +28,7 @@ def bundle_path(repo, source, override=None):
     return common / 'alab-feature-evidence' / source
 
 
-def admission(repo, base, source='HEAD', upstream='upstream/main', bundle_root=None):
+def admission(repo, base, source='HEAD', upstream=None, bundle_root=None):
     review = review_admission(repo, base, source, upstream)
     if review['missing'] or review['errors']:
         raise ValueError('complete committed review required before feature admission')
@@ -41,7 +41,8 @@ def admission(repo, base, source='HEAD', upstream='upstream/main', bundle_root=N
                         'semantic judgment, native full gate and adoption remain separate.'}
     if not review['affected_features']:
         return result
-    expected = snapshot(repo, review['source'], review['integrated_upstream'], review['base'])
+    inventory = snapshot(repo, review['source'], review['integrated_upstream'])
+    expected = scoped_snapshot(inventory, review)
     root = bundle_path(repo, review['source'], bundle_root)
     result['bundle'] = str(root)
     if root.is_symlink() or (root / 'record.json').is_symlink():
@@ -59,7 +60,7 @@ def _arguments():
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--base', required=True)
     parser.add_argument('--source', default='HEAD')
-    parser.add_argument('--upstream', default='upstream/main')
+    parser.add_argument('--upstream')
     parser.add_argument('--bundle-root', type=Path, default=os.environ.get('ALAB_FEATURE_BUNDLE'))
     args = parser.parse_args()
     return args

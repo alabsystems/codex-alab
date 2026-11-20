@@ -3,16 +3,16 @@
 
 //! A compact Codex launch strip inspired by aterm's Claude harness presentation.
 //!
-//! One rainbow frame holds a large mint prompt mark at the left, OpenAI Codex identity
-//! and session facts in the middle, and a full-body kitty with its striped rainbow in
-//! the right sky. The ALab signature closes the strip. Narrow layouts shed the art
-//! before truncating facts; very narrow terminals use plain branding and metadata.
-//! The palette follows terminal depth and background, including monochrome. Raw
-//! scrollback and export retain upstream's header text. The existing explicit ribbon
-//! and stripes styles and composer tinting retain their own renderers.
+//! The default card places OpenAI's Codex icon beside the ALab release, the upstream
+//! baseline and session facts. The rainbow kitty occupies the remaining space on wide
+//! terminals. The explicit ribbon and stripes styles retain their own renderers.
 
+pub mod artwork;
 pub mod claims;
 mod codex;
+pub use codex::detail_style;
+pub use codex::permission_style;
+mod codex_icon;
 pub mod palette;
 mod render;
 pub mod retained;
@@ -20,6 +20,7 @@ pub(crate) mod sprite;
 
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style as TextStyle;
 use ratatui::text::Line;
 use std::fmt::Write as _;
 use std::sync::atomic::AtomicBool;
@@ -29,13 +30,23 @@ use std::sync::atomic::Ordering;
 /// depend on alab-core).
 pub use codex_alab_core::active;
 
-/// The upstream source this build includes, as `codex_alab_core::version::upstream()` spells
-/// it, when the packager stamped it; an unstamped source build names none rather than its
-/// `unreleased`.
+/// When stdout reports no color, preserve an explicit monochrome choice in the
+/// enhanced interface. A capable terminal can still advertise truecolor.
+pub fn explicit_monochrome() -> bool {
+    active()
+        && (std::env::var("NO_COLOR").is_ok_and(|value| value != "0")
+            || std::env::var("TERM").as_deref() == Ok("dumb"))
+}
+
+/// The stamped upstream source or the published snapshot's ledger baseline.
+/// An unstamped source build has neither.
 pub fn stamped_upstream() -> Option<String> {
     use codex_alab_core::version;
-    (version::upstream_release().is_some() || version::upstream_commit().is_some())
-        .then(version::upstream)
+    match version::display_baseline() {
+        Some(baseline) if version::upstream_release().is_none() => Some(baseline.to_owned()),
+        Some(_) => Some(version::upstream()),
+        None => version::upstream_commit().map(|_| version::upstream()),
+    }
 }
 
 /// The opening banner design.
@@ -43,7 +54,7 @@ pub fn stamped_upstream() -> Option<String> {
 pub enum Style {
     /// aterm's sweep: one spectrum position per column, red at the kitty, violet at the tail.
     Ribbon,
-    /// OpenAI Codex welcome card with a terminal prompt emblem.
+    /// ALab welcome card with the OpenAI Codex mark and rainbow kitty.
     #[default]
     Codex,
     /// Classic Nyan: seven one-pixel bands, red on top, stepping a pixel every eight columns.
@@ -67,6 +78,7 @@ pub enum Depth {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Theme {
     bg: Option<palette::Rgb>,
+    terminal_foreground: bool,
 }
 
 impl Theme {
@@ -74,7 +86,22 @@ impl Theme {
     pub fn from_bg(bg: Option<(u8, u8, u8)>) -> Self {
         Self {
             bg: bg.map(palette::pack),
+            ..Self::default()
         }
+    }
+
+    /// Use the terminal's configured text ink until it reports a background.
+    pub fn with_terminal_foreground_if_unreported(mut self) -> Self {
+        self.terminal_foreground = self.bg.is_none();
+        self
+    }
+
+    /// Keep foreground text legible on an unknown background, even on a tinted, faint row.
+    pub(crate) fn unreported_foreground(self, depth: Depth) -> Option<TextStyle> {
+        self.terminal_foreground.then(|| TextStyle {
+            fg: (depth != Depth::Mono).then_some(Color::Reset),
+            ..TextStyle::default().not_dim()
+        })
     }
 
     /// Whether the background is known and light (codex's `color::is_light`).
@@ -141,6 +168,35 @@ impl Banner {
         self.style == Style::Codex
     }
 
+    /// Resolve an unknown background once a deferred terminal probe supplies its color.
+    pub fn with_late_background(
+        &self,
+        report: impl FnOnce() -> Option<(u8, u8, u8)>,
+    ) -> Option<Self> {
+        if self.theme.bg.is_some() {
+            return None;
+        }
+        Some(Self {
+            theme: Theme::from_bg(Some(report()?)),
+            ..self.clone()
+        })
+    }
+
+    /// The live status used by this artwork. Only the Codex card displays deadlines.
+    pub fn live_harness(&self) -> Option<Harness> {
+        read_harness(self.is_codex())
+    }
+
+    /// Version the live transcript row by both its model and local harness presentation.
+    pub fn transcript_tick(&self, model_revision: u64) -> Option<u64> {
+        let harness = self.live_harness().map(Harness::tick);
+        if model_revision == 0 {
+            return harness;
+        }
+        // Eight day forms × 1,440 minutes plus the four simple harness words fit in 14 bits.
+        Some((model_revision << 14) | harness.unwrap_or(0))
+    }
+
     /// One welcome card, including the session metadata supplied by the TUI.
     pub fn session_lines(
         &self,
@@ -148,11 +204,12 @@ impl Banner {
         harness: Option<Harness>,
         details: Vec<Line<'static>>,
     ) -> Vec<Line<'static>> {
-        let mode = match harness {
-            Some(Harness::On(mode)) => Some(mode),
+        let mode = harness.and_then(Harness::mode);
+        let deadline = match harness {
+            Some(Harness::CruiseUntil(landing)) => Some(landing.to_string()),
             _ => None,
         };
-        codex::render_session(self, width, mode, details)
+        codex::render_session_with_deadline(self, width, mode, details, deadline.as_deref())
     }
 
     /// The banner's lines at `width` columns; each is at most `width - 1` columns wide. Below 13
@@ -168,14 +225,10 @@ impl Banner {
     /// harness on, in its Autopilot word's palette (the moonbow under Off) and with the harness
     /// row under the text; otherwise the plain banner, as [`Banner::lines`].
     pub fn lines_with_harness(&self, width: u16, harness: Option<Harness>) -> Vec<Line<'static>> {
-        let mode = match harness {
-            Some(Harness::On(mode)) => Some(mode),
-            Some(Harness::Unsupervised) | None => None,
-        };
-        if self.style == Style::Codex {
-            return codex::render(self, width, mode);
+        if self.is_codex() {
+            return self.session_lines(width, harness, Vec::new());
         }
-        render::render_with_harness(self, usize::from(width), mode)
+        render::render_with_harness(self, usize::from(width), harness.and_then(Harness::mode))
     }
 }
 
@@ -213,6 +266,8 @@ pub enum Harness {
     /// over that Off included (the owner's ruling of 2026-10-24: "on" is the entire harness,
     /// not Autopilot alone).
     On(Mode),
+    /// Supervised Cruise with a reported local landing time.
+    CruiseUntil(crate::landing::Landing),
     /// A supervisor runs, but the harness does not supervise this session now: aterm's policy
     /// is off for a reason other than Autopilot (the harness disabled or off for this agent,
     /// unhosted, headless, a suspension, a hold over Cruise or Land codex-alab keeps no claim
@@ -221,15 +276,71 @@ pub enum Harness {
     Unsupervised,
 }
 
+impl Harness {
+    fn mode(self) -> Option<Mode> {
+        match self {
+            Self::On(mode) => Some(mode),
+            Self::CruiseUntil(_) => Some(Mode::Cruise),
+            Self::Unsupervised => None,
+        }
+    }
+
+    /// Fit the reported mode on one text row when the illustrated launch card collapses.
+    pub fn compact_mode_label(self, width: u16) -> Option<&'static str> {
+        let label = self.mode()?.label();
+        let (glyph, word) = label.split_once(' ')?;
+        [label, word, glyph]
+            .into_iter()
+            .find(|text| crate::model_layout::painted_width(text) <= usize::from(width))
+    }
+
+    fn tick(self) -> u64 {
+        match self {
+            Self::Unsupervised => 1,
+            Self::On(Mode::Cruise) => 2,
+            Self::On(Mode::Land) => 3,
+            Self::On(Mode::Off) => 4,
+            Self::CruiseUntil(landing) => 5 + landing.minute_key(),
+        }
+    }
+}
+
 /// The running session's harness ([`Harness`]); `None` with no supervisor at all (outside
 /// aterm, an aterm with no harness policy, or under unit tests).
 pub fn harness_state() -> Option<Harness> {
+    read_harness(true)
+}
+
+fn supervised_landing(
+    shared: &codex_alab_core::session::Shared,
+    state: (
+        codex_alab_core::session::Autopilot,
+        codex_alab_core::session::HarnessWord,
+    ),
+) -> Option<u64> {
+    use codex_alab_core::session::Autopilot;
+    use codex_alab_core::session::HarnessWord;
+    if state == (Autopilot::Active, HarnessWord::Cruise) {
+        shared.land_at()
+    } else {
+        None
+    }
+}
+
+fn read_harness(include_deadline: bool) -> Option<Harness> {
     use codex_alab_core::session::Autopilot;
     use codex_alab_core::session::HarnessWord;
     let shared = crate::boxes::tick_shared()?;
-    // One load: the supervisor publishes the Autopilot and its word in one store, so a frame
-    // never pairs a new state with the word it replaced.
-    Some(match shared.harness() {
+    // The supervisor publishes the policy and its word together.
+    let state = shared.harness();
+    if include_deadline
+        && let Some(at) = supervised_landing(shared, state)
+        && let Some(landing) =
+            crate::landing::Landing::in_zone(at, &chrono::Local, crate::fixture_clock::utc_now())
+    {
+        return Some(Harness::CruiseUntil(landing));
+    }
+    Some(match state {
         (Autopilot::Off, _) => return None,
         (_, HarnessWord::Off) => Harness::On(Mode::Off),
         (Autopilot::Active, HarnessWord::Land) => Harness::On(Mode::Land),
@@ -238,18 +349,22 @@ pub fn harness_state() -> Option<Harness> {
     })
 }
 
+/// Ask for a new frame when the reported landing day can change on an otherwise idle screen.
+pub fn next_landing_day_change(
+    now: &chrono::DateTime<chrono::Local>,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    let shared = crate::boxes::tick_shared()?;
+    let at = supervised_landing(shared, shared.harness())?;
+    crate::landing::Landing::next_date_change(at, now)
+}
+
 /// A value that moves whenever what the banner draws for the harness does: the banner cell's
 /// `transcript_animation_tick`, so a change redraws it at once. `None` with no supervisor.
 pub fn harness_tick() -> Option<u64> {
-    harness_state().map(|harness| match harness {
-        Harness::Unsupervised => 1,
-        Harness::On(Mode::Cruise) => 2,
-        Harness::On(Mode::Land) => 3,
-        Harness::On(Mode::Off) => 4,
-    })
+    harness_state().map(Harness::tick)
 }
 
-/// Tint the complete composer overline, including its labels, with a readable spectrum.
+/// Lay down the spectrum beneath the composer labels and controls.
 pub(crate) fn tint_composer_rule(
     area: ratatui::layout::Rect,
     buf: &mut ratatui::buffer::Buffer,

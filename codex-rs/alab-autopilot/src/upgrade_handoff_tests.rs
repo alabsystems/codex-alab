@@ -4,6 +4,7 @@
 //! The real upgrade evaluator, a loaded native core thread and an owned control
 //! server. The conditional TUI queue is held while new native facts arrive.
 
+use codex_alab_core::wall_kind::LimitClass;
 #[path = "upgrade_end_catchup_tests.rs"]
 mod end_catchup_tests;
 
@@ -29,6 +30,7 @@ use super::*;
 use codex_alab_aterm::Options as ClientOptions;
 use codex_alab_aterm::fake::FakeAterm;
 use codex_alab_aterm::fake::Mode;
+use codex_alab_core::retained_goal_gate::Gate;
 use codex_alab_core::session::Frame;
 use codex_alab_core::session::Launch;
 use codex_alab_core::session::ProgramState;
@@ -443,7 +445,7 @@ async fn a_fresh_recheck_does_not_borrow_an_older_intents_sleep_origin() {
             landing: false,
         };
         let permit = rt.hold_eval();
-        assert!(autopilot.arm_timer_tracking(&rt, recheck, None, |_| {
+        assert!(autopilot.arm_timer_tracking(&rt, recheck, None, false, |_| {
             Some(TrackedOwed::from_state(owed, Some(base)))
         }));
         for _ in 0..16 {
@@ -504,6 +506,20 @@ fn cli() -> clap::Command {
 /// lib run of this crate on a loaded machine, where a one-minute detector reported correct runs
 /// as hangs.
 pub(super) const NATIVE_HANG: Duration = Duration::from_secs(300);
+
+/// A refused upgrade cannot reach another handoff barrier. Keep the actual
+/// decision and its journal so an unavailable prerequisite is visible at once.
+pub(super) async fn before_upgrade_ends<T>(
+    upgrading: &mut tokio::task::JoinHandle<bool>,
+    ready: impl std::future::Future<Output = T>,
+    supervisor: &Supervisor,
+) -> Result<T, (bool, Vec<String>)> {
+    tokio::select! {
+        biased;
+        result = upgrading => Err((result.expect("native upgrade task completed"), supervisor.journal())),
+        value = ready => Ok(value),
+    }
+}
 
 pub(super) async fn wait_for_supervisor(ready: impl Fn() -> bool) {
     // The outer hang detector ([`NATIVE_HANG`]) bounds this wait. Supervisor state can move
@@ -573,6 +589,9 @@ where
     .expect("native Core test");
 }
 
+const SOURCE_EXEC_AVAILABLE: &str =
+    "OK native source-exec preparation=1 execution=available input-fence=1\n";
+
 pub(super) struct Harness {
     pub(super) autopilot: Arc<Autopilot>,
     pub(super) fake: FakeAterm,
@@ -629,6 +648,7 @@ struct HarnessOptions {
     event_sink: Option<Arc<dyn codex_extension_api::ExtensionEventSink>>,
     hooks: Option<HookFixture>,
     resume: Option<ResumeFixture>,
+    retained_goal_gate: Option<Gate>,
     seed_pending_act: bool,
 }
 
@@ -646,6 +666,7 @@ impl Default for HarnessOptions {
             event_sink: None,
             hooks: None,
             resume: None,
+            retained_goal_gate: None,
             seed_pending_act: true,
         }
     }
@@ -783,6 +804,17 @@ impl Harness {
 
     pub(super) async fn new_with_goals(goals: Option<Arc<GoalService>>) -> Self {
         Self::new_with_goals_and_observer(goals, None).await
+    }
+
+    pub(super) async fn new_with_retained_goal_gate(gate: Gate) -> Self {
+        Self::new_with_goal_capabilities(
+            Some(Arc::new(GoalService::new())),
+            HarnessOptions {
+                retained_goal_gate: Some(gate),
+                ..HarnessOptions::default()
+            },
+        )
+        .await
     }
 
     pub(super) async fn new_with_accounted_goals(goals: Arc<GoalService>) -> Self {
@@ -994,6 +1026,7 @@ impl Harness {
             event_sink,
             hooks,
             resume,
+            retained_goal_gate,
             seed_pending_act,
         } = options;
         let observe = |phase| {
@@ -1007,6 +1040,10 @@ impl Harness {
         let fake = FakeAterm::start(dir.path(), Mode::Current)
             .await
             .unwrap_or_else(|err| panic!("{err}"));
+        fake.reply_always(
+            &format!("@{} native-act info source-exec", fake.sid()),
+            SOURCE_EXEC_AVAILABLE,
+        );
         fake.set_policy_key("human_grace_s", "0");
         observe("setup: register extensions");
         let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
@@ -1020,7 +1057,10 @@ impl Harness {
             endpoint: Arc::new(move || Some(endpoint.clone())),
             client,
         });
-        let mut builder = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
+        let mut builder = event_sink.clone().map_or_else(
+            codex_extension_api::ExtensionRegistryBuilder::<Config>::new,
+            codex_extension_api::ExtensionRegistryBuilder::<Config>::with_event_sink,
+        );
         let autopilot = Autopilot::new(sup, None, goals.clone(), Timing::default(), |_| true);
         // Isolate only native package admission. Native thread, goal, policy,
         // timer and conditional TUI decisions remain the production evaluator.
@@ -1065,7 +1105,6 @@ impl Harness {
             let pre_build = setup_observer.clone();
             let configured = setup_observer.clone();
             let workspace = setup_observer.clone();
-            let manager = setup_observer.clone();
             let hook_configuration = hooks.as_ref().map(|hooks| hooks.configuration.clone());
             let trust_hooks = hooks.is_some();
             test_builder = test_builder
@@ -1102,13 +1141,21 @@ impl Harness {
                         observer("setup: state database and managers");
                     }
                     Ok(())
-                })
-                .with_thread_manager(move |thread_manager| {
-                    if let Some(observer) = &manager {
-                        observer("setup: native thread startup");
-                    }
-                    thread_manager
                 });
+        }
+        if setup_observer.is_some() || retained_goal_gate.is_some() {
+            let manager_observer = setup_observer.clone();
+            test_builder = test_builder.with_thread_manager(move |thread_manager| {
+                if let Some(gate) = retained_goal_gate {
+                    thread_manager
+                        .alab_bind_retained_goal_gate(gate)
+                        .expect("bind the retained goal gate before Core starts");
+                }
+                if let Some(observer) = &manager_observer {
+                    observer("setup: native thread startup");
+                }
+                thread_manager
+            });
         }
         observe("setup: create native test environment");
         let is_resume = resume.is_some();
@@ -1303,7 +1350,10 @@ fn an_immediate_continuation_after_real_work_yields_to_the_new_build() {
             let request = tokio::select! {
                 request = h.requests.recv() => request.expect("conditional upgrade"),
                 _ = wait_for_supervisor(|| h.shared.turn_running_on(h.rt.key())) => {
-                    panic!("the immediate continuation started before considering the new build")
+                    panic!(
+                        "the immediate continuation started before the terminal received the handoff: {:?}",
+                        h.autopilot.sup.journal()
+                    )
                 }
             };
             let owed = h
@@ -1708,8 +1758,9 @@ fn a_changed_first_thread_cannot_lose_the_second_threads_suspended_act() {
             let (resume, release) = tokio::sync::oneshot::channel();
             *lock(&h.autopilot.before_upgrade_take) = Some((entered, release));
             let pilot = Arc::clone(&h.autopilot);
-            let mut upgrading =
-                tokio::spawn(async move { pilot.try_upgrade_carrying(decided.as_ref()).await });
+            let mut upgrading = tokio::spawn(async move {
+                pilot.try_upgrade_carrying(decided.as_ref()).await == UpgradeOutcome::Leaving
+            });
             let _abort = AbortOnDrop(upgrading.abort_handle());
             // These owners remain outside the timed future. Timeout cancels and drains
             // the evaluator, releases the unabortable blocking stand-in and waits for it.
@@ -2292,6 +2343,7 @@ fn explicit_off_persists_the_end_of_recovery_before_a_remote_release_answers() {
                     by_autopilot: true,
                     by_person: false,
                     wall: codex_alab_core::session::RecoveryWall::Usage {
+                        limit_class: LimitClass::Ordinary,
                         quota: None,
                         reset_at_ms: None,
                         reset_label: None,

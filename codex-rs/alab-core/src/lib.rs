@@ -11,6 +11,11 @@
 //! they keep testing upstream's behavior; `alab/check.sh` gates on them. ALab's own tests
 //! activate the switch themselves.
 
+mod shell_output_tail;
+pub use shell_output_tail::MAX_SHELL_OUTPUT_TAIL_BYTES;
+pub use shell_output_tail::SHELL_OUTPUT_PREFIX_BYTES;
+pub use shell_output_tail::ShellOutputTail;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -254,6 +259,7 @@ pub mod account_handoff;
 pub mod assignment;
 pub mod assignment_service;
 pub mod auth_lock;
+pub mod bound_picker;
 pub mod boxes;
 pub mod capacity;
 pub mod compaction;
@@ -297,8 +303,11 @@ pub mod renewal;
 pub mod request_error;
 pub mod retained_future;
 pub mod retained_goal_gate;
+pub mod retained_side_cleanup;
 pub mod runtime_upgrade;
 pub mod session;
+#[cfg(unix)]
+pub mod shell_log_store;
 pub mod upgrade_barrier;
 pub mod upgrade_completion;
 pub mod upgrade_startup_hold;

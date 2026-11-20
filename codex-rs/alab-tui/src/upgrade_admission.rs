@@ -4,6 +4,7 @@
 //! Receive original executable custody from the native package owner. Neither
 //! transport success nor this receipt alone authorizes a process restart.
 
+use crate::upgrade::wait_until;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
@@ -51,13 +52,12 @@ async fn admit_with(
     deadline: Instant,
     command: impl FnOnce(&Path) -> std::process::Command + Send + 'static,
 ) -> std::io::Result<Received> {
-    let permit = tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        ADMISSION.acquire(),
-    )
-    .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "native admission deadline"))?
-    .map_err(std::io::Error::other)?;
+    let permit = wait_until(deadline, ADMISSION.acquire())
+        .await
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "native admission deadline")
+        })?
+        .map_err(std::io::Error::other)?;
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;

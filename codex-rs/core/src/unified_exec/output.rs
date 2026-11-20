@@ -11,6 +11,7 @@ use codex_utils_output_truncation::truncate_text;
 pub(crate) struct CapturedStream {
     pub(crate) text: String,
     pub(crate) omitted_bytes: usize,
+    pub(crate) shell_log: Option<super::shell_output::ShellLog>, // ALAB(shell-output): process-wide capture.
 }
 
 impl From<&str> for CapturedStream {
@@ -18,6 +19,7 @@ impl From<&str> for CapturedStream {
         Self {
             text: text.to_string(),
             omitted_bytes: 0,
+            shell_log: None, // ALAB(shell-output): no raw capture for synthetic output.
         }
     }
 }
@@ -27,6 +29,7 @@ impl<const N: usize> From<&HeadTailBuffer<N>> for CapturedStream {
         Self {
             text: String::from_utf8_lossy(&buffer.to_bytes_with_omission_marker()).into_owned(),
             omitted_bytes: buffer.omitted_bytes(),
+            shell_log: None, // ALAB(shell-output): caller attaches the process-wide capture.
         }
     }
 }

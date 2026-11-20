@@ -122,7 +122,7 @@ struct TicketProgress {
 }
 #[derive(Clone)]
 enum Cut {
-    Projected(CallbackObservation),
+    Projected(Box<CallbackObservation>),
     Closed(Arc<ClosedCallbackObservation>),
 }
 impl Cut {
@@ -542,18 +542,18 @@ impl Ticket {
         let capture = self.capture(session).await?;
         let same_core = self.thread == receipt.thread_id_data();
         let actual = match (receipt, same_core) {
-            (kind::Receipt::Runtime(receipt), true) => Cut::Projected(
+            (kind::Receipt::Runtime(receipt), true) => Cut::Projected(Box::new(
                 capture
                     .observe_runtime(&session.request_handle(), read_request(), receipt, None)
                     .await
                     .map_err(io::Error::other)?,
-            ),
-            (kind::Receipt::Source(receipt), true) => Cut::Projected(
+            )),
+            (kind::Receipt::Source(receipt), true) => Cut::Projected(Box::new(
                 capture
                     .observe_source(&session.request_handle(), read_request(), receipt, None)
                     .await
                     .map_err(io::Error::other)?,
-            ),
+            )),
             (kind::Receipt::Runtime(receipt), false) => Cut::Closed(Arc::new(
                 capture
                     .observe_closed_runtime(

@@ -350,25 +350,24 @@ impl<E> Data<E> {
         self,
         layouts: &mut RestoredLayouts,
     ) -> std::result::Result<PreparedText<E>, Box<LinesRefused<E>>> {
-        let composer_tip = (|| {
-            self.composer_tip
-                .as_ref()
-                .map(|(r, line)| {
-                    layouts.lines().line(line).map(|line| {
-                        let [x, y, width, height] = r.0;
-                        (
-                            Rect {
-                                x,
-                                y,
-                                width,
-                                height,
-                            },
-                            line,
-                        )
-                    })
+        let composer_tip = self
+            .composer_tip
+            .as_ref()
+            .map(|(r, line)| {
+                layouts.lines().line(line).map(|line| {
+                    let [x, y, width, height] = r.0;
+                    (
+                        Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                        line,
+                    )
                 })
-                .transpose()
-        })();
+            })
+            .transpose();
         let composer_tip = match composer_tip {
             Ok(value) => value,
             Err(error) => return Err(Box::new(LinesRefused { data: self, error })),
@@ -454,10 +453,12 @@ pub(crate) struct Refused {
     pub(crate) prepared: Prepared,
     pub(crate) error: io::Error,
 }
+type FinishViewport =
+    Box<dyn FnOnce(Search, Option<Selection>, Option<(Rect, HyperlinkLine)>) -> TranscriptView>;
+
 struct BoundFields {
     search: search_data::PreparedFields,
-    finish:
-        Box<dyn FnOnce(Search, Option<Selection>, Option<(Rect, HyperlinkLine)>) -> TranscriptView>,
+    finish: FinishViewport,
 }
 impl Prepared {
     /// Entire fallible preflight borrows actual editor/Selection owners. Its

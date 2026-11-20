@@ -17,6 +17,9 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::InternalSessionSource;
 use tokio_util::sync::CancellationToken;
 
+#[path = "exec_review_queued_tree_tests.rs"]
+mod queued_review;
+
 struct WaitingTask(TaskKind);
 impl SessionTask for WaitingTask {
     fn kind(&self) -> TaskKind {
@@ -44,15 +47,16 @@ async fn fixture() -> (tempfile::TempDir, Config, ThreadManager, Arc<CodexThread
 async fn fixture_with_restriction(
     restricted: bool,
 ) -> (tempfile::TempDir, Config, ThreadManager, Arc<CodexThread>) {
-    fixture_with_identity(restricted, None).await
+    fixture_with_options(restricted, None, None).await
 }
 
-async fn fixture_with_identity(
+async fn fixture_with_options(
     restricted: bool,
     identity: Option<ThreadId>,
+    model_url: Option<String>,
 ) -> (tempfile::TempDir, Config, ThreadManager, Arc<CodexThread>) {
     let home = tempfile::tempdir().unwrap();
-    let config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+    let mut config = crate::config::ConfigBuilder::without_managed_config_for_tests()
         .codex_home(home.path().to_owned())
         .harness_overrides(ConfigOverrides {
             model: Some("gpt-5.5".into()),
@@ -62,6 +66,15 @@ async fn fixture_with_identity(
         .build()
         .await
         .unwrap();
+    if let Some(url) = model_url {
+        config.model_provider_id = "review-tree-fixture".into();
+        config.model_provider.base_url = Some(url);
+        config.model_provider.include_internal_metadata = false;
+        config.model_providers.insert(
+            config.model_provider_id.clone(),
+            config.model_provider.clone(),
+        );
+    }
     let manager = ThreadManager::with_models_provider_and_home_for_tests(
         codex_login::CodexAuth::from_api_key("fixture"),
         config.model_provider.clone(),
@@ -1038,7 +1051,7 @@ async fn committed_idle_root_captures_loaded_and_late_evicted_mail_without_a_roo
 }
 
 async fn idle_root_frame(identity: ThreadId) -> super::super::PreparedExecIdleInput {
-    let (_home, _config, _manager, source) = fixture_with_identity(false, Some(identity)).await;
+    let (_home, _config, _manager, source) = fixture_with_options(false, Some(identity), None).await;
     source
         .session
         .services
@@ -1611,7 +1624,7 @@ async fn upgrade_forest_rejects_nonportable_mail_still_in_the_accepted_channel()
     let observers: Vec<Arc<dyn codex_extension_api::MessageLifecycleContributor>> =
         vec![observer.clone()];
     let publication =
-        crate::agent_communication::MessageDelivery::publish(root.exec_thread_id(), &observers);
+        crate::agent_communication::MessageDelivery::publish(root.exec_thread_id(), &observers, None).unwrap();
     root.session
         .input_queue
         .enqueue_mailbox_communication(

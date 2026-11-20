@@ -251,6 +251,7 @@ async fn execute(
     let tx = app.app_event_tx.clone();
     let close=(action==Action::CloseTab).then(||view.alab_unsubscribe_side_view(target)); // ALAB(side-boundary): own exact unsubscribe before original interrupt worker awaits.
     tokio::spawn(async move {
+        let mut close_ack = None; // ALAB(side-boundary): only this worker's typed close reply may be acknowledged.
         let result = match action {
             Action::Archive => view
                 .thread_archive(target)
@@ -258,13 +259,17 @@ async fn execute(
                 .map_err(|err| format!("Failed to archive side conversation {target}: {err}")),
             Action::CloseTab => {
                 async {
-                    super::side::interrupt_for_close(&mut view, target, turn, attachment)
-                        .await
-                        .map_err(|err| {
-                            format!("Failed to interrupt side conversation {target}: {err}")
-                        })?;
-                    match close {Some(close)=>close.await,None=>Err(color_eyre::eyre::eyre!("original side close owner missing"))}
-                        .map_err(|err| format!("Failed to close side conversation {target}: {err}"))
+                    let (interrupt, close) = close.ok_or_else(|| "original side close owner missing".to_string())?; // ALAB(side-boundary): a repeated close can only read its original result.
+                    if interrupt {
+                        super::side::interrupt_for_close(&mut view, target, turn, attachment)
+                            .await
+                            .map_err(|err| {
+                                format!("Failed to interrupt side conversation {target}: {err}")
+                            })?;
+                    }
+                    let (result, ack) = close.await; // ALAB(side-boundary): preserve the physical operation with its matching callback.
+                    close_ack = ack;
+                    result.map_err(|err| format!("Failed to close side conversation {target}: {err}"))
                 }
                 .await
             }
@@ -275,6 +280,7 @@ async fn execute(
             request,
             action,
             result,
+            close_ack, // ALAB(side-boundary): carry receipt through the actor's request guard.
         });
     });
     tui.frame_requester().schedule_frame();

@@ -37,15 +37,23 @@ fn wrap_for(
     path: PathBuf,
     mode: AuthCredentialsStoreMode,
 ) -> Arc<dyn AuthStorageBackend> {
-    if !alab || mode == AuthCredentialsStoreMode::Ephemeral {
+    let picker = codex_alab_core::bound_picker::expected();
+    if !alab || (mode == AuthCredentialsStoreMode::Ephemeral && picker.is_none()) {
         return storage;
     }
-    Arc::new(Guard { storage, path })
+    Arc::new(Guard {
+        storage,
+        path,
+        mode,
+        picker: picker.map(str::to_owned),
+    })
 }
 
 struct Guard {
     storage: Arc<dyn AuthStorageBackend>,
     path: PathBuf,
+    mode: AuthCredentialsStoreMode,
+    picker: Option<String>,
 }
 impl std::fmt::Debug for Guard {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,9 +62,31 @@ impl std::fmt::Debug for Guard {
 }
 impl Guard {
     fn check(&self) -> std::io::Result<()> {
+        if self.picker.is_some() && self.mode != AuthCredentialsStoreMode::File {
+            return Err(codex_alab_core::bound_picker::unavailable());
+        }
         managed_auth::refuse_unadmitted_owner(&self.path)
     }
+
+    // The enclosing persistent commit lock covers this read and the following mutation.
+    fn current_picker(&self) -> std::io::Result<()> {
+        if let Some(expected) = &self.picker {
+            let current = self
+                .storage
+                .load()?
+                .ok_or_else(codex_alab_core::bound_picker::unavailable)?;
+            validate_picker(Some(expected), &current)?;
+        }
+        Ok(())
+    }
 }
+fn validate_picker(expected: Option<&str>, document: &AuthDotJson) -> std::io::Result<()> {
+    if let Some(expected) = expected {
+        crate::auth::manager::alab_picker::validate(expected, document)?;
+    }
+    Ok(())
+}
+
 impl AuthStorageBackend for Guard {
     fn persistent_home(&self) -> Option<&Path> {
         self.storage.persistent_home()
@@ -71,22 +101,35 @@ impl AuthStorageBackend for Guard {
     }
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
         self.check()?;
-        self.storage.load()
+        let document = self.storage.load()?;
+        if let Some(auth) = &document {
+            validate_picker(self.picker.as_deref(), auth)?;
+        }
+        Ok(document)
     }
     fn load_account_grant(&self) -> std::io::Result<Option<AuthDotJson>> {
         self.check()?;
-        self.storage.load_account_grant()
+        let document = self.storage.load_account_grant()?;
+        if let Some(auth) = &document {
+            validate_picker(self.picker.as_deref(), auth)?;
+        }
+        Ok(document)
     }
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         self.check()?;
+        validate_picker(self.picker.as_deref(), auth)?;
+        self.current_picker()?;
         self.storage.save(auth)
     }
     fn compare_and_save(&self, expected: &AuthDotJson, auth: &AuthDotJson) -> std::io::Result<()> {
         self.check()?;
+        validate_picker(self.picker.as_deref(), expected)?;
+        validate_picker(self.picker.as_deref(), auth)?;
         self.storage.compare_and_save(expected, auth)
     }
     fn delete(&self) -> std::io::Result<bool> {
         self.check()?;
+        self.current_picker()?;
         self.storage.delete()
     }
 }

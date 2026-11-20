@@ -139,3 +139,48 @@ authenticated native compiler carrying it. Only changed, admitted capability inp
 justify another unchanged native adoption attempt. The compiler pin, prescribed release
 hook restoration, and upstream integration remain held. No policy, compiler, SDK, session,
 cache-integrity, or permission workaround was introduced.
+
+## A two-package reproduction on macOS arm64
+
+On 2026-11-19, Trust build 27009 certified a constant supplied by a local
+library and refused the same constant supplied through a Cargo build script.
+The two runs used the same consumer and the same dependency-inclusive
+`alab/proof-policy.toml` from `c1028949a53fae09ef66a8d5c5f1316049c0d379`.
+This small comparison can be run offline before allocating an application
+build when evaluating a compiler with changed execution support.
+
+Use two fresh workspaces with resolver 2. Each has two Rust 2021 packages at
+version 0.1.0, a binary named `consumer` and a library named `emitter`.
+In both, the consumer depends on `emitter = { path = "../emitter" }` and its
+`src/main.rs` contains `fn main() { assert!(emitter::NUMBER == 42); }`.
+
+| File | Static workspace | Generated workspace |
+| --- | --- | --- |
+| `emitter/src/lib.rs` | `pub const NUMBER: u8 = 42;` | `include!(concat!(env!("OUT_DIR"), "/answer.rs"));` |
+| `emitter/build.rs` | Absent | The script below |
+
+```rust
+use std::{env, fs, path::PathBuf};
+fn main() {
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    fs::write(out.join("answer.rs"), "pub const NUMBER: u8 = 42;").unwrap();
+    println!("cargo:rerun-if-changed=build.rs");
+}
+```
+
+In each workspace, generate its lockfile with
+`targo generate-lockfile --offline`. Set `CARGO_TARGET_DIR` to a
+separate fresh target per run, `CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0` and
+`CARGO_PROFILE_DEV_DEBUG=0`. Supply the absolute path to the policy and a fresh
+absolute report path.
+
+```sh
+targo trust build --certify --report-dir "$report" --config "$policy" \
+  --offline --locked -p consumer --bin consumer
+```
+
+The static case exited 0 and reported two proved obligations. The generated
+case exited 2 at `emitter`'s `run-custom-build` unit with
+`required verification is unavailable: build-script-execution`. These results
+cover this fixture. Application adoption still requires the full source-selected
+gate and its own live proof.

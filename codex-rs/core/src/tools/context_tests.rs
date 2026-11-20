@@ -518,6 +518,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
         raw_output: CapturedStream {
+            shell_log: None,
             text: raw_output.clone(),
             omitted_bytes: 123_456,
         },

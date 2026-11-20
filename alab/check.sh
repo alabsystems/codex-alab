@@ -22,7 +22,7 @@
 #      process per crate fails some on upstream alone (a stack overflow, timing under load,
 #      insta's one-assertion-per-process rule). Native runtime helpers are prepared before
 #      testing. A failure is rerun alone; one that still fails is rerun alone on pristine
-#      upstream (git merge-base HEAD upstream/main, in this checkout's pristine tree and its
+#      upstream (the source-selected frontier, in this checkout's pristine tree and its
 #      own target dir: lib.sh, alab_pristine). It gates unless it fails there too.
 # Newly integrated upstream commits also need committed intake reviews and complete
 # declared execution evidence for every affected feature's scenarios.
@@ -41,12 +41,15 @@
 # "Too many open files" (829 codex-tui tests did, 2026-10-16).
 #
 # Existing unmanaged build outputs are preserved, never adopted by the gate. If native
-# cache admission asks for a fresh target, choose a new absolute path and keep using it:
+# cache admission asks for a fresh target, create its parent and let the gate create
+# the target itself. A pre-created target can be refused even when it started empty.
 #
-#   CARGO_TARGET_DIR=/absolute/fresh/check-cache /bin/bash alab/check.sh
+#   mkdir -p "${HOME}/.cache" &&
+#     check_root="$(mktemp -d "${HOME}/.cache/alab-check.XXXXXXXX")" &&
+#     CARGO_TARGET_DIR="${check_root}/target" /bin/bash alab/check.sh
 #
-# This selects the gate's cache; it does not change the compiler, proof requirements or
-# explicit target ownership checks. Do not delete an existing cache to make it admissible.
+# Reuse the same target for subsequent runs. Compiler selection, proof requirements and
+# explicit target ownership checks still apply. Leave existing caches in place.
 #
 # Exit status: 0 holds; 2 the candidate's certified binary failed at runtime while
 # certified pristine upstream passed (an ALab fault); 6 pristine also certified but its
@@ -57,6 +60,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=alab/lib.sh
 . "${repo_root}/alab/lib.sh"
+
+check_upstream_frontier() {
+  local python
+  python="$(alab_python_311)" || return $?
+  "${python}" -I -B "${repo_root}/alab/upstream_intake.py" frontier --repo "${repo_root}"
+}
 
 # Controller records use exact bounded bytes on fresh anonymous regular inodes.
 check_control_pair() {
@@ -155,13 +164,7 @@ export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
 # A fresh launchd job has no machine allocation. Bound native builds and tests
 # there too, while retaining each nonempty limit an admitting caller supplied.
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
-# The soft open-file limit, up to what the kernel allows one process (launchd's 256 is far too
-# few for a test run). A limit that cannot be raised that far is said, not hidden.
-nofile_want="$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo 10240)"
-(( nofile_want > 65536 )) && nofile_want=65536
-if (( $(ulimit -n) < nofile_want )) && ! ulimit -n "${nofile_want}" 2>/dev/null; then
-  alab_say "open-file limit stays $(ulimit -n) (could not raise it to ${nofile_want}): tests may fail with EMFILE"
-fi
+alab_native_test_nofile
 
 # hook_counts <rev>: "<count> <marker>" per distinct marker in upstream-owned files. git grep
 # exits 1 for no match; anything else (an object it cannot read) is no count at all.
@@ -191,7 +194,7 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "${base}^{commit}")" ]]; then
   fi
 fi
 
-intake_target="$(git merge-base HEAD upstream/main)" \
+intake_target="$(check_upstream_frontier)" \
   || alab_die "cannot identify the integrated upstream frontier before review admission"
 intake_base="$(git rev-parse -q --verify refs/remotes/origin/main^{commit})" \
   || alab_die "no origin/main for upstream review admission"
@@ -325,20 +328,17 @@ own_target="$(jq -e -r '.target_directory | strings | select(length > 0)' "${scr
   || alab_die "${cargo} metadata did not name a target directory; no compiler started"
 export CARGO_TARGET_DIR="${own_target}"
 # pristine_upstream: put this checkout's pristine tree (lib.sh, alab_pristine) at the upstream
-# commit HEAD is built on (git merge-base HEAD upstream/main), and set upstream_base and
+# commit selected by the intake gate, and set upstream_base and
 # pristine. When it cannot, it says why and fails.
 pristine_upstream() {
   local config
   config="$(alab_pristine_config "${repo_root}")" || return 1
   pristine_config=()
   [[ -z "${config}" ]] || pristine_config=(--config "${config}")
-  upstream_base="$(git merge-base HEAD upstream/main 2>/dev/null || true)"
-  if [[ -z "${upstream_base}" ]]; then
-    echo "alab/check.sh: no upstream/main to compare with (alab/setup.sh)" >&2
-    return 1
-  fi
+  upstream_base="${intake_target}"
   pristine="$(alab_pristine "${repo_root}" "${upstream_base}")" || return 1
-  alab_pristine_at "${repo_root}" "${upstream_base}" && return 0
+  alab_pristine_at "${repo_root}" "${upstream_base}" --for-build && return 0
+  stopped "$?"
   echo "alab/check.sh: pristine upstream ${upstream_base:0:9} could not be checked out at ${pristine}" >&2
   return 1
 }
@@ -644,9 +644,9 @@ check_selected() {
   alab_project_selected || return $?
   local upstream_base pristine build_target pristine_target feature_reads=()
   cd "${repo_root}"
-  upstream_base="$(git merge-base HEAD upstream/main)" || return $?
+  upstream_base="$(check_upstream_frontier)" || return $?
   pristine="$(alab_pristine "${repo_root}" "${upstream_base}")" || return $?
-  alab_pristine_at "${repo_root}" "${upstream_base}" || return $?
+  alab_pristine_at "${repo_root}" "${upstream_base}" --for-build || return $?
   build_target="$(alab_check_targets_ready "${repo_root}" "${pristine}" \
     "${CARGO_TARGET_DIR:-${repo_root}/codex-rs/target}")" || return $?
   pristine_target="$(alab_real "${pristine}/codex-rs/target")" || return $?

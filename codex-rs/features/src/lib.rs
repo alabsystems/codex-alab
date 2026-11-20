@@ -1598,7 +1598,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: true,
     },
-    // ALAB(misalignment-review): Review and continuation stay disabled unless explicitly enabled.
+    // ALAB(misalignment-review): Packaged defaults select the review UI.
     FeatureSpec {
         id: Feature::MisalignmentReview,
         key: "misalignment_review",

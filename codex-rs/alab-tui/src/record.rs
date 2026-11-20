@@ -9,6 +9,7 @@
 //! directory chain for power-loss durability.
 
 use codex_alab_core::session::ProcessIdentity;
+use codex_alab_core::wall_kind::LimitClass;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -138,6 +139,72 @@ pub enum Autopilot {
     Active,
 }
 
+/// A confirmed picker attempt hides the ordinary resume route while native custody is
+/// unsettled. Only the bound native restart may use this copy of the validated source line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ManualAccountSelection {
+    pub revision: String,
+    pub selection_ref: String,
+    pub request: String,
+    pub resume_argv: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ManualAccountSelection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(remote = "ManualAccountSelection", deny_unknown_fields)]
+        struct Wire {
+            revision: String,
+            selection_ref: String,
+            request: String,
+            resume_argv: Vec<String>,
+        }
+        struct Object;
+        impl<'de> serde::de::Visitor<'de> for Object {
+            type Value = ManualAccountSelection;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded native account selection object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let held = Wire::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                if held.valid() {
+                    Ok(held)
+                } else {
+                    Err(serde::de::Error::custom("invalid account selection"))
+                }
+            }
+        }
+        deserializer.deserialize_map(Object)
+    }
+}
+
+impl ManualAccountSelection {
+    pub(crate) fn selection(&self) -> codex_alab_aterm::account_move::Selection {
+        codex_alab_aterm::account_move::Selection {
+            revision: self.revision.clone(),
+            selection_ref: self.selection_ref.clone(),
+            request: self.request.clone(),
+        }
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        self.selection().valid()
+            && (3..=256).contains(&self.resume_argv.len())
+            && self
+                .resume_argv
+                .iter()
+                .map(|arg| arg.len() + 1)
+                .sum::<usize>()
+                <= 32 * 1024
+            && self.resume_argv.iter().all(|arg| !arg.contains('\0'))
+    }
+}
+
 /// Schema v1, field for field and in CONTRACT §4's order. `null` where unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +221,12 @@ pub struct Record {
     pub launch_argv0: Option<String>,
     pub exec_generation: u64,
     pub resume_argv: Option<Vec<String>>,
+    #[serde(
+        default,
+        rename = "manual_account_selection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub manual_account_selection: Option<ManualAccountSelection>,
     pub env: BTreeMap<String, String>,
     pub status: Status,
     pub exit: Option<String>,
@@ -748,6 +821,12 @@ pub enum RecoveryWall {
         retry_at: Option<u64>,
     },
     Usage {
+        #[serde(
+            rename = "limitClass",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        limit_class: Option<LimitClass>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quota: Option<QuotaScope>,
         #[serde(rename = "resetAt", default, skip_serializing_if = "Option::is_none")]
@@ -895,10 +974,12 @@ impl From<codex_alab_core::session::Recovery> for Recovery {
                     retry_at: retry_at_ms,
                 },
                 codex_alab_core::session::RecoveryWall::Usage {
+                    limit_class,
                     reset_at_ms,
                     reset_label,
                     quota,
                 } => RecoveryWall::Usage {
+                    limit_class: Some(limit_class),
                     reset_at: reset_at_ms,
                     reset_label,
                     quota: quota.map(|q| QuotaScope {
@@ -954,10 +1035,23 @@ impl From<Recovery> for codex_alab_core::session::Recovery {
                     retry_at_ms: retry_at,
                 },
                 RecoveryWall::Usage {
+                    limit_class,
                     reset_at,
                     reset_label,
                     quota,
                 } => codex_alab_core::session::RecoveryWall::Usage {
+                    // The old writer saved the bucket but did not record whether the refusal
+                    // classified it as a model limit or Reserve/workspace usage.
+                    limit_class: limit_class.unwrap_or_else(|| {
+                        if quota
+                            .as_ref()
+                            .is_some_and(|q| q.bucket == codex_alab_core::wall_kind::ORDINARY_LIMIT)
+                        {
+                            LimitClass::Ordinary
+                        } else {
+                            LimitClass::Unverified
+                        }
+                    }),
                     reset_at_ms: reset_at,
                     reset_label,
                     quota: quota.map(|q| codex_alab_core::quota::Scope {
@@ -1490,6 +1584,8 @@ impl Owed {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountHandoff {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
     #[serde(default)]
     pub openai_scope: bool,
     #[serde(default)]
@@ -1519,6 +1615,7 @@ impl AccountHandoff {
     ) -> codex_alab_core::session::AccountHandoff {
         codex_alab_core::session::AccountHandoff {
             purpose,
+            limit: self.limit,
             openai_scope: self.openai_scope,
             local: self.local,
             account: self.account,
@@ -1541,6 +1638,7 @@ impl AccountHandoff {
 impl From<codex_alab_core::session::AccountHandoff> for AccountHandoff {
     fn from(value: codex_alab_core::session::AccountHandoff) -> Self {
         Self {
+            limit: value.limit,
             openai_scope: value.openai_scope,
             local: value.local,
             account: value.account,
@@ -1566,6 +1664,7 @@ mod renewal_wire_tests {
     fn renewal_handoff_matches_native_camel_case_contract() {
         let handoff = AccountHandoff {
             destination: None,
+            limit: None,
             openai_scope: true,
             local: true,
             account: "account".into(),
@@ -1674,6 +1773,7 @@ mod account_handoff_wire_tests {
             }),
             renewal: Some(AccountHandoff {
                 purpose: Purpose::WeeklyQuota,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: "a".repeat(64),
@@ -1699,9 +1799,43 @@ mod account_handoff_wire_tests {
         let expected = quota();
         let wire = serde_json::to_value(Owed::from(expected.clone())).unwrap();
         assert!(wire.get("renewal").is_none());
+        assert!(wire["rotation"].get("limit").is_none());
         assert_eq!(wire["rotation"]["destination"]["account"], "c".repeat(64));
         let restored: Carry = serde_json::from_value(serde_json::json!({"owed":wire})).unwrap();
         assert_eq!(restored.owed.map(Into::into), Some(expected));
+    }
+
+    #[test]
+    fn named_limit_round_trips_only_with_a_quota_rotation() {
+        let mut expected = quota();
+        expected.renewal.as_mut().unwrap().limit = Some("codex_other".into());
+        let wire = serde_json::to_value(Owed::from(expected.clone())).unwrap();
+        assert_eq!(wire["rotation"]["limit"], "codex_other");
+        let restore = |wire: serde_json::Value| {
+            serde_json::from_value::<Carry>(serde_json::json!({"owed": wire}))
+                .unwrap()
+                .owed
+                .map(codex_alab_core::session::OwedAct::from)
+        };
+        assert_eq!(restore(wire.clone()), Some(expected));
+        for invalid in ["", "codex", "codex-other", "UPPER"] {
+            let mut malformed = wire.clone();
+            malformed["rotation"]["limit"] = invalid.into();
+            assert!(restore(malformed).is_none(), "{invalid:?}");
+        }
+        let mut login_rotation = wire;
+        login_rotation["rule"] = Purpose::LoginRotation.rule().into();
+        assert!(restore(login_rotation).is_none());
+
+        let mut login = quota();
+        let handoff = login.renewal.as_mut().unwrap();
+        handoff.purpose = Purpose::Login;
+        handoff.destination = None;
+        login.rule = Some(Purpose::Login.rule().into());
+        let mut wire = serde_json::to_value(Owed::from(login)).unwrap();
+        assert!(restore(wire.clone()).is_some());
+        wire["renewal"]["limit"] = "codex_other".into();
+        assert!(restore(wire).is_none());
     }
 
     /// A LOST LOGIN'S MOVE IS KEPT UNDER `rotation`, TOLD APART BY ITS RULE: it round-trips with

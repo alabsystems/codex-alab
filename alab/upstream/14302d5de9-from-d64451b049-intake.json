@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "base": "d64451b049d6f8b75b747e339a7034d23ddc9466",
+  "target": "14302d5de9ec4183fd2b53ad2a0ae7bdf80340d5",
+  "frontier": "d64451b049d6f8b75b747e339a7034d23ddc9466",
+  "commits": [
+    {
+      "sha": "14302d5de9ec4183fd2b53ad2a0ae7bdf80340d5",
+      "subject": "Add opt-in OAuth discovery to config server loaders (#62432)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/app-server/src/config_manager.rs",
+        "codex-rs/app-server/src/in_process_bootstrap.rs",
+        "codex-rs/app-server/src/lib.rs",
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/workspace_switching.rs",
+        "codex-rs/app-server/src/startup_config.rs",
+        "codex-rs/cli/src/login.rs",
+        "codex-rs/cloud-config/Cargo.toml",
+        "codex-rs/cloud-config/src/bundle_loader.rs",
+        "codex-rs/cloud-config/src/config_server.rs",
+        "codex-rs/cloud-config/src/discovery.rs",
+        "codex-rs/cloud-config/src/discovery_tests.rs",
+        "codex-rs/cloud-config/src/lib.rs",
+        "codex-rs/login/src/outbound_proxy.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy",
+        "native-session",
+        "model-discovery"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Adopt upstream’s opt-in configuration-server OAuth discovery and retryable loader initialization. Keep existing login, managed configuration and retained session defaults. Use the upstream service constructor for ALab’s retained refresh worker.",
+      "evidence": [
+        "Discovery runs only on explicit opt-in when OAuth endpoints are absent. It uses the bootstrap HTTP client, a five-second deadline and in-memory settings. Existing managed login, policy bootstrap, account switching and logout entries select disabled discovery.",
+        "The public bundle loader returns its initial setup error on its first read and retries on later reads. Once initialized, it uses one shared loader and the original policy lifetime. Retained native startup requires an admitted service and a joinable refresh task before it claims ownership.",
+        "The fork previously replaced the public constructor to retain a refresh-task handle. The upstream constructor now separates service creation from worker creation. The ordinary public method can use upstream verbatim while the ALab-owned adapter calls that same service constructor and keeps the worker handle for shutdown. The updated config-manager call sites await initial preparation before writing the new loader."
+      ],
+      "revisit": "Run the upstream discovery and configuration-server tests on the integrated crate and verify retained worker shutdown. Revisit opt-in selection if a future upstream release exposes discovery in managed launch or changes the bootstrap HTTP policy."
+    }
+  ]
+}

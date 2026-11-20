@@ -33,6 +33,38 @@ fn rebuild_exec(args: &[&str]) -> Option<Vec<String>> {
 }
 
 #[test]
+fn resume_help_explains_local_picker_and_last_scopes() {
+    let render = |command, flag| {
+        let error = super::config_override_args::try_parse_from(["codex", command, flag])
+            .expect_err("help exits before startup");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        error
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for flag in ["-h", "--help"] {
+        let help = render("resume", flag);
+        let (intro, arguments) = help.split_once("Usage:").expect("resume usage");
+        for text in [
+            "enhanced local interface",
+            "all local logins and projects",
+            "sessions started by `codex exec`",
+            "`codex resume --last` selects from the current login",
+            "in the vanilla picker",
+        ] {
+            assert!(
+                intro.contains(text),
+                "missing {text:?} before usage in {flag}"
+            );
+        }
+        assert!(arguments.contains("Omit to open the picker"));
+        assert!(!render("fork", flag).contains("all local logins and projects"));
+    }
+}
+
+#[test]
 fn exec_resume_preserves_output_contract_without_replaying_input() {
     assert_eq!(
         rebuild_exec(&[

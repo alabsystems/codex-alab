@@ -28,6 +28,7 @@ use codex_alab_core::managed_auth;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::auth::AuthMode;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What the login's store holds now, against the tokens a refresh was about to send.
 enum OnDisk {
@@ -152,6 +153,21 @@ pub(super) struct RefreshHold {
     _activity: codex_alab_core::assignment::Activity,
 }
 
+impl RefreshHold {
+    /// A blocking credential write can finish after its async caller is cancelled.
+    /// Both paths retain the same file and activity leases until they finish.
+    pub(super) fn spawn_persistence<T: Send + 'static>(
+        self: &Arc<Self>,
+        write: impl FnOnce() -> T + Send + 'static,
+    ) -> tokio::task::JoinHandle<T> {
+        let hold = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let _hold = hold;
+            write()
+        })
+    }
+}
+
 impl AuthManager {
     /// Whether an unchanged-file reconciliation can read only the selected
     /// file store. Match storage's admitted-path transform; a leftover file
@@ -161,12 +177,8 @@ impl AuthManager {
             return true;
         }
         !self.has_external_auth()
-            && (self.auth_credentials_store_mode == AuthCredentialsStoreMode::File
-                || (codex_alab_core::home::has_admitted_auth_path()
-                    && matches!(
-                        self.auth_credentials_store_mode,
-                        AuthCredentialsStoreMode::Auto | AuthCredentialsStoreMode::Keyring
-                    )))
+            && super::alab_picker::storage_mode(self.auth_credentials_store_mode)
+                == AuthCredentialsStoreMode::File
     }
 
     /// The file this manager keeps its login in, where it keeps it in one and this is codex-alab:
@@ -184,13 +196,11 @@ impl AuthManager {
             return None;
         }
         let file = get_auth_file(&self.codex_home);
-        let pinned = codex_alab_core::home::has_admitted_auth_path();
-        let kept = match self.auth_credentials_store_mode {
+        let kept = match super::alab_picker::storage_mode(self.auth_credentials_store_mode) {
             AuthCredentialsStoreMode::File => true,
-            AuthCredentialsStoreMode::Keyring => pinned,
+            AuthCredentialsStoreMode::Keyring => false,
             AuthCredentialsStoreMode::Auto => {
-                pinned
-                    || std::fs::symlink_metadata(&file).is_ok()
+                std::fs::symlink_metadata(&file).is_ok()
                     || !matches!(managed_auth::refresh_pending(&file), Ok(false))
             }
             AuthCredentialsStoreMode::Ephemeral => false,
@@ -215,7 +225,7 @@ impl AuthManager {
         tokens: &'a TokenData,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<Option<RefreshHold>, RefreshTokenError>>
+            dyn std::future::Future<Output = Result<Option<Arc<RefreshHold>>, RefreshTokenError>>
                 + Send
                 + 'a,
         >,
@@ -227,7 +237,7 @@ impl AuthManager {
         &self,
         auth: &ChatgptAuth,
         tokens: &TokenData,
-    ) -> Result<Option<RefreshHold>, RefreshTokenError> {
+    ) -> Result<Option<Arc<RefreshHold>>, RefreshTokenError> {
         let activity = self.alab_account_resource()?;
         if let Some(slot) = self.alab_managed_binding(tokens)? {
             self.alab_managed_refresh(&slot, tokens).await?;
@@ -290,10 +300,10 @@ impl AuthManager {
         }
         match admission {
             auth_lock::Admission::Unavailable(err) => Err(RefreshTokenError::from(err)),
-            auth_lock::Admission::Send(hold) => Ok(Some(RefreshHold {
+            auth_lock::Admission::Send(hold) => Ok(Some(Arc::new(RefreshHold {
                 _file: hold,
                 _activity: activity,
-            })),
+            }))),
             auth_lock::Admission::Reused => match refused {
                 Some(err) => Err(RefreshTokenError::from(err)),
                 None => Ok(None),
@@ -680,6 +690,17 @@ mod tests {
         spawn_case("refused-lock", /*with_auth_path*/ true)?;
         assert!(!codex_alab_core::is_alab_binary());
         Ok(())
+    }
+
+    #[test]
+    fn ordinary_refresh_retains_the_source_file_lock_during_persistence() -> std::io::Result<()> {
+        spawn_case("persist", /*with_auth_path*/ true)
+    }
+
+    #[test]
+    fn cancelled_refresh_retains_the_source_file_lock_until_persistence_finishes()
+    -> std::io::Result<()> {
+        spawn_case("cancel-persist", /*with_auth_path*/ true)
     }
 
     #[test]
@@ -1215,6 +1236,70 @@ mod tests {
         Ok(sent)
     }
 
+    async fn persistence_case(
+        manager: Arc<AuthManager>,
+        login_file: &Path,
+        server: &MockServer,
+        cancel: bool,
+    ) -> anyhow::Result<()> {
+        // Stop the real compare-and-save inside persist_tokens, after the network exchange
+        // and before the atomic replacement. No test writer takes the pool's outer lock.
+        let commit = codex_alab_core::home::lock_auth_file(login_file)?;
+        let write_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(manager.codex_home.join("auth.lock"))?;
+        write_lock.try_lock()?;
+        write_lock.unlock()?;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "access-after-persistence",
+                "refresh_token": "refresh-after-persistence",
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+
+        let refresh = tokio::spawn(async move { manager.refresh_token_from_authority().await });
+        tokio::time::timeout(HANG, async {
+            loop {
+                match write_lock.try_lock() {
+                    Ok(()) => write_lock.unlock()?,
+                    Err(std::fs::TryLockError::WouldBlock) => return std::io::Result::Ok(()),
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error),
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .context("the refresh never entered real credential persistence")??;
+        assert_eq!(sent_refresh_tokens(server).await?, vec!["refresh-1"]);
+        assert_eq!(stored_refresh_token(login_file)?, "refresh-1");
+        assert!(AuthLock::try_take(login_file)?.is_none());
+
+        if cancel {
+            refresh.abort();
+            assert!(refresh.await.expect_err("caller was cancelled").is_cancelled());
+            assert!(
+                AuthLock::try_take(login_file)?.is_none(),
+                "cancelling the caller released the source file while persistence still held auth.lock"
+            );
+            drop(commit);
+        } else {
+            drop(commit);
+            refresh.await??;
+        }
+        // The next pool lock holder must already see the real write in the source file.
+        let _next = AuthLock::take(login_file, HANG)
+            .await?
+            .context("the completed persistence retained the login lock")?;
+        assert_eq!(stored_refresh_token(login_file)?, "refresh-after-persistence");
+        Ok(())
+    }
+
     #[tokio::test]
     #[expect(
         clippy::print_stdout,
@@ -1272,6 +1357,12 @@ mod tests {
             crate::test_support::transport_default_auth_route_config(),
         )
         .await;
+
+        if matches!(case.as_str(), "persist" | "cancel-persist") {
+            persistence_case(manager, &login_file, &server, case == "cancel-persist").await?;
+            println!("{CHILD_COMPLETE}");
+            return Ok(());
+        }
 
         if case.starts_with("managed-auto-keyring-") {
             copied_keyring_case(&case, &manager, &login_file, &server).await?;
@@ -1568,9 +1659,8 @@ mod tests {
             // Where codex sends, aterm waits for the lock again from the moment codex's request
             // arrives (when codex holds it), and reads the login once it has it. That checks only
             // that auth.json already holds codex's answer when aterm next gets the lock. It does
-            // not show codex wrote the answer under the lock: persist_tokens is synchronous after
-            // the response, so on this current-thread runtime aterm's take cannot run between a
-            // release and the write, and a hold dropped just before the write passes as well.
+            // not put the contender inside the actual write. The persistence cases hold the
+            // inner commit sidecar and observe the source lock from inside that interval.
             let read_after_codex = if case == "held" {
                 arrived.notified().await;
                 let again = AuthLock::take(&login_file, HANG)

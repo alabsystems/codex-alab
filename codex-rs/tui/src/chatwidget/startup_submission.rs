@@ -21,6 +21,7 @@ impl ChatWidget {
         pending_draft: &mut Option<ComposerDraftSnapshot>,
         pending_submission: &mut bool,
     ) {
+        if self.input_queue.alab_snapshot_input_held { return; } // ALAB(retained-ui): a read-only snapshot cannot take, submit or cancel the captured confirmation.
         let had_draft = pending_draft.is_some();
         let destination_has_content = !self.bottom_pane.composer_is_empty()
             || !self.bottom_pane.composer_pending_pastes().is_empty();
@@ -43,6 +44,7 @@ impl ChatWidget {
         }
         #[cfg(unix)]
         if self.alab_holds_retained_startup() { return; } // ALAB(retained-ui): retain original confirmation/cancel owner until actual primary commit.
+        if self.misalignment_policy_violation.is_some() { *pending_submission = false; self.cancel_startup_submission(); return; } // ALAB(misalignment-review): restore the editable startup draft without replaying its old confirmation.
         if pending_draft.is_some()
             || !self.is_session_configured()
             || self

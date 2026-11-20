@@ -36,6 +36,17 @@ pub(super) async fn subscription_fixture(
     codex_alab_aterm::renewal::Identity,
     wiremock::MockServer,
 ) {
+    subscription_fixture_with_refresh(label, "fixture-refresh").await
+}
+
+pub(super) async fn subscription_fixture_with_refresh(
+    label: &str,
+    refresh_token: &str,
+) -> (
+    TestLogin,
+    codex_alab_aterm::renewal::Identity,
+    wiremock::MockServer,
+) {
     let refresh = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .respond_with(
@@ -51,7 +62,7 @@ pub(super) async fn subscription_fixture(
         home.path(),
         &user,
         &account,
-        "fixture-refresh",
+        refresh_token,
         Some(&refresh.uri()),
     );
     let manager = fixtures::manager(home.path(), codex_login::AuthCredentialsStoreMode::File).await;
@@ -243,6 +254,7 @@ fn refused_durable_admission_preserves_input_then_recovers_the_same_native_id() 
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: identity.account.clone(),
@@ -636,6 +648,7 @@ fn resumed_revoked_goal_intent_releases_deferral_for_the_new_goal() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: "a".repeat(64),
@@ -769,6 +782,7 @@ fn disabled_goals_keep_standalone_custody_without_installing_a_future_deferral()
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: identity.account.clone(),
@@ -897,6 +911,7 @@ fn disabling_goals_does_not_downgrade_an_associated_recovery_to_standalone() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: identity.account.clone(),
@@ -1780,6 +1795,7 @@ fn resumed_provider_change_retires_old_auth_witness_and_deferral() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: "a".repeat(64),
@@ -1937,6 +1953,7 @@ fn provider_change_retires_standalone_custody_with_disabled_or_absent_goals() {
                 renewal: Some(AccountHandoff {
                     purpose: codex_alab_core::account_handoff::Purpose::Login,
                     destination: None,
+                    limit: None,
                     openai_scope: true,
                     local: true,
                     account: "a".repeat(64),
@@ -2065,6 +2082,7 @@ fn missing_current_auth_is_unknown_and_keeps_existing_recovery_custody() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: "a".repeat(64),
@@ -2145,6 +2163,7 @@ fn missing_custody_database_keeps_intent_even_after_proven_provider_change() {
                 renewal: Some(AccountHandoff {
                     purpose: codex_alab_core::account_handoff::Purpose::Login,
                     destination: None,
+                    limit: None,
                     openai_scope: true,
                     local: true,
                     account: "a".repeat(64),
@@ -2259,6 +2278,7 @@ fn live_auth_mode_change_retires_existing_intent_before_new_recovery_gates() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: true,
                 account: "a".repeat(64),

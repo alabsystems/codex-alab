@@ -30,6 +30,21 @@ def await_condition(test, description):
         time.sleep(0.01)
 
 
+def await_guardian_marker(guardian, marker, log, description):
+    def ready():
+        status = guardian.poll()
+        if status is not None:
+            lines = Path(log.name).read_text(errors="replace").splitlines()
+            detail = lines[-1] if lines else "empty guardian log"
+            raise AssertionError(
+                f"{description}: guardian exited {status} while waiting for {marker.name} "
+                f"({log.name}): {detail}"
+            )
+        return marker.is_file()
+
+    await_condition(ready, description)
+
+
 def attempt_cleanup(errors, description, action):
     try:
         action()
@@ -150,6 +165,19 @@ class OriginalProcessExit:
 
 
 class GuardianLifelineTests(unittest.TestCase):
+    def test_readiness_reports_guardian_exit_even_if_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "ready"
+            marker.touch()
+            with (marker.parent / "command.log").open("w") as log:
+                with subprocess.Popen(
+                    [sys.executable, "-IB", "-c", "print('fixture refused'); raise SystemExit(75)"],
+                    stdout=log,
+                ) as guardian:
+                    guardian.wait(timeout=60)
+                    with self.assertRaisesRegex(AssertionError, "exited 75 .*ready .*fixture refused"):
+                        await_guardian_marker(guardian, marker, log, "fixture readiness")
+
     def test_sigkill_guardian_keeps_flock_until_child_and_grandchild_are_gone(self):
         self.assert_guardian_signal(signal.SIGKILL, -signal.SIGKILL)
 
@@ -209,7 +237,7 @@ child.wait(timeout=60)
             )
             primary = None
             try:
-                await_condition(ready.is_file, "actual command readiness")
+                await_guardian_marker(guardian, ready, log, "actual command readiness")
                 identity = json.loads(ready.read_text())
                 writer_identity = json.loads(descendant.read_text())
                 self.assertEqual(writer_identity[1], identity[1])
@@ -219,7 +247,7 @@ child.wait(timeout=60)
                                          "close original process exit handle", watch.close)
                     watches.append(watch)
                 armed.write_text("both original process exit handles are armed")
-                await_condition(watched.is_file, "original cache writers acknowledge watches")
+                await_guardian_marker(guardian, watched, log, "original cache writers acknowledge watches")
                 self.assertTrue(writer_watched.is_file())
                 self.assertTrue(all(not watch.exited() for watch in watches))
                 with lock.open("rb") as competing:
@@ -373,13 +401,9 @@ raise SystemExit(code)
             guardian = subprocess.Popen(launch, start_new_session=True, stdin=subprocess.DEVNULL,
                                         stdout=log, stderr=subprocess.STDOUT)
 
-            def ready_while_owned(path):
-                self.assertIsNone(guardian.poll(), "fixture guardian ended before its readiness gate")
-                return path.is_file()
-
             primary = None
             try:
-                await_condition(lambda: ready_while_owned(born), "held actual command birth")
+                await_guardian_marker(guardian, born, log, "held actual command birth")
                 identity = json.loads(born.read_text())
                 writer_identity = json.loads(writer_born.read_text())
                 # Both originals acknowledge only after both native handles are
@@ -390,7 +414,7 @@ raise SystemExit(code)
                                          "close original process exit handle", watch.close)
                     watches.append(watch)
                 armed.write_text("both original process exit handles are armed")
-                await_condition(lambda: ready_while_owned(ready), "watcher acknowledgement")
+                await_guardian_marker(guardian, ready, log, "watcher acknowledgement")
                 self.assertEqual(json.loads(ready.read_text()), identity)
                 self.assertEqual(json.loads(writer_ready.read_text()), writer_identity)
                 self.assertTrue(all(not watch.exited() for watch in watches))
@@ -404,7 +428,7 @@ raise SystemExit(code)
 
                 if after_completion:
                     release.write_text("allow the supervised command to return")
-                    await_condition(lambda: ready_while_owned(returned), "actual run_recorded return")
+                    await_guardian_marker(guardian, returned, log, "actual run_recorded return")
                     observed = json.loads(returned.read_text())
                     self.assertEqual(observed["supervised_command_normalized_exit_status"], 0)
                     data = receipt.read_bytes()

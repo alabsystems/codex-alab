@@ -181,7 +181,7 @@ def git(repo, *args, timeout=120, stdin=b""):
     env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0",
                GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     try:
-        process = subprocess.run(["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
+        process = GITHUB.run_transport(["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
                                   "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
                                   "-c", "protocol.file.allow=always", "-C", repo, *args],
                                  input=stdin, capture_output=True, timeout=timeout,
@@ -291,13 +291,36 @@ def rewound(repo, ref, main):
                   f"--expire=now {ref}` forgets what this clone saw)")
 
 
+def released_source(repo, url, main, scratch, ref, snapshot):
+    code, out = git(scratch, "cat-file", "commit", snapshot)
+    message = out.split(b"\n\n", 1)[1] if code == 0 and b"\n\n" in out else b""
+    match = SNAPSHOT.fullmatch(message.decode("utf-8", "replace"))
+    if not match:
+        raise Refused(f"{ref} at {url} is {snapshot[:12]}, which does not name the dev "
+                      "commit it was cut from ('snapshot: <date> from codex-alab@<commit>', "
+                      "the publication engine's mirror-head form): the gate cannot tell "
+                      "what was released. A person decides")
+    source = match[1]
+    code, _ = git(repo, "cat-file", "-e", f"{source}^{{commit}}")
+    if code != 0 or not ancestor(repo, source, main):
+        raise Refused(f"{ref} at {url} was released from {source[:12]}, which is not in "
+                      f"the history of origin/main ({main[:12]}): origin's main was "
+                      "rewritten after that release (the ledger it released can no longer "
+                      "be read along main), or this clone is stale (git fetch origin). "
+                      "A rewritten main is never released from: a person decides")
+    if entry(scratch, snapshot) != entry(repo, source):
+        raise Refused(f"{ref} at {url} carries a {LEDGER} other than its dev commit "
+                      f"{source[:12]}'s: what was released is not what main recorded")
+    return source
+
+
 def released(repo, url, main):
     """Every release the public release repository `url` carries (its main and each
     v<X.Y.Z> tag), checked against this clone: each is a snapshot of a dev commit on `main`
     whose ledger is the snapshot's. {dev commit: [public refs]}. A release whose dev commit
     is gone from `main` means origin/main was rewritten after it: refused."""
     with GITHUB.temporary_directory(prefix="alab-released-") as scratch:
-        code, _ = git(scratch, "init", "-q", "--bare")
+        code, _ = git(scratch, "init", "-q", "--bare", "--template=")
         if code != 0:
             raise Refused(f"cannot make a scratch repository to read {url}")
         try:
@@ -313,35 +336,25 @@ def released(repo, url, main):
         # Preserve each enumerated raw tag/commit OID. Fetches are explicitly
         # anonymous through Agh; later local tree reads cannot lazily network.
         try:
-            GITHUB.fetch(scratch, url, [f"{ref}:{ref}" for ref in refs], anonymous=True,
-                         snapshot=observed, snapshot_refs=True)
+            # The reader needs objects, not local branches or tags.
+            refspecs = [f"{ref}:refs/remotes/published/{ref[5:]}" for ref in refs]
+            GITHUB.fetch(scratch, url, refspecs, anonymous=True, snapshot=observed,
+                         admit_transfer=GITHUB.admit_release_transfer if os.name == "posix" else None)
         except (GITHUB.Refused, OSError, subprocess.TimeoutExpired) as error:
             raise Refused(f"cannot fetch the releases at {url}: {GITHUB.failure_detail(error)}") from None
-        for ref in refs:
-            code, out = git(scratch, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}")
-            if code != 0:
+        # Peel the advertised object IDs and retain their original names for diagnostics.
+        queries = "".join(observed[ref] + "^{commit}\n" for ref in refs).encode("ascii")
+        code, out = git(scratch, "cat-file", "--batch-check=%(objectname)", stdin=queries)
+        commits = out.decode("ascii").splitlines()
+        if code != 0 or len(commits) != len(refs):
+            raise Refused(f"cannot read the release snapshot objects at {url}")
+        checked = {}
+        for ref, snapshot in zip(refs, commits):
+            if not COMMIT.fullmatch(snapshot):
                 raise Refused(f"{ref} at {url} names no commit")
-            snapshot = out.decode().strip()
-            code, out = git(scratch, "cat-file", "commit", snapshot)
-            message = out.split(b"\n\n", 1)[1] if code == 0 and b"\n\n" in out else b""
-            match = SNAPSHOT.fullmatch(message.decode("utf-8", "replace"))
-            if not match:
-                raise Refused(f"{ref} at {url} is {snapshot[:12]}, which does not name the dev "
-                              "commit it was cut from ('snapshot: <date> from codex-alab@<commit>', "
-                              "the publication engine's mirror-head form): the gate cannot tell "
-                              "what was released. A person decides")
-            source = match[1]
-            code, _ = git(repo, "cat-file", "-e", f"{source}^{{commit}}")
-            if code != 0 or not ancestor(repo, source, main):
-                raise Refused(f"{ref} at {url} was released from {source[:12]}, which is not in "
-                              f"the history of origin/main ({main[:12]}): origin's main was "
-                              "rewritten after that release (the ledger it released can no longer "
-                              "be read along main), or this clone is stale (git fetch origin). "
-                              "A rewritten main is never released from: a person decides")
-            if entry(scratch, snapshot) != entry(repo, source):
-                raise Refused(f"{ref} at {url} carries a {LEDGER} other than its dev commit "
-                              f"{source[:12]}'s: what was released is not what main recorded")
-            sources.setdefault(source, []).append(ref)
+            if snapshot not in checked:
+                checked[snapshot] = released_source(repo, url, main, scratch, ref, snapshot)
+            sources.setdefault(checked[snapshot], []).append(ref)
     return sources
 
 
@@ -598,4 +611,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    GITHUB.restore_cli_sigchld()
     sys.exit(main())

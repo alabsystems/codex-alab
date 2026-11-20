@@ -6,6 +6,7 @@
 //! subset: codex-alab sees every turn end, so aterm's screen-reading arms have no counterpart).
 //! The wall half (stage 2: a wall whose tries are spent is held) is `walls_hold_tests.rs`.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -840,6 +841,7 @@ fn a_usage_windows_reset_passed_starts_the_run_afresh_and_one_naming_none_keeps_
         for _ in 0..crate::replies::FUTILE_AFTER_TRIES {
             at += QUICK;
             let wall = Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: dated.then(|| at + 5 * MIN),
                 reset_label: dated.then(|| "5:11 PM".to_string()),
             };
@@ -1135,6 +1137,7 @@ fn a_dated_reset_passed_keeps_the_walls_replies_and_judges_the_answer_over_what_
     let now = Instant::now();
     let usage = TurnEnd {
         wall: Some(Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: Some(now + 5 * MIN),
             reset_label: Some("5:11 PM".to_string()),
         }),

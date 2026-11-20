@@ -330,7 +330,14 @@ pub(crate) fn editing_retaining(
     }
     let mut rows = order
         .into_iter()
-        .map(|index| original[index].take().expect("validated original row mask"));
+        .map(|index| {
+            original
+                .get_mut(index)
+                .and_then(Option::take)
+                .ok_or_else(|| invalid("original approval row mask is inconsistent"))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter();
     data.request = rows.next();
     data.queue = rows.collect();
     data.queued_activations = editing;
@@ -351,10 +358,10 @@ impl PreparedApproval {
         {
             return Err(invalid("original approval destination changed"));
         }
-        if let (Some(old), Some(actual)) = (&data.request, &view.current_request) {
-            if !old.matches_native(actual)? {
-                return Err(invalid("original current approval request changed"));
-            }
+        if let (Some(old), Some(actual)) = (&data.request, &view.current_request)
+            && !old.matches_native(actual)?
+        {
+            return Err(invalid("original current approval request changed"));
         }
         for (old, actual) in data.queue.iter().zip(&view.queue) {
             if !old.matches_native(actual)? {
@@ -521,16 +528,19 @@ impl ApprovalOverlay {
             return Err(invalid("delayed normalization lost actual rows"));
         }
         self.alab_inputs.reorder_actual(&order)?;
+        let mut positions = vec![0; order.len()];
+        for (position, original) in order.into_iter().enumerate() {
+            positions[original] = position;
+        }
         let mut native = self
             .current_request
             .take()
             .into_iter()
             .chain(std::mem::take(&mut self.queue))
-            .map(Some)
+            .enumerate()
             .collect::<Vec<_>>();
-        let mut rows = order
-            .into_iter()
-            .map(|index| native[index].take().expect("validated original native row"));
+        native.sort_unstable_by_key(|(index, _)| positions[*index]);
+        let mut rows = native.into_iter().map(|(_, row)| row);
         let current = rows
             .next()
             .ok_or_else(|| invalid("original current row missing"))?;

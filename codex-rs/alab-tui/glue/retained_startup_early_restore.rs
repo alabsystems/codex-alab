@@ -4,6 +4,7 @@
 //! captured selection remains comparison DATA until the real original choice
 //! arrives; no backend identity/Source construction is invented from it.
 use super::*;
+use crate::bottom_pane::alab_retained_delayed_approval::PreparedDelayed;
 
 pub(crate) struct Prepared {
     data: StartupData,
@@ -21,13 +22,9 @@ impl Prepared {
     pub(crate) fn install_with_clock(
         self,
         pump: &mut StartupDraftPump,
-        clock: crate::bottom_pane::alab_retained_delayed_approval::PreparedDelayed,
+        clock: PreparedDelayed,
     ) -> io::Result<Installed> {
-        // Both DATA decoders have completed before this synchronous native
-        // mutation. This is before the original constructor's first draw/poll.
-        let installed = self.install(pump)?;
-        clock.prime_before_original_replay(&mut pump.bottom_pane)?;
-        Ok(installed)
+        self.install_editor(pump, Some(&clock))
     }
     pub(crate) fn decode(
         raw: &serde_json::value::RawValue,
@@ -74,7 +71,15 @@ impl Prepared {
             generations,
         })
     }
+    #[cfg(test)]
     pub(crate) fn install(self, pump: &mut StartupDraftPump) -> io::Result<Installed> {
+        self.install_editor(pump, None)
+    }
+    fn install_editor(
+        self,
+        pump: &mut StartupDraftPump,
+        clock: Option<&PreparedDelayed>,
+    ) -> io::Result<Installed> {
         if pump.submission_pending
             || pump.pending_paste_newline.is_some()
             || pump.resolved_selection.is_some()
@@ -92,7 +97,7 @@ impl Prepared {
             self.bytes,
             self.generations,
         )?;
-        editor.install(&mut pump.bottom_pane)?;
+        editor.install_with_clock(&mut pump.bottom_pane, clock)?;
         pump.initial_screen = match self.data.initial_screen {
             InitialScreenData::Composer => StartupDraftInitialScreen::Composer,
             InitialScreenData::Onboarding => StartupDraftInitialScreen::Onboarding,

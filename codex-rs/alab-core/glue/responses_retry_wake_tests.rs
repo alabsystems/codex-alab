@@ -404,18 +404,16 @@ async fn capacity_notice(reason: CapacityReason, cancel: bool) {
     let before_deadline = start.into_std();
     let advice = RetryAfter::from_delay_with_sleep_reading(WAIT, None)
         .expect("positive representable provider advice");
-    let (error, expected_info, expected_notice, expected_details) = match reason {
+    let (error, expected_info, expected_notice) = match reason {
         CapacityReason::ServerOverloaded => (
             CodexErr::ServerOverloaded,
             CodexErrorInfo::ServerOverloaded,
             "Model is at capacity; retrying automatically (interrupt to stop)...",
-            "Selected model is at capacity. Please try a different model.",
         ),
         CapacityReason::PolicyCapacityUnavailable => (
             CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable),
             CodexErrorInfo::PolicyCapacityUnavailable,
             "Policy-restricted capacity is unavailable; retrying automatically (interrupt to stop)...",
-            "Policy-restricted capacity is unavailable. Please try again later.",
         ),
     };
     let error = error.with_retry_after(advice);
@@ -462,7 +460,7 @@ async fn capacity_notice(reason: CapacityReason, cancel: bool) {
             if let (Some(deadline), Some(live)) =
                 (deadline, step.turn.extension_data.get::<LiveCapacityWait>())
                 && let Some(published_reason) =
-                    live.publish_reason_if_current(|| before_deadline, |reason| reason)
+                    live.publish_reason_if_current(|| before_deadline, |reason, _| reason)
             {
                 assert!(deadline > before_deadline, "selected pacing is positive");
                 assert_eq!(published_reason, reason);
@@ -507,7 +505,10 @@ async fn capacity_notice(reason: CapacityReason, cancel: bool) {
             };
             assert_eq!(notice.message, expected_notice);
             assert_eq!(notice.codex_error_info, Some(expected_info));
-            assert_eq!(notice.additional_details.as_deref(), Some(expected_details));
+            assert_eq!(
+                notice.additional_details.as_deref(),
+                Some("Retry scheduled in 10s.")
+            );
             assert!(matches!(
                 events.try_recv(),
                 Err(async_channel::TryRecvError::Empty)
@@ -550,7 +551,7 @@ async fn capacity_notice(reason: CapacityReason, cancel: bool) {
         "the owned retry guard retires its transient pacing publication"
     );
     assert_eq!(
-        live.publish_reason_if_current(|| before_deadline, |reason| reason),
+        live.publish_reason_if_current(|| before_deadline, |reason, _| reason),
         None
     );
     assert!(matches!(
@@ -584,7 +585,7 @@ async fn capacity_notice(reason: CapacityReason, cancel: bool) {
             Err(async_channel::TryRecvError::Empty)
         ));
         assert_eq!(
-            live.publish_reason_if_current(|| before_deadline, |reason| reason),
+            live.publish_reason_if_current(|| before_deadline, |reason, _| reason),
             None
         );
         assert_eq!(

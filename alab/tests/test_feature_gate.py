@@ -8,12 +8,15 @@ from pathlib import Path
 import sys
 import subprocess
 import unittest
+from unittest.mock import patch
 
 import test_upstream_gate as review_tests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import feature_evidence as EVIDENCE
 import feature_gate as GATE
+import upstream_gate
+from python_test_results import execute as execute_python
 
 
 class FeatureAdmissionTests(unittest.TestCase):
@@ -31,9 +34,9 @@ class FeatureAdmissionTests(unittest.TestCase):
         self.git('add', 'alab/features.toml')
         self.commit('contracts')
 
-    def review(self, affected=True):
+    def review(self, affected=True, feature='model-discovery'):
         record = self.reviewed()
-        record['commits'][0]['features'] = ['model-discovery'] if affected else []
+        record['commits'][0]['features'] = [feature] if affected else []
         self.persist(record)
         self.source = self.git('rev-parse', 'HEAD')
         self.expected = EVIDENCE.snapshot(self.repo, self.source, self.target, self.base)
@@ -61,6 +64,21 @@ class FeatureAdmissionTests(unittest.TestCase):
     def test_unreviewed_source_cannot_choose_its_own_feature_scope(self):
         with self.assertRaisesRegex(ValueError, 'complete committed review'):
             self.admit()
+
+    def test_bundle_admission_scans_committed_intake_once(self):
+        self.ready()
+        with patch.object(upstream_gate, 'snapshot', wraps=upstream_gate.snapshot) as scan:
+            self.assertEqual(self.admit()['errors'], [])
+        self.assertEqual(scan.call_count, 1)
+
+    def test_review_must_match_inventory_source_and_integrated_frontier(self):
+        self.review()
+        inventory = EVIDENCE.snapshot(self.repo, self.source, self.target)
+        review = upstream_gate.admission(self.repo, self.base)
+        self.assertEqual(EVIDENCE.scoped_snapshot(inventory, review), self.expected)
+        for field in ('source', 'integrated_upstream'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'source or frontier'):
+                EVIDENCE.scoped_snapshot(inventory, {**review, field: self.base})
 
     def test_affected_review_requires_all_scenarios_before_compilation(self):
         self.review()
@@ -121,6 +139,133 @@ class FeatureAdmissionTests(unittest.TestCase):
         self.assertTrue(self.admit()['errors'])
         errors = self.admit(bundle_root=root)['errors']
         self.assertIn('stale or invalid source', errors)
+
+    def test_provider_refusal_bundle_requires_committed_live_and_replay_results(self):
+        feature = 'provider-recovery'
+        (self.repo / 'alab/features.toml').write_text(
+            'schema = 1\n[[features]]\nid = "provider-recovery"\nlifecycle = "active"\n'
+            'scenarios = ["Refusal.", "Independent."]\n'
+            'required_libtest_groups = ["misalignment-turn", "misalignment-replay"]\n')
+        manifest = self.repo / 'alab/feature_recipes/scenarios.json'
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps({'features': {feature: [
+            {'scenario': 'Refusal.', 'groups': ['misalignment-turn', 'misalignment-replay'], 'coverage': 'Refusal.'},
+            {'scenario': 'Independent.', 'groups': ['other'], 'coverage': 'Independent.'}]}, 'groups': {
+                'misalignment-turn': {'stage': 'autopilot-turn', 'tests': ['live']},
+                'misalignment-replay': {'stage': 'recovery', 'prefix': 'resume::', 'tests': ['first', 'duplicate']},
+                'other': {'stage': 'core', 'tests': ['other']}}}))
+        self.git('add', 'alab')
+        self.commit('declare provider refusal controls')
+        self.review(feature=feature)
+        manifest.write_text('{"features": {}, "groups": {}}')
+
+        # The old portable shape has no recipe obligations of its own. Admission
+        # must derive those from the candidate, even for an independent worker.
+        old = {k: self.expected[k] for k in ('schema', 'source', 'base', 'upstream', 'inventory_sha256')}
+        old['features'] = [{'id': feature, 'scenarios': [
+            {'description': description, 'checks': []} for description in ('Refusal.', 'Independent.')]}]
+        parts = []
+        for index, name in enumerate(('live', 'resume::first', 'resume::duplicate', 'independent')):
+            log = self.repo / f'worker-{index}.log'
+            log.write_text(f'running 1 test\ntest {name} ... ok\n'
+                           'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n')
+            observation = dict(source=self.source, command=[f'worker-{index}'], status=0,
+                               log=str(log), log_sha256=hashlib.sha256(log.read_bytes()).hexdigest(),
+                               tests=[name], reason='Independent fixture execution.')
+            part = copy.deepcopy(old)
+            part['features'][0]['scenarios'][int(name == 'independent')]['checks'].append(observation)
+            parts.append(part)
+
+        complete = EVIDENCE.combine(parts, self.expected)
+        root = self.repo / 'complete-bundle'
+        EVIDENCE.bundle(complete, self.expected, root)
+        self.assertEqual(self.admit(bundle_root=root)['errors'], [])
+        for index in (0, 2):
+            with self.subTest(missing=parts[index]['features'][0]['scenarios'][0]['checks'][0]['tests']):
+                wrong = copy.deepcopy(parts[index])
+                refusal, other = wrong['features'][0]['scenarios']
+                other['checks'].extend(refusal['checks'])
+                refusal['checks'].clear()
+                partial = EVIDENCE.combine(parts[:index] + [wrong] + parts[index+1:], old)
+                cached = self.repo / f'old-bundle-{index}'
+                EVIDENCE.bundle(partial, old, cached)
+                self.assertTrue(self.admit(bundle_root=cached)['errors'])
+                self.assertTrue(EVIDENCE.validate(partial, self.expected))
+                with self.assertRaises(ValueError):
+                    EVIDENCE.bundle(partial, self.expected, self.repo / f'incomplete-{index}')
+
+    def test_wire_obligations_require_the_named_python_results_on_their_own_scenarios(self):
+        # Execute a small genuine suite so each positive and misattributed Python name
+        # is backed by a completed unittest result in the shared capture.
+        class Wire(unittest.TestCase):
+            def test_catalog(self):
+                self.assertEqual(2 + 2, 4)
+
+            def test_unavailable(self):
+                self.assertFalse([])
+
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(Wire)
+        catalog, unavailable = [test.id() for test in suite]
+        pylog = self.repo / 'wire.json'
+        pylog.write_text(json.dumps(execute_python(suite)))
+        rustlog = self.repo / 'native.log'
+        rustlog.write_text(f'running 2 tests\ntest native ... ok\ntest {catalog} ... ok\n'
+                           'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n')
+
+        old_source = self.git('rev-parse', 'HEAD')
+        old_inventory = EVIDENCE.snapshot(self.repo, old_source, self.target)
+        with (self.repo / 'alab/features.toml').open('a') as file:
+            file.write('required_python_groups = ["catalog-wire", "unavailable-wire"]\n')
+        manifest = self.repo / 'alab/feature_recipes/scenarios.json'
+        manifest.parent.mkdir()
+        descriptions = ['Fresh catalog.', 'Unavailable account.']
+        names = [catalog, unavailable]
+        groups = ['catalog-wire', 'unavailable-wire']
+        manifest.write_text(json.dumps({'features': {'model-discovery': [
+            {'scenario': description, 'groups': [group]} for description, group in zip(descriptions, groups, strict=True)]},
+            'groups': {group: {'stage': 'execution-wire', 'tests': [name]}
+                       for group, name in zip(groups, names, strict=True)}}))
+        self.git('add', 'alab')
+        self.commit('declare required Python results')
+        self.review()
+        manifest.write_text('{}')
+        self.assertEqual(EVIDENCE.snapshot(self.repo, old_source, self.target), old_inventory)
+        rows = self.expected['features'][0]['scenarios']
+        self.assertEqual([row['required_python_tests'] for row in rows], [[catalog], [unavailable]])
+        self.assertFalse(any('required_python_tests' in row for row in old_inventory['features'][0]['scenarios']))
+
+        def observation(log, name, result_format):
+            return dict(source=self.source, status=0, command=['validator-fixture'],
+                        reason='Test the admission boundary.', format=result_format, tests=[name],
+                        log=str(log), log_sha256=hashlib.sha256(log.read_bytes()).hexdigest())
+
+        # Older worker records carry only observations. The candidate supplies the obligations.
+        worker = copy.deepcopy(self.expected)
+        for row in worker['features'][0]['scenarios']:
+            del row['required_python_tests']
+        parts = []
+        for index, name in enumerate(names):
+            part = copy.deepcopy(worker)
+            part['features'][0]['scenarios'][index]['checks'].append(observation(pylog, name, 'python-unittest'))
+            parts.append(part)
+        complete = EVIDENCE.combine(parts, self.expected)
+        root = self.repo / 'wire-bundle'
+        EVIDENCE.bundle(complete, self.expected, root)
+        self.assertEqual(self.admit(bundle_root=root)['errors'], [])
+
+        for control in ('missing', 'wrong scenario', 'same name in libtest'):
+            with self.subTest(control=control):
+                wrong = copy.deepcopy(complete)
+                first, second = wrong['features'][0]['scenarios']
+                misplaced = first['checks'].pop()
+                if control == 'wrong scenario':
+                    second['checks'].append(misplaced)
+                name = catalog if control == 'same name in libtest' else 'native'
+                first['checks'].append(observation(rustlog, name, 'libtest'))
+                cache = self.repo / control
+                EVIDENCE.bundle(wrong, worker, cache)
+                self.assertEqual(self.admit(bundle_root=cache)['errors'],
+                                 ['model-discovery: Fresh catalog.: missing required python tests: ' + catalog])
 
     def test_main_base_change_invalidates_even_an_explicit_prior_bundle(self):
         root = self.ready()

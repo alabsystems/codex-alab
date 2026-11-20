@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "base": "17e79ae616f2ea6b089e268f80461a7d3a4d8d45",
+  "target": "a05444bbeb6bb07f2875fff0143f2e4cba994463",
+  "frontier": "17e79ae616f2ea6b089e268f80461a7d3a4d8d45",
+  "commits": [
+    {
+      "sha": "a05444bbeb6bb07f2875fff0143f2e4cba994463",
+      "subject": "Refresh managed Guardian policy independently of MCP (#62276)",
+      "paths": [
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/config/runtime_refresh.rs",
+        "codex-rs/core/src/config/runtime_refresh_tests.rs",
+        "codex-rs/core/src/connectors.rs",
+        "codex-rs/core/src/connectors_tests.rs",
+        "codex-rs/core/src/guardian/decision.rs",
+        "codex-rs/core/src/guardian/tests.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/mcp_tool_call/recorded.rs",
+        "codex-rs/core/src/mcp_tool_call_tests.rs",
+        "codex-rs/core/src/session/config_refresh.rs",
+        "codex-rs/core/src/session/config_refresh_tests.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mcp_runtime.rs",
+        "codex-rs/core/src/session/step_activation.rs",
+        "codex-rs/core/src/state/session.rs",
+        "codex-rs/core/tests/suite/mcp_turn_metadata.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Carry upstream\u2019s ordered Guardian publication for future turns and its issuing-step MCP approval context. Retain independently published host policy during the fork\u2019s configuration handoff.",
+      "evidence": [
+        "Reviewed all 17 changed paths against 17e79ae616. Binary diff SHA-256 8d6005f5c8a8758afd73acfb7fd2f0a0fd5c1573da3af2b35d114cbc0522a102.",
+        "The public thread method delegates to one session owner. The session rejects older or equal revisions and invalid source bindings before applying a cloned configuration under the session lock. A concurrent MCP-only refresh may cross a chain of Guardian-only publications without replacing the latest policy.",
+        "MCP records the issuing step\u2019s preference and reviewer context and respects both captured and current managed restrictions. Session settings for future turns follow an accepted publication. The public method has calls from integration tests at this revision; a live polling or delivery service is a separate owner.",
+        "The fork reconstructs configuration for an admitted native handoff. A destination host\u2019s independent removal of a managed fallback, source invalidation and published revision must survive that reconstruction. Verify actual restoration and preserve the incoming thread\u2019s requested reviewer subject to current rules."
+      ],
+      "revisit": "Run upstream\u2019s Guardian-only publication/MCP reload race, reviewer constraint and issuing-invocation metadata controls with the destination configuration handoff regression. Reassess when the service publishes real observations."
+    }
+  ]
+}

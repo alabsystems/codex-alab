@@ -31,6 +31,7 @@ use codex_alab_core::session::Launch;
 use codex_alab_core::session::OwedAct;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
+use codex_alab_core::wall_kind::LimitClass;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -1242,6 +1243,7 @@ fn a_wall_the_recovered_turn_meets_is_not_the_bound_intents_to_remove() {
             by_autopilot: true,
             by_person: false,
             wall: RecoveryWall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at_ms: Some(now_ms() + 3_600_000),
                 reset_label: None,
                 quota: None,

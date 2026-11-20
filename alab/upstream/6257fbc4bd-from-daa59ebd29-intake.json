@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "base": "daa59ebd298ed6d7ee7dc92af09e5b25c5d63029",
+  "target": "6257fbc4bd5339144e6ffb3398a011917d883a2e",
+  "frontier": "daa59ebd298ed6d7ee7dc92af09e5b25c5d63029",
+  "commits": [
+    {
+      "sha": "6257fbc4bd5339144e6ffb3398a011917d883a2e",
+      "subject": "Move sandbox preparation into platform backends (#62317)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs",
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/windows_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec-server/src/sandbox_selection.rs",
+        "codex-rs/sandboxing/src/launch.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/linux.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/seatbelt.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/sandboxing/src/windows_mxc.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Keep platform sandbox preparation and proxy routing with the upstream backend owner so Core, the CLI and the exec server apply the same launch policy.",
+      "evidence": [
+        "SandboxManager still selects the backend and resolves effective permissions, runtime paths and managed network inputs. The selected Linux, macOS Seatbelt, Windows restricted-token or Windows MXC backend prepares the command. The token backend retains its specialized Windows session launcher and lifetime.",
+        "Windows MXC uses dedicated proxy listeners. Explicit Windows sandbox contexts use shared ingress for the other selections, including an explicitly disabled backend. A native Windows launch without a sandbox context removes managed proxy settings. Non-Windows native launches retain shared ingress. Core, command/exec, debug sandbox and the exec server call the common routing functions.",
+        "The merge at 654e504bdd8823ea6f65e536db089644b5fa4795 preserves all fork session ownership hooks. The sole shared upstream Rust file, core/src/session/mod.rs, changes its routing import. Platform sandbox creation stays outside ALab's process handoff protocol.",
+        "The upstream manager and exec-server tests exercise native launch fields and platform selection, wrapped argument vectors, and prepared versus live proxy policy. Linux helper arguments can be prepared on a Unix host. Native token sessions and MXC listener isolation require Windows.",
+        "Trust 15698 passed 11 exec-server and five sandboxing tests on macOS at 654e504bdd8823ea6f65e536db089644b5fa4795. Seatbelt preparation preserved wrapped arguments, custom argv[0], ports and socket scope. Native launch preserved its fields, four local managed proxy cases returned HTTP 403 for the denied fixture domain, and a disabled proxy configuration failed before any ports were exported. The run also checked Linux helper argument preparation on macOS. It exercised neither Linux kernel enforcement nor native Windows token and MXC launch."
+      ],
+      "revisit": "Repeat real process preparation and proxy routing for each changed backend. Exercise Windows native, token and MXC launches on a Windows host when their session or listener lifetimes change."
+    }
+  ]
+}

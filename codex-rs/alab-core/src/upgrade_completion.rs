@@ -81,6 +81,29 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn only_the_pending_upgrade_can_trigger_refusal_work() {
+        for cancel_first in [false, true] {
+            let (sender, received) = std::sync::mpsc::channel();
+            let (request, cancellation) = UpgradeRequest::new(move |ready| {
+                sender.send(ready).unwrap();
+                ready
+            });
+            let mut cancellation = Some(cancellation);
+            if cancel_first {
+                drop(cancellation.take());
+            }
+            assert_eq!(request.refuse_if_pending(), !cancel_first);
+            drop(cancellation);
+            assert!(!received.try_recv().unwrap());
+            assert_eq!(
+                received.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_starts_owned_capture_before_wait_and_a_lost_waiter_cannot_cancel_it() {
         struct Owner(Arc<AtomicBool>);

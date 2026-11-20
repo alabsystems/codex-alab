@@ -32,7 +32,8 @@ pub(super) enum Request {
         thread: ThreadId,
         turn: String,
         configuration: Box<codex_core::config::ExecConfiguration>,
-        response: oneshot::Sender<io::Result<SuspendedExec>>,
+        wall: Option<codex_core::ExecQuotaDrain>,
+        response: oneshot::Sender<io::Result<Option<SuspendedExec>>>,
     },
     ActivateIdleTree {
         thread: ThreadId,
@@ -74,19 +75,9 @@ impl InProcessAppServerClient {
         turn: String,
         configuration: codex_core::config::ExecConfiguration,
     ) -> io::Result<SuspendedExec> {
-        let (response, receive) = oneshot::channel();
-        self.command_tx
-            .send(ClientCommand::AlabExecSuspend(Request::Suspend {
-                thread,
-                turn,
-                configuration: Box::new(configuration),
-                response,
-            }))
+        self.request_handle()
+            .suspend_exec_turn(thread, turn, configuration)
             .await
-            .map_err(|_| io::Error::other("exec suspension worker is unavailable"))?;
-        receive
-            .await
-            .map_err(|_| io::Error::other("exec suspension worker reply was lost"))?
     }
 }
 
@@ -111,9 +102,14 @@ pub(super) fn start(sender: InProcessClientSender, request: Request) {
                 thread,
                 turn,
                 configuration,
+                wall,
                 response,
             } => {
-                let _ = response.send(sender.suspend_exec_turn(thread, turn, *configuration).await);
+                let _ = response.send(
+                    sender
+                        .suspend_exec_turn_if_observed(thread, turn, *configuration, wall)
+                        .await,
+                );
             }
             Request::ActivateIdleTree { thread, response } => {
                 let _ = response.send(sender.activate_idle_exec_tree(thread).await);
@@ -174,12 +170,26 @@ impl super::InProcessAppServerRequestHandle {
         turn: String,
         configuration: codex_core::config::ExecConfiguration,
     ) -> io::Result<SuspendedExec> {
+        self.suspend_exec_turn_if_observed(thread, turn, configuration, None)
+            .await?
+            .ok_or_else(|| io::Error::other("unconditional suspension was declined"))
+    }
+
+    /// A superseded quota observation leaves this runtime open and returns no suspension.
+    pub async fn suspend_exec_turn_if_observed(
+        &self,
+        thread: ThreadId,
+        turn: String,
+        configuration: codex_core::config::ExecConfiguration,
+        wall: Option<codex_core::ExecQuotaDrain>,
+    ) -> io::Result<Option<SuspendedExec>> {
         let (response, receive) = oneshot::channel();
         self.command_tx
             .send(ClientCommand::AlabExecSuspend(Request::Suspend {
                 thread,
                 turn,
                 configuration: Box::new(configuration),
+                wall,
                 response,
             }))
             .await

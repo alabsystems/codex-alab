@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "base": "29cb67623c6c4360b29d09e66010ac71cef1a693",
+  "target": "17e79ae616f2ea6b089e268f80461a7d3a4d8d45",
+  "frontier": "29cb67623c6c4360b29d09e66010ac71cef1a693",
+  "commits": [
+    {
+      "sha": "17e79ae616f2ea6b089e268f80461a7d3a4d8d45",
+      "subject": "Support independent refreshes of managed Guardian policy (#62274)",
+      "paths": [
+        "codex-rs/config/src/guardian_policy.rs",
+        "codex-rs/config/src/lib.rs",
+        "codex-rs/config/src/loader/layer_io.rs",
+        "codex-rs/config/src/loader/local.rs",
+        "codex-rs/config/src/loader/managed_requirements.rs",
+        "codex-rs/config/src/loader/mod.rs",
+        "codex-rs/config/src/loader/tests.rs",
+        "codex-rs/config/src/requirements_layers/layer.rs",
+        "codex-rs/config/src/state.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the managed Guardian policy snapshot and its independent configuration-layer projection. Keep ordinary configuration loads and the fork\u2019s packaged defaults on their existing paths.",
+      "evidence": [
+        "Reviewed all nine changed paths against 29cb67623c. Binary diff SHA-256 0a10e29512850f709b2139568d443d288d03716b13ad11d9da80eb893a063d60.",
+        "The loader reads one cloud bundle snapshot with its source binding. It projects reviewer permissions, required models and policy text together, and verifies that the required config server matches the observed source before returning.",
+        "Applying a snapshot replaces managed Guardian fallbacks and preserves unrelated requirements. Retained user and session policy layers still resolve in precedence order. Removing a managed bundle removes its former fallback.",
+        "This commit introduces configuration APIs and a native loader test. Its only snapshot consumers in the official source are test callers. The caller supplies the revision, and apply_guardian_policy does not order competing publications."
+      ],
+      "revisit": "Run the native managed-fallback test on the composed source. Review source validity, account switches and stale revision rejection when an upstream runtime caller adopts the new loader."
+    }
+  ]
+}

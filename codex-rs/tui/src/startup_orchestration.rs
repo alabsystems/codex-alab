@@ -621,6 +621,7 @@ pub(super) async fn run_main_inner(
         app_server_target = AppServerTarget::Embedded;
         daemon_exclusion = Some("daemon feature settings");
     }
+    let daemon_login = startup_draft.run_until(daemon_login::Launch::select(implicit_connection, &mut app_server_target, &config)).await??; // ALAB(accounts): only a local login-matched daemon can own implicit startup.
     if app_server_target.uses_embedded_network_policy() {
         embedded_network_policy.activate(&mut config);
     }
@@ -649,8 +650,6 @@ pub(super) async fn run_main_inner(
             )
             .map_err(std::io::Error::other)?,
     );
-
-    remove_legacy_tui_log_file(config.codex_home.as_path());
 
     let otel_originator = originator().value;
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -897,6 +896,7 @@ pub(super) async fn run_main_inner(
         loader_overrides,
         strict_config,
         app_server_target,
+        daemon_login, // ALAB(accounts): retain the exact admitted daemon connection.
         remote_cwd_override,
         config,
         manually_selected_oss_provider,

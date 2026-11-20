@@ -36,6 +36,7 @@ use super::textarea::TextAreaState;
 
 /// Callback invoked when the user submits a custom prompt.
 pub(crate) type PromptSubmitted = Box<dyn Fn(String) + Send + Sync>;
+type PromptValidator = fn(&str) -> Result<(), &'static str>; // ALAB(interface): a local editor can return a correction to display above its input.
 
 /// Correlates a pending generated prefill with its eventual display label.
 struct PendingTextSuggestion {
@@ -49,6 +50,8 @@ pub(crate) struct CustomPromptView {
     placeholder: String,
     context_label: Option<String>,
     on_submit: PromptSubmitted,
+    pub(crate) local_submit_available: Option<fn() -> bool>, // ALAB(interface): a local prompt can validate its destination even while Codex is disconnected.
+    pub(crate) validate_submission: Option<PromptValidator>, // ALAB(interface): a local prompt can explain how to correct its input.
     submit_label: &'static str,
     preserve_whitespace: bool,
     dismiss_after_child_accept: bool,
@@ -81,6 +84,8 @@ impl CustomPromptView {
             placeholder,
             context_label,
             on_submit,
+            local_submit_available: None, // ALAB(interface): ordinary custom prompts depend on the app server.
+            validate_submission: None, // ALAB(interface): ordinary prompts keep their existing submission behavior.
             submit_label: "submit",
             preserve_whitespace: false,
             dismiss_after_child_accept: false,
@@ -171,6 +176,13 @@ impl CustomPromptView {
                 }
                 if modifiers == KeyModifiers::NONE {
                     let text = self.textarea.text();
+                    if self.local_submit_available.is_some_and(|available| !available()) { self.completion = Some(ViewCompletion::Cancelled); return; } // ALAB(interface): return to the picker when the local destination disappeared.
+                    if let Some(validate) = self.validate_submission // ALAB(interface): validate the text the callback would receive before closing its editor.
+                        && let Err(message) = validate(if self.preserve_whitespace { text } else { text.trim() })
+                    {
+                        self.context_label = Some(message.to_owned());
+                        return;
+                    }
                     if !text.trim().is_empty() {
                         let text = if self.preserve_whitespace {
                             text.to_string()
@@ -219,6 +231,8 @@ impl CustomPromptView {
 }
 
 impl BottomPaneView for CustomPromptView {
+    fn accepts_input_when_disconnected(&self) -> bool { self.local_submit_available.is_some() } // ALAB(interface): keep input with a local editor through a disconnect.
+
     fn keymap_contexts(&self) -> KeymapContextSet {
         KeymapContextSet::new(self.textarea.keymap_context())
     }

@@ -25,6 +25,7 @@
 //! WebSocket prewarm is treated as the first websocket connection attempt for a turn. If it
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
+#[path = "../../alab-core/glue/prewarm_capacity.rs"] mod alab_prewarm_capacity; // ALAB(capacity): hand speculative socket deadlines to the matching first request.
 #[path = "../../alab-core/glue/auth_attempt.rs"] mod alab_auth_attempt; // ALAB(auth-renewal): retain the credential actually used by each foreground request.
 #[path = "../../alab-core/glue/assignment_model_client.rs"] mod alab_assignment; // ALAB(accounts): retire account-owned WebSocket and tool caches without disabling future sockets.
 #[path = "../../alab-core/glue/transport_model_client.rs"] mod alab_transport; // ALAB(recovery): drop a refused turn's routing state, and end an HTTPS fallback that upstream keeps for the session.
@@ -222,6 +223,7 @@ struct ModelClientState {
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
+    alab_prewarm_capacity: alab_prewarm_capacity::PrewarmCapacity, // ALAB(capacity): retain startup advice across client sessions.
     alab_https_fallback: codex_alab_core::https_fallback::HttpsFallback, // ALAB(recovery): when this session moved to HTTPS and whether it may return.
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
@@ -555,7 +557,7 @@ impl WebsocketSession {
 }
 
 enum WebsocketStreamOutcome {
-    Stream(ResponseStream),
+    Stream(ResponseStream, Option<Box<alab_prewarm_capacity::Route>>), // ALAB(capacity): keep a warmup stream bound to the route that opened it.
     FallbackToHttp,
 }
 
@@ -637,6 +639,7 @@ impl ModelClient {
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
+                alab_prewarm_capacity: Default::default(), // ALAB(capacity): no speculative advice yet.
                 alab_https_fallback: Default::default(), // ALAB(recovery): no fallback yet.
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
@@ -1762,6 +1765,7 @@ impl ModelClientSession {
         {
             return Ok(());
         }
+        let service_tier = model_info.service_tier_for_request(service_tier); // ALAB(capacity): bind prewarm pacing to the tier used for routing.
         let provider = Arc::clone(&self.client.state.provider);
         let auth_manager = provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1789,10 +1793,9 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 &responses_headers,
                 &model_info.slug,
-                model_info
-                    .service_tier_for_request(service_tier.clone())
-                    .as_deref(),
+                service_tier.as_deref(),
             );
+            let prewarm_route = self.client.state.alab_prewarm_capacity.before(&client_setup, &model_info.slug, service_tier.as_deref(), &responses_headers, &websocket_metadata, true)?; // ALAB(capacity): bind the prewarm deadline to the resolved request.
             match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
@@ -1832,7 +1835,7 @@ impl ModelClientSession {
                         .await?,
                     );
                 }
-                Err(err) => return Err(provider.map_api_error(err)),
+                Err(err) => return Err(self.client.state.alab_prewarm_capacity.remember(prewarm_route, provider.map_api_error(err))), // ALAB(capacity): retain only typed speculative capacity advice.
             }
         }
     }
@@ -2268,6 +2271,7 @@ impl ModelClientSession {
             } else {
                 session_telemetry_for_request(session_telemetry, &request)
             };
+            let mut prewarm_route = self.client.state.alab_prewarm_capacity.before(&client_setup, &request.model, request.service_tier.as_deref(), &responses_headers, &websocket_metadata, warmup)?; // ALAB(capacity): bind the prewarm deadline to the resolved request.
             match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
@@ -2307,7 +2311,7 @@ impl ModelClientSession {
                     );
                     continue;
                 }
-                Err(err) => return Err(provider.map_api_error(err)),
+                Err(err) => return Err(self.client.state.alab_prewarm_capacity.remember(prewarm_route, provider.map_api_error(err))), // ALAB(capacity): retain only typed speculative capacity advice.
             }
 
             // The budget can be exhausted while the connection is being established.
@@ -2482,7 +2486,7 @@ impl ModelClientSession {
                     response_debug_context.request_id.as_deref(),
                     /*output_items*/ &[],
                 );
-                err
+                self.client.state.alab_prewarm_capacity.remember(prewarm_route.take(), err) // ALAB(capacity): retain a speculative refusal before the stream opens.
             })?;
             let (last_response_tx, last_response_rx) = oneshot::channel();
             let stream = map_response_stream(
@@ -2494,7 +2498,7 @@ impl ModelClientSession {
                 Some(last_response_tx),
             );
             self.websocket_session.last_response_rx = Some(last_response_rx);
-            return Ok(WebsocketStreamOutcome::Stream(stream));
+            return Ok(WebsocketStreamOutcome::Stream(stream, prewarm_route)); // ALAB(capacity): carry the resolved route to the warmup reader.
         }
     }
 
@@ -2579,7 +2583,7 @@ impl ModelClientSession {
             )
             .await
         {
-            Ok(WebsocketStreamOutcome::Stream(mut stream)) => {
+            Ok(WebsocketStreamOutcome::Stream(mut stream, prewarm_route)) => { // ALAB(capacity): a refusal can arrive on the accepted socket.
                 // Wait for the v2 warmup request to complete before sending the first turn request.
                 while let Some(event) = stream.next().await {
                     match event {
@@ -2589,7 +2593,7 @@ impl ModelClientSession {
                             self.try_switch_fallback_transport(session_telemetry, model_info);
                             break;
                         }
-                        Err(err) => return Err(err),
+                        Err(err) => return Err(self.client.state.alab_prewarm_capacity.remember(prewarm_route, err)), // ALAB(capacity): transfer live advice from generate=false to the active turn.
                         _ => {}
                     }
                 }
@@ -2644,7 +2648,7 @@ impl ModelClientSession {
                         )
                         .await?
                     {
-                        WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
+                        WebsocketStreamOutcome::Stream(stream, _) => return Ok(stream), // ALAB(capacity): only a speculative request carries a warmup route.
                         WebsocketStreamOutcome::FallbackToHttp => {
                             self.try_switch_fallback_transport(session_telemetry, model_info);
                         }
@@ -2823,6 +2827,7 @@ where
             };
             match event {
                 Ok(ResponseEvent::OutputItemDone(mut item)) => {
+                    provider.normalize_completed_output_item(&mut item);
                     // Assign IDs after interceptors, which may replace provider items.
                     // Reuse the added event's ID so tracing and the harness agree.
                     if item.id().is_none_or(|id| id.is_empty()) {
@@ -2854,6 +2859,7 @@ where
                     token_usage,
                     usage_metadata,
                     reasoning_removals,
+                    interrupted, // ALAB(shell-invocation): carry the original provider terminal event to sampling.
                     end_turn,
                 }) => {
                     feedback_tags!(last_model_response_id = &response_id);
@@ -2879,6 +2885,7 @@ where
                             token_usage,
                             usage_metadata,
                             reasoning_removals,
+                            interrupted, // ALAB(shell-invocation): carry the original provider terminal event to sampling.
                             end_turn,
                         }))
                         .await

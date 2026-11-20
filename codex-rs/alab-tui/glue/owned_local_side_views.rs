@@ -18,6 +18,48 @@ struct View {
     data: SideView,
     close: Option<SideViewCloseOperation>,
 }
+
+#[cfg(test)]
+#[path = "owned_local_side_close_reservation_tests.rs"]
+mod tests;
+
+/// Only the caller that installed this operation can run the interrupt and unsubscribe.
+pub(crate) struct SideCloseReservation {
+    pub(crate) operation: SideViewCloseOperation,
+    pub(crate) target: OwnedLocalTarget,
+    pub(crate) thread: ThreadId,
+    first: bool,
+}
+
+impl SideCloseReservation {
+    pub(crate) fn is_first(&self) -> bool {
+        self.first
+    }
+}
+
+impl Drop for SideCloseReservation {
+    fn drop(&mut self) {
+        if !self.first || self.operation.has_frozen_request() {
+            return;
+        }
+        // An interrupt can fail before the unsubscribe future is polled. A later
+        // intentional close may start again once this original caller has gone.
+        let mut state = self
+            .target
+            .0
+            .side_views
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(view) = state.views.get_mut(&self.thread.to_string())
+            && view
+                .close
+                .as_ref()
+                .is_some_and(|active| active.same_operation(&self.operation))
+        {
+            view.close = None;
+        }
+    }
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SideViewCheckpoint {
@@ -56,7 +98,7 @@ impl OwnedLocalTarget {
     pub(crate) fn side_close_operation(
         &self,
         thread: ThreadId,
-    ) -> io::Result<Option<SideViewCloseOperation>> {
+    ) -> io::Result<Option<SideCloseReservation>> {
         let mut state = self
             .0
             .side_views
@@ -66,11 +108,21 @@ impl OwnedLocalTarget {
             return Ok(None);
         };
         if let Some(actual) = &view.close {
-            return Ok(Some(actual.clone()));
+            return Ok(Some(SideCloseReservation {
+                operation: actual.clone(),
+                target: self.clone(),
+                thread,
+                first: false,
+            }));
         }
         let actual = SideViewCloseOperation::new(view.data.clone())?;
         view.close = Some(actual.clone());
-        Ok(Some(actual))
+        Ok(Some(SideCloseReservation {
+            operation: actual,
+            target: self.clone(),
+            thread,
+            first: true,
+        }))
     }
     pub(crate) fn side_view_checkpoints(&self) -> Vec<SideViewCheckpoint> {
         self.0
@@ -134,9 +186,11 @@ impl OwnedLocalTarget {
     pub(crate) async fn observe_side_close(
         &self,
         thread: ThreadId,
+        actual: &SideViewCloseOperation,
         handle: &AppServerRequestHandle,
     ) -> io::Result<()> {
-        let actual = {
+        let key = thread.to_string();
+        let current = {
             let state = self
                 .0
                 .side_views
@@ -144,24 +198,24 @@ impl OwnedLocalTarget {
                 .unwrap_or_else(PoisonError::into_inner);
             state
                 .views
-                .get(&thread.to_string())
-                .and_then(|view| view.close.clone())
+                .get(&key)
+                .and_then(|view| view.close.as_ref())
+                .is_some_and(|current| current.same_operation(actual))
         };
-        let Some(actual) = actual else {
+        if !current {
             return Ok(());
-        };
+        }
         actual.observe_applied(handle).await?;
         let mut state = self
             .0
             .side_views
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let key = thread.to_string();
         if let Some(view) = state.views.get_mut(&key)
             && view
                 .close
                 .as_ref()
-                .is_some_and(|current| current.same_operation(&actual))
+                .is_some_and(|current| current.same_operation(actual))
         {
             if actual.original_succeeded() {
                 state.views.remove(&key);

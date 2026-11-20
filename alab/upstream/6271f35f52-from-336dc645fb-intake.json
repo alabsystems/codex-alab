@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "336dc645fbaf00b3f0b56f598aa872b244f687b5",
+  "target": "6271f35f527bf7709b9af5e4e752e9f122706a17",
+  "frontier": "336dc645fbaf00b3f0b56f598aa872b244f687b5",
+  "commits": [
+    {
+      "sha": "6271f35f527bf7709b9af5e4e752e9f122706a17",
+      "subject": "Box the thread startup future in `spawn_thread` (#62477)",
+      "paths": [
+        "codex-rs/core/src/thread_manager.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "native-session",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Use the upstream shared boxed thread-start future on every start, resume and fork path. Move the fork’s two existing account-admission hooks to the beginning of the new inner function.",
+      "evidence": [
+        "Upstream changes one file. Spawn callers await the same constructor. ThreadManagerState::spawn_thread returns a single boxed spawn_thread_inner future and keeps startup work on the calling task.",
+        "The only merge conflict was the old function entry. The resolved inner body acquires the account admission lease and attaches the parent activity before setup can reach any other await. Both hook lines are byte-for-byte identical to the previous integration. All 32 ALab marker lines in thread_manager.rs are unchanged.",
+        "The fork also boxes its public ThreadManager::start_thread and retains separate preparation and initialization lifetimes. The upstream change acts later, inside ThreadManagerState, and leaves those outer lifetimes unmodified. Existing native fixture methods cover task context, cancellation, and synchronous release of the active startup phase.",
+        "All eight call sites now await the common boxed constructor. Start, fork and resume pass the same ThreadSpawnRequest, including its authentication manager and inherited history. The picker query, credential selection and daemon ownership check remain outside the change."
+      ],
+      "revisit": "Verify fresh thread start, resume and child creation at the normal stack size with actual account handoff. Consider dropping the outer fork-specific allocation only after equivalent peak-stack and cancellation behavior is demonstrated."
+    }
+  ]
+}

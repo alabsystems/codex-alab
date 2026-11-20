@@ -387,6 +387,160 @@ fn read(path: &Path) -> serde_json::Value {
 }
 
 #[test]
+fn manual_account_selection_record_accepts_only_the_closed_bounded_object() {
+    use crate::record::ManualAccountSelection;
+    let value = serde_json::json!({"revision": "a".repeat(64), "selection_ref":"b".repeat(64),
+        "request":"c".repeat(32), "resume_argv":["/pkg/codex", "resume", THREAD]});
+    assert!(serde_json::from_value::<ManualAccountSelection>(value.clone()).is_ok());
+    for (key, invalid) in [
+        ("request", serde_json::json!("A".repeat(32))),
+        ("revision", serde_json::Value::Null),
+        ("selection_ref", serde_json::json!("b".repeat(63))),
+        (
+            "resume_argv",
+            serde_json::json!(["/pkg/codex", "resume", "x".repeat(32 * 1024)]),
+        ),
+        ("extra", serde_json::json!(true)),
+    ] {
+        let mut bad = value.clone();
+        bad[key] = invalid;
+        assert!(
+            serde_json::from_value::<ManualAccountSelection>(bad).is_err(),
+            "{key}"
+        );
+    }
+    assert!(
+        serde_json::from_value::<ManualAccountSelection>(serde_json::json!([
+            value["revision"],
+            value["selection_ref"],
+            value["request"],
+            value["resume_argv"]
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn manual_account_selection_keeps_the_ordinary_line_closed_across_writes_and_exit() {
+    use codex_alab_aterm::account_move::Selection;
+    for ending in [Ending::Signalled(15), Ending::Remove] {
+        let home = tempfile::tempdir().unwrap();
+        let rollout = home.path().join("rollout.jsonl");
+        std::fs::write(&rollout, "{}\n").unwrap();
+        let shared = shared_with(launch(4242, true));
+        shared.observe(
+            &frame(Some(&rollout), ProgramState::Idle, home.path()),
+            1000,
+        );
+        let dir = record::sessions_dir(home.path());
+        let writer = Writer::new(shared, dir, Duration::ZERO, Some(FakeCli::command));
+        assert!(writer.write_now().unwrap());
+        let ordinary = read(&writer.path());
+        let route = ordinary["resumeArgv"].clone();
+        assert!(route.is_array());
+        assert!(ordinary.get("manual_account_selection").is_none());
+        let selected = Selection::new("b".repeat(64), "d".repeat(64));
+        let other = Selection::new(selected.revision.clone(), selected.selection_ref.clone());
+        assert!(
+            writer
+                .begin_manual_selection("another-thread", &selected)
+                .is_none()
+        );
+        shared.set_exec_pending(true);
+        assert!(writer.begin_manual_selection(THREAD, &selected).is_none());
+        shared.set_exec_pending(false);
+        let upgrade_scan = shared.upgrade_generation();
+        let held = writer.begin_manual_selection(THREAD, &selected).unwrap();
+        assert_ne!(shared.upgrade_generation(), upgrade_scan);
+        let expected = serde_json::json!({"revision":selected.revision, "selection_ref":selected.selection_ref,
+            "request":selected.request, "resume_argv":route});
+        let assert_frozen = || {
+            let current = read(&writer.path());
+            assert_eq!(current["resumeArgv"], serde_json::Value::Null);
+            assert_eq!(current["manual_account_selection"], expected);
+            assert_eq!(current["sessionId"], THREAD);
+        };
+        assert_frozen();
+        assert_eq!(
+            writer.manual_selection_state(),
+            crate::session::ManualSelectionState::Sending
+        );
+        assert!(!writer.release_manual_selection(&other));
+        assert!(writer.begin_manual_selection(THREAD, &other).is_none());
+        shared.human_input(1500);
+        writer.write_now().unwrap();
+        assert_frozen();
+        drop(held);
+        assert_eq!(
+            writer.manual_selection_state(),
+            crate::session::ManualSelectionState::Reconcile(selected.clone())
+        );
+        writer.finalize(&ending).unwrap();
+        assert_frozen();
+        assert!(!writer.release_manual_selection(&selected));
+    }
+}
+
+#[test]
+fn manual_account_selection_releases_only_its_current_nonce_to_the_current_thread() {
+    use codex_alab_aterm::account_move::Selection;
+    let home = tempfile::tempdir().unwrap();
+    let rollout = home.path().join("rollout.jsonl");
+    std::fs::write(&rollout, "{}\n").unwrap();
+    let shared = shared_with(launch(4242, true));
+    shared.observe(
+        &frame(Some(&rollout), ProgramState::Idle, home.path()),
+        1000,
+    );
+    let dir = record::sessions_dir(home.path());
+    let writer = Writer::new(shared, dir.clone(), Duration::ZERO, Some(FakeCli::command));
+    let selected = Selection::new("b".repeat(64), "d".repeat(64));
+    let other = Selection::new(selected.revision.clone(), selected.selection_ref.clone());
+    let held = writer.begin_manual_selection(THREAD, &selected).unwrap();
+    drop(held);
+    // An in-place replacement of this process inherits the hold, without admitting a
+    // different process or interpreting the private argv as an ordinary relaunch.
+    let same = Writer::new(shared, dir, Duration::ZERO, Some(FakeCli::command));
+    same.prepare();
+    assert_eq!(
+        same.manual_selection_state(),
+        crate::session::ManualSelectionState::Reconcile(selected.clone())
+    );
+    let initializing = Writer::new(
+        shared_with(launch(4242, true)),
+        writer.path().parent().unwrap().to_owned(),
+        Duration::ZERO,
+        Some(FakeCli::command),
+    );
+    assert_eq!(
+        initializing.manual_selection_state(),
+        crate::session::ManualSelectionState::Reconcile(selected.clone())
+    );
+    assert!(initializing.write_now().unwrap());
+    let initial = read(&initializing.path());
+    assert_eq!(initial["sessionId"], THREAD);
+    assert_eq!(initial["resumeArgv"], serde_json::Value::Null);
+    assert_eq!(initial["status"], "busy");
+    let next = "019a0000-0000-7000-8000-000000000002";
+    let mut latest = frame(Some(&rollout), ProgramState::Idle, home.path());
+    latest.primary_thread = Some(next);
+    latest.displayed_thread = Some(next);
+    shared.observe(&latest, 2000);
+    same.write_now().unwrap();
+    let current = read(&same.path());
+    assert_eq!(current["resumeArgv"], serde_json::Value::Null);
+    assert!(!same.release_manual_selection(&other));
+    assert!(same.release_manual_selection(&selected));
+    let current = read(&same.path());
+    assert!(current.get("manual_account_selection").is_none());
+    assert_eq!(current["sessionId"], next);
+    assert_eq!(
+        current["resumeArgv"].as_array().unwrap().last().unwrap(),
+        next
+    );
+}
+
+#[test]
 fn the_record_is_schema_v1_in_contract_order() {
     let home = tempfile::tempdir().unwrap_or_else(|err| panic!("{err}"));
     let rollout = home.path().join("rollout.jsonl");
@@ -593,6 +747,8 @@ fn writes_coalesce_to_one_per_interval() {
         Box::leak(Box::new(Writer::new(shared, dir.clone(), interval, None)));
     let started = Instant::now();
     writer.spawn();
+    // Establish a counted baseline before the writer can coalesce the entire burst.
+    wait_record(&dir, 4245, |_| writer.writes() >= 1);
     let mut last = String::new();
     for step in 1..=40u64 {
         // A change that leaves no rest: the shell's directory moving.
@@ -607,31 +763,21 @@ fn writes_coalesce_to_one_per_interval() {
         );
         std::thread::sleep(Duration::from_millis(15));
     }
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(record) = record::read(&dir.join("4245.json"))
-            && record.cwd.as_deref() == Some(last.as_str())
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the last change never reached the record"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_record(&dir, 4245, |record| {
+        record.cwd.as_deref() == Some(last.as_str())
+    });
     let elapsed = started.elapsed();
-    // One per interval, plus the first write.
-    let allowed = u64::try_from(elapsed.as_millis() / interval.as_millis()).unwrap_or(0) + 1;
-    assert!(
-        writer.writes() <= allowed,
-        "{} writes in {elapsed:?} at one per {interval:?}",
-        writer.writes()
-    );
-    assert!(writer.writes() >= 2, "it wrote more than the first change");
+    // The rename makes the record visible before the count advances. Finalize
+    // waits for the writer to finish so the bounds below cover every write.
     writer
         .finalize(&Ending::Remove)
         .unwrap_or_else(|err| panic!("{err}"));
+    let writes = writer.writes();
+    let allowed = u64::try_from(elapsed.as_millis() / interval.as_millis()).unwrap_or(0) + 1;
+    assert!(
+        (2..=allowed).contains(&writes),
+        "{writes} writes in {elapsed:?} at one per {interval:?}"
+    );
 }
 
 /// A PERSON'S TYPING AND SCROLLING REWRITE NOTHING (CONTRACT §4): the first key is written,
@@ -3613,6 +3759,7 @@ fn native_renewal_custody_survives_a_cold_restart_without_a_drive_lease() {
 }
 
 fn native_account_custody_survives_restart(purpose: codex_alab_core::account_handoff::Purpose) {
+    use codex_alab_core::account_handoff::Purpose;
     use codex_alab_core::session::AccountHandoff;
     use codex_alab_core::session::HandPid;
     use codex_alab_core::session::HumanSeen;
@@ -3646,6 +3793,7 @@ fn native_account_custody_survives_restart(purpose: codex_alab_core::account_han
                     user: "e".repeat(64),
                 }
             }),
+            limit: (purpose == Purpose::WeeklyQuota).then(|| "codex_other".to_owned()),
             openai_scope: true,
             local: false,
             account: "a".repeat(64),
@@ -3764,6 +3912,7 @@ fn native_custody_rejects_other_contexts_and_retires_only_known_supersession() {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: case == "local-only",
                 account: "a".repeat(64),

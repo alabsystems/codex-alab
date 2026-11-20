@@ -28,6 +28,23 @@ struct ActivityState {
     // share custody. None keeps the original native field for an unlinked pane.
     shared_activity: Option<Option<Instant>>,
 }
+impl ActivityState {
+    fn needs_clock_install(&self, marker: &str) -> io::Result<bool> {
+        let generation = self
+            .value
+            .ok_or_else(|| invalid("approval activity generation exhausted"))?;
+        match self.restored_clock.as_deref() {
+            Some(installed) if installed == marker => Ok(false),
+            Some(_) => Err(invalid(
+                "delayed original clock differs from the clock already installed on this pane",
+            )),
+            None if generation == 0 => Ok(true),
+            None => Err(invalid(
+                "new actual composer activity precedes original clock installation",
+            )),
+        }
+    }
+}
 pub(crate) struct ActivityGeneration {
     // Local mutation evidence is never shared or serialized. Pump typing must
     // not make an untouched destination look edited, and blank Vim edits must
@@ -88,21 +105,10 @@ fn invalid(value: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, value.to_string())
 }
 impl Data {
-    fn clock_data(&self) -> io::Result<String> {
-        serde_json::to_string(&(&self.last_activity, self.generation)).map_err(invalid)
-    }
-    fn clock_already_installed(&self, pane: &BottomPane) -> io::Result<bool> {
-        let _generation = pane.alab_delay_activity.value()?;
-        let expected = self.clock_data()?;
-        match pane.alab_delay_activity.state()?.restored_clock.as_deref() {
-            Some(actual) if actual == expected => Ok(true),
-            Some(_) => Err(invalid(
-                "delayed original clock differs from the clock already installed on this pane",
-            )),
-            None => Ok(false),
-        }
-    }
     fn decode(raw: &RawValue, max: usize) -> io::Result<Self> {
+        Ok(Self::decode_with_activity(raw, max)?.0)
+    }
+    fn decode_with_activity(raw: &RawValue, max: usize) -> io::Result<(Self, Option<Instant>)> {
         if raw.get().len() > max {
             return Err(invalid("delayed approval graph exceeds whole UI bound"));
         }
@@ -117,10 +123,13 @@ impl Data {
         }
         // Validate against the actual authenticated same-host clock before any
         // timer/state mutation. Missing activity means original no-pause state.
-        if let Some(stamp) = &value.last_activity {
-            let _original = stamp.restore().map_err(invalid)?;
-        }
-        Ok(value)
+        let activity = value
+            .last_activity
+            .as_ref()
+            .map(ClockSnapshot::restore)
+            .transpose()
+            .map_err(invalid)?;
+        Ok((value, activity))
     }
 }
 pub(crate) fn requests_data(raw: &RawValue, max: usize) -> io::Result<Vec<RequestData>> {
@@ -145,35 +154,43 @@ pub(crate) fn editing_retaining(
         .collect();
     serde_json::value::to_raw_value(&value).map_err(invalid)
 }
-pub(crate) struct PreparedDelayed(Data);
+pub(crate) struct PreparedDelayed {
+    data: Data,
+    activity: Option<Instant>,
+    marker: String,
+}
 impl PreparedDelayed {
     pub(crate) fn decode(raw: &RawValue, max: usize) -> io::Result<Self> {
-        Ok(Self(Data::decode(raw, max)?))
+        let (data, activity) = Data::decode_with_activity(raw, max)?;
+        let marker =
+            serde_json::to_string(&(&data.last_activity, data.generation)).map_err(invalid)?;
+        Ok(Self {
+            data,
+            activity,
+            marker,
+        })
     }
     /// The actual constructor calls before draining its original callback
     /// events. Only a pristine native pane can be primed. Later real typing
     /// stays authoritative, including through repeated transfer observations.
     pub(crate) fn prime_before_original_replay(&self, pane: &mut BottomPane) -> io::Result<()> {
-        if self.0.clock_already_installed(pane)? {
-            return Ok(());
-        }
-        if !pane.delayed_approval_requests.is_empty() || !pane.view_stack.is_empty() {
-            return Err(invalid(
-                "original approval clock must precede callback replay",
-            ));
-        }
-        self.restore_native_clock_once(pane)
+        self.restore_native_clock_once(pane, /*before_replay*/ true)
     }
     pub(crate) fn validate_destination(&self, pane: &BottomPane) -> io::Result<()> {
-        let primed = self.0.clock_already_installed(pane)?;
-        if (!primed && pane.alab_delay_activity.value()? != 0)
-            || self.0.requests.len() > pane.delayed_approval_requests.len()
-        {
+        pane.alab_delay_activity
+            .state()?
+            .needs_clock_install(&self.marker)?;
+        if self.data.requests.len() > pane.delayed_approval_requests.len() {
             return Err(invalid(
                 "delayed original destination changed before restoration",
             ));
         }
-        for (old, actual) in self.0.requests.iter().zip(&pane.delayed_approval_requests) {
+        for (old, actual) in self
+            .data
+            .requests
+            .iter()
+            .zip(&pane.delayed_approval_requests)
+        {
             if !old.matches_native(&actual.request)? {
                 return Err(invalid("delayed original request order/content changed"));
             }
@@ -186,10 +203,10 @@ impl PreparedDelayed {
         owners: &[ApprovalOwner<'_>],
     ) -> io::Result<()> {
         self.validate_destination(pane)?;
-        if owners.len() != self.0.requests.len()
+        if owners.len() != self.data.requests.len()
             || !owners
                 .iter()
-                .zip(&self.0.requests)
+                .zip(&self.data.requests)
                 .zip(&pane.delayed_approval_requests)
                 .all(|((owner, request), actual)| {
                     owner.matches(request)
@@ -209,37 +226,37 @@ impl PreparedDelayed {
         self.install_native_clock_at(pane, Instant::now())
     }
     fn install_native_clock_at(self, pane: &mut BottomPane, now: Instant) -> io::Result<()> {
-        self.restore_native_clock_once(pane)?;
+        self.restore_native_clock_once(pane, /*before_replay*/ false)?;
         // Keep the SAME actual queue, private item bindings and per-row Features.
         // The original timer owns promotion/FIFO-to-LIFO conversion; restoring
         // DATA never directly constructs a modal or a new callback.
         pane.maybe_show_delayed_approval_requests_at(now);
         Ok(())
     }
-    fn restore_native_clock_once(&self, pane: &mut BottomPane) -> io::Result<()> {
-        if self.0.clock_already_installed(pane)? {
+    fn restore_native_clock_once(
+        &self,
+        pane: &mut BottomPane,
+        before_replay: bool,
+    ) -> io::Result<()> {
+        let mut state = pane.alab_delay_activity.state()?;
+        if !state.needs_clock_install(&self.marker)? {
             return Ok(());
         }
-        if pane.alab_delay_activity.value()? != 0 {
+        if before_replay
+            && (!pane.delayed_approval_requests.is_empty() || !pane.view_stack.is_empty())
+        {
             return Err(invalid(
-                "new actual composer activity precedes original clock installation",
+                "original approval clock must precede callback replay",
             ));
         }
-        let activity = self
-            .0
-            .last_activity
-            .as_ref()
-            .map(ClockSnapshot::restore)
-            .transpose()
-            .map_err(invalid)?;
-        let marker = self.0.clock_data()?;
-        pane.last_composer_activity_at = activity;
-        let mut state = pane.alab_delay_activity.state()?;
-        state.value = Some(self.0.generation);
-        state.restored_clock = Some(marker);
+        // A linked pane can record activity at any time. Check and install under
+        // the same guard, using the Instant already recovered during decode.
+        state.value = Some(self.data.generation);
+        state.restored_clock = Some(self.marker.clone());
         if state.shared_activity.is_some() {
-            state.shared_activity = Some(activity);
+            state.shared_activity = Some(self.activity);
         }
+        pane.last_composer_activity_at = self.activity;
         Ok(())
     }
 }

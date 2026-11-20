@@ -1,7 +1,10 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Select whole, bounded correlation IDs from already decoded header values.
+//! Whole, bounded diagnostic correlation IDs.
+
+/// Wire prefix for an unsubscribe reserved by the saved-chat chooser.
+pub const SAVED_CHAT_RELEASE_PREFIX: &str = "saved-chat-release-";
 
 /// Select the first whole ID of 1..=128 ASCII letters, digits, hyphens or underscores.
 /// Invalid values do not hide later usable metadata. Never trim, split or truncate

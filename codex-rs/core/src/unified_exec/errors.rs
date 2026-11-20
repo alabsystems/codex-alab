@@ -26,6 +26,7 @@ pub(crate) enum UnifiedExecError {
     SandboxDenied {
         message: String,
         output: ExecToolCallOutput,
+        shell_log: Option<super::shell_output::ShellLog>, // ALAB(shell-output): bytes from the denied attempt.
         original_token_count: Option<usize>,
         output_omitted_bytes: Option<NonZeroUsize>,
     },
@@ -42,10 +43,15 @@ impl UnifiedExecError {
         Self::ProcessFailed { message }
     }
 
-    pub(crate) fn sandbox_denied(message: String, output: ExecToolCallOutput) -> Self {
+    pub(crate) fn sandbox_denied(
+        message: String,
+        output: ExecToolCallOutput,
+        shell_log: Option<super::shell_output::ShellLog>, // ALAB(shell-output): retain the producing attempt.
+    ) -> Self {
         Self::SandboxDenied {
             message,
             output,
+            shell_log,
             original_token_count: None,
             output_omitted_bytes: None,
         }
@@ -58,10 +64,14 @@ impl UnifiedExecError {
     ) -> Self {
         match self {
             Self::SandboxDenied {
-                message, output, ..
+                message,
+                output,
+                shell_log,
+                ..
             } => Self::SandboxDenied {
                 message,
                 output,
+                shell_log, // ALAB(shell-output): keep the log with collection counts.
                 original_token_count: Some(original_token_count),
                 output_omitted_bytes,
             },

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import runpy
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "smoke"))
@@ -26,6 +27,22 @@ class DurablePlanTests(unittest.TestCase):
         self.assertEqual(project(self.events), self.events)
         provenance = json.loads((FIXTURES / "provenance.json").read_text())
         self.assertRegex(provenance["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_rollout_reads_physical_utf8_lines_including_unicode_in_message_text(self):
+        message = {"type": "response_item", "payload": {"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "one\u0085two\u2028three\u2029four"}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sessions = root / "codex-home/sessions"
+            sessions.mkdir(parents=True)
+            path = sessions / "rollout-thread.jsonl"
+            events = [message, *self.events]
+            path.write_bytes(b"\r\n".join(json.dumps(row, ensure_ascii=False).encode("utf-8") for row in events))
+            self.assertEqual(renewal.thread_rollout(root, "thread"), events)
+            with path.open("ab") as stream:
+                stream.write(b'\n{"type":')
+            with self.assertRaises(json.JSONDecodeError):
+                renewal.thread_rollout(root, "thread")
 
     def test_changed_lost_duplicated_or_late_work_is_rejected(self):
         for mutation in ("duplicate_call", "duplicate_output", "missing_call", "missing_output",
@@ -73,6 +90,35 @@ class DurablePlanTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 with self.assertRaises(RuntimeError):
                     renewal.validate_durable_plan(events, self.wall)
+
+    def test_native_calls_after_recovery_survive_projection_and_fail_the_check(self):
+        project = runpy.run_path(str(FIXTURES / "project.py"))["project"]
+        for kind in ("local_shell_call", "web_search_call", "image_generation_call"):
+            with self.subTest(kind=kind):
+                extra = {"type": "response_item", "payload": {"type": kind}}
+                rows = [*self.events, extra]
+                projected = project(rows)
+                self.assertEqual(projected[-1], extra)
+                for events in (rows, projected):
+                    with self.assertRaisesRegex(RuntimeError, "lost or duplicated"):
+                        renewal.validate_durable_plan(events, self.wall)
+
+    def test_supplied_tool_turn_attribution_must_agree_with_the_recovered_turn(self):
+        project = runpy.run_path(str(FIXTURES / "project.py"))["project"]
+        for index in (1, 2):
+            for turn in (self.wall, "another-turn"):
+                rows = copy.deepcopy(self.events)
+                rows[index]["payload"]["internal_chat_message_metadata_passthrough"] = {
+                    "turn_id": turn, "unrelated": "private"}
+                projected = project(rows)
+                self.assertNotIn("private", json.dumps(projected))
+                for evidence in (rows, projected):
+                    with self.subTest(index=index, turn=turn):
+                        if turn == self.wall:
+                            self.assertEqual(renewal.validate_durable_plan(evidence, self.wall), [turn, turn])
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "turn attribution"):
+                                renewal.validate_durable_plan(evidence, self.wall)
 
 
 if __name__ == "__main__":

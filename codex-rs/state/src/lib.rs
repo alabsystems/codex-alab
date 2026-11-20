@@ -44,6 +44,11 @@ pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS;
 pub use runtime::MAX_GUARDIAN_REVIEW_RECORDS_PER_THREAD;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use runtime::alab_shell_invocations::PendingShellExit; // ALAB(shell-output): snapshots of watcher exits for the resumed model.
+pub use runtime::alab_shell_invocations::ShellDiagnosticPublication; // ALAB(shell-output): verify the watcher's pending file before cold attachment.
+pub use runtime::alab_shell_invocations::ShellInvocationObservation; // ALAB(shell-output): read the original shell's last native observation after replacement.
+pub use runtime::alab_shell_invocations::ShellLaunchContext; // ALAB(shell-output): bounded original launch facts for retained observations.
+pub use runtime::alab_shell_invocations::WatchedShellDiagnostic; // ALAB(shell-output): attach the watcher's retained diagnostic to its invocation.
 pub use sqlite::SqliteConfig;
 pub use sqlite::SqlitePoolWriteExt;
 

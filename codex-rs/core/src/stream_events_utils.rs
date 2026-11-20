@@ -393,7 +393,11 @@ pub(crate) async fn handle_output_item_done(
                         // The call is already in history; resume needs its output even if we never dispatch.
                         let output =
                             ToolCallRuntime::aborted_response(&call, /*elapsed_secs*/ None);
-                        return Ok(output.into_response());
+                        // ALAB(exec-transfer): retain the handoff reason when the queued call never started.
+                        return Ok(crate::session::alab_exec_recovery_options::transfer::before_dispatch(
+                            &runtime.step_context.turn,
+                            output.into_response(),
+                        ));
                     }
                     runtime.handle_tool_call(call, cancellation_token).await
                 })

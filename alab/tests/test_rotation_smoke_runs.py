@@ -37,8 +37,8 @@ import renewal_matrix
 
 STAND_IN = Path(__file__).resolve().parent / "fixtures" / "rotation-host" / "stand_in_host.py"
 # The signed 0.7.0 package's own record, with a sysroot that names no home.
-CERTIFIED = json.loads((Path(__file__).resolve().parent / "fixtures" / "package-standing"
-                        / "certified-native.json").read_text())
+NATIVE_LAYOUT = json.loads((Path(__file__).resolve().parent / "fixtures" / "package-standing"
+                        / "native-layout.json").read_text())
 TRIAL = {"attestation": package_standing.TRIAL_ATTESTATION, "source": "2" * 40,
          "binary_sha256": "3" * 64, "binary_bytes": 17, "builder": "the unit test",
          "built_at": "2026-11-13T09:30:00-08:00", "evidence": "written by the unit test"}
@@ -151,8 +151,7 @@ class WallCaseRunTests(unittest.TestCase):
             "package_standing.py": sha256(package_standing.__file__)})
         self.assertEqual((report["nativeHost"]["attestation"], report["nativeHost"]["qualifies"]),
                          ("trial", False))
-        # The stand-in package's record is no certified packager's: the run passed, and
-        # its report says the package qualifies nothing.
+        # The stand-in run passes, while its package record lacks a compiler identity.
         self.assertEqual(report["package"], {"qualifies": False, "trial": None,
                                              "why": "its record names no compiler"})
         events = json.loads((self.output / "http-events.json").read_text())
@@ -167,8 +166,7 @@ class WallCaseRunTests(unittest.TestCase):
                 "why": "its record carries a `trial` object (attestation "
                        "'unverified-development-build'): the package was assembled from an "
                        "unverified development build"}),
-            "certified": (CERTIFIED, {"qualifies": True, "trial": None,
-                                      "why": package_standing.QUALIFIES}),
+            "native": (NATIVE_LAYOUT, package_standing.summary(NATIVE_LAYOUT)),
         }
         host = self.world.host("wall")
         for name, (build, standing) in expected.items():
@@ -554,7 +552,7 @@ class MatrixInputTests(unittest.TestCase):
         world = World(self)
         host = world.host("exit", attestation=native_host_record.CLEAN)
         # The matrix runs a case only with a package whose record qualifies one.
-        world.package_records(CERTIFIED)
+        world.package_records(NATIVE_LAYOUT)
         names = [path.name for path in renewal_matrix.pinned_inputs(host, world.package)]
         self.assertEqual(names, ["renewal_matrix.py", "renewal_follow.py", "capacity_exec.py",
             "provider_fixture.py", "native_host_record.py", "package_standing.py",
@@ -623,8 +621,7 @@ class ParallelLoginsStandingTests(unittest.TestCase):
                 "why": "its record carries a `trial` object (attestation "
                        "'unverified-development-build'): the package was assembled from an "
                        "unverified development build"}),
-            "certified": (CERTIFIED, {"qualifies": True, "trial": None,
-                                      "why": package_standing.QUALIFIES}),
+            "native": (NATIVE_LAYOUT, package_standing.summary(NATIVE_LAYOUT)),
         }
         for name, (build, standing) in expected.items():
             with self.subTest(name=name):

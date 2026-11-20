@@ -104,7 +104,13 @@ impl Data {
                         .collect::<io::Result<_>>()?,
                     output: call
                         .output
-                        .map(alab_retained_output::Data::restore)
+                        .map(|output| {
+                            if resources.legacy_command_outputs() {
+                                output.restore_legacy(call.duration)
+                            } else {
+                                output.restore()
+                            }
+                        })
                         .transpose()?,
                     source: call.source,
                     start_time: call

@@ -1628,6 +1628,7 @@ async fn load_auth(
     cached_auth: Option<&CodexAuth>,
     allowed_auth_modes: Option<&[AuthMode]>,
 ) -> std::io::Result<Option<CodexAuth>> {
+    if codex_alab_core::bound_picker::expected().is_some() { return Box::pin(alab_picker::load_selected_file(codex_home, auth_credentials_store_mode, allowed_login_methods, forced_chatgpt_workspace_id, chatgpt_base_url, keyring_backend_kind, agent_identity_authapi_base_url, auth_route_config, allowed_auth_modes)).await; } // ALAB(accounts): a confirmed local resume cannot select an alternate environment, ephemeral or keyring identity.
     let mode_allowed = |mode| allowed_auth_modes.is_none_or(|modes| modes.contains(&mode));
     // API key via env var takes precedence over any other auth method.
     if enable_codex_api_key_env
@@ -3845,7 +3846,7 @@ impl AuthManager {
         tokens: TokenData,
         reason: RefreshReason,
     ) -> Result<(), RefreshTokenError> {
-        let Some(_alab_refresh_hold) = self.alab_admit_refresh(auth, &tokens).await? else { return Ok(()); }; // ALAB(auth-refresh-lock): hold aterm's lock on this login's file through the write; send only the refresh token the file still holds
+        let Some(alab_refresh_hold) = self.alab_admit_refresh(auth, &tokens).await? else { return Ok(()); }; // ALAB(auth-refresh-lock): hold aterm's lock on this login's file through the write; send only the refresh token the file still holds
         let endpoint = refresh_token_endpoint(tokens.oauth_provenance.as_ref());
         let client_id = tokens
             .oauth_provenance
@@ -3875,7 +3876,7 @@ impl AuthManager {
 
             let storage = Arc::clone(auth.storage());
             let originator = codex_otel::auth_storage::AuthStorageOriginator::current();
-            tokio::task::spawn_blocking(move || {
+            alab_refresh_hold.spawn_persistence(move || { // ALAB(auth-refresh-lock): the blocking write retains the source lock even if its caller is cancelled.
                 originator.sync_scope(|| {
                     persist_tokens(
                         &storage,
@@ -3932,6 +3933,7 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
 pub use alab_native_source::NativeSourceFence; // ALAB(accounts): the consumer holds real refresh exclusion across native commit.
 #[path = "../../../alab-core/glue/auth_context_host.rs"] mod alab_context_host; // ALAB(accounts): default access selects real epochs; captured clients never retarget.
 #[path = "../../../alab-core/glue/auth_native_member.rs"] mod alab_native_member; // ALAB(accounts): actual constructor source completion and per-manager lifetimes.
+#[path = "../../../alab-core/glue/auth_picker_document.rs"] pub(super) mod alab_picker; // ALAB(accounts): validate the actual stored principal for this confirmed manual resume.
 #[path = "../../../alab-core/glue/auth_native_source.rs"] mod alab_native_source; // ALAB(accounts): private native storage and real auth-state publication live in ALab.
 
 #[cfg(test)]

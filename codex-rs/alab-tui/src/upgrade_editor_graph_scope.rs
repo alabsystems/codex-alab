@@ -52,31 +52,9 @@ struct Frame<T> {
     body: Box<serde_json::value::RawValue>,
 }
 
-struct BoundedWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-impl std::io::Write for BoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-            return Err(std::io::Error::other(
-                "editor checkpoint exceeds byte budget",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 fn bounded_json(value: &impl Serialize, limit: usize) -> Result<Vec<u8>, String> {
-    let mut writer = BoundedWriter {
-        bytes: Vec::new(),
-        limit,
-    };
-    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
-    Ok(writer.bytes)
+    crate::upgrade_frame::encode(&[], value, limit, "editor checkpoint exceeds byte budget")
+        .map_err(|error| error.to_string())
 }
 
 /// Two immutable traversals: first collect all strong roots, then resolve weak
@@ -122,17 +100,13 @@ pub fn encode<T: Serialize + 'static>(
         .map_err(str::to_owned)?;
     // No RefCell borrow crosses user serialization. Nodes must be leaf values;
     // adapters inside a node refuse rather than recursively acquire graph roots.
-    let bytes = bounded_json(
+    bounded_json(
         &Frame {
             generations: capture.values().collect::<Vec<_>>(),
             body,
         },
         max_bytes,
-    )?;
-    if bytes.len() > max_bytes {
-        return Err("editor checkpoint exceeds byte budget".into());
-    }
-    Ok(bytes)
+    )
 }
 
 pub fn decode<T: DeserializeOwned + 'static, B: DeserializeOwned>(

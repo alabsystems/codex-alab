@@ -19,7 +19,7 @@ pub(crate) async fn startup_loader(
 ) -> io::Result<CloudConfigBundleLoader> {
     #[cfg(unix)]
     if let AppServerTarget::OwnedLocal { target } = target {
-        return Ok(target.snapshot_for_transfer()?.ui_cloud_loader());
+        return target.managed_cloud_loader();
     }
     #[cfg(not(unix))]
     let _ = target;

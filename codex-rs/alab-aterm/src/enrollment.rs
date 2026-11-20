@@ -81,7 +81,7 @@ impl Phase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Running => "Enrollment running",
-            Self::AuthenticationRequired => "Account authentication required",
+            Self::AuthenticationRequired => "Complete sign-in in aterm",
             Self::Refused => "Enrollment refused",
             Self::CancelRequested => "Cancellation requested; waiting for native confirmation",
             Self::Cancelled => "Enrollment cancelled",

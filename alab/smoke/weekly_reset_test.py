@@ -40,42 +40,64 @@ class SuccessfulTurnEvidenceTests(unittest.TestCase):
         return self.server, self.worker
 
     def run_binary(self, _executable, _arguments, root, _env, _label, *, interact=None):
-        self.assertIsNone(interact)
+        refused = self.model.name == "paid-retry-refused"
+        self.assertEqual(interact is not None, refused)
         auth = {"authorizationPresent": True, "authorizationMatches": True,
                 "accountPresent": True, "accountMatches": True}
 
         def backend(method, path, body=None):
             return self.model.reply(method, "/backend-api/wham/" + path, body, authentication=auth)
 
-        backend("GET", "usage")
-        backend("GET", "rate-limit-reset-credits")
-        backend("GET", "usage")
-        backend("POST", "rate-limit-reset-credits/consume", {
-            "redeem_request_id": "a" * 64, "credit_id": "earned-weekly-credit"})
-        backend("GET", "usage")
         inputs = [{"type": "message", "role": "user", "content": [
             {"type": "input_text", "text": weekly_reset.PROMPT}]}]
-        self.model.reply("POST", "/v1/responses", {"model": weekly_reset.MODEL, "input": inputs})
-        self.model.reply("POST", "/v1/responses", {"model": weekly_reset.MODEL, "input": inputs + [
-            {"type": "function_call_output", "call_id": weekly_reset.CALL_ID,
-             "output": "Plan updated"}]})
+        first = {"model": weekly_reset.MODEL, "input": inputs}
+        retained = {"model": weekly_reset.MODEL, "input": inputs + [
+            {"type": "function_call_output", "call_id": weekly_reset.CALL_ID, "output": "Plan updated"}]}
+
+        backend("GET", "usage")
+        if self.model.name in weekly_reset.FUNDED_CASES:
+            self.assertEqual(self.model.reply("POST", "/v1/responses", first)[0], 200)
+            self.assertEqual(self.model.reply("POST", "/v1/responses", retained)[0], 429)
+            backend("GET", "usage")
+        backend("GET", "rate-limit-reset-credits")
+        backend("GET", "usage")
+        if self.model.name == "spend-control-reopens":
+            # Replay the interval spent waiting after the blocked post-list reading.
+            for request in self.model.requests:
+                request["at"] -= 30
+            backend("GET", "usage")
+            backend("GET", "rate-limit-reset-credits")
+            backend("GET", "usage")
+        if self.model.name not in weekly_reset.FUNDED_CASES:
+            backend("POST", "rate-limit-reset-credits/consume", {
+                "redeem_request_id": "a" * 64, "credit_id": "earned-weekly-credit"})
+            backend("GET", "usage")
+            self.model.reply("POST", "/v1/responses", first)
+        retry = self.model.reply("POST", "/v1/responses", retained)
+        self.assertEqual(retry[0], 429 if refused else 200)
+        if refused:
+            backend("GET", "usage")
+            backend("GET", "usage")
+            self.model.requests[-1]["at"] += 30
+            interact(SimpleNamespace(poll=lambda: None), None)
+        code = 130 if refused else 0
         with (root / "exec-stdout.jsonl").open("x") as stream:
             for event in self.events:
                 stream.write(json.dumps(event) + "\n")
-        weekly_reset.write_json(root / "exec-guardian-result.json", {"returncode": 0, "timed_out": False})
-        return 0
+        weekly_reset.write_json(root / "exec-guardian-result.json", {"returncode": code, "timed_out": False})
+        return code
 
-    def case(self, label):
+    def case(self, label, name="preflight-beyond-24h"):
         output = self.root / label
         output.mkdir()
         with patch.object(weekly_reset, "serve", self.serve), \
                 patch.object(weekly_reset, "run", self.run_binary):
-            return weekly_reset.case(Path("/unexecuted-fixture/codex"), output, "preflight-beyond-48h")
+            return weekly_reset.case(Path("/unexecuted-fixture/codex"), output, name)
 
     def assert_refused(self, label):
         with self.assertRaises(RuntimeError):
             self.case(label)
-        case = self.root / label / "preflight-beyond-48h"
+        case = self.root / label / "preflight-beyond-24h"
         self.assertFalse((case / "result.json").exists())
         self.assertTrue((case / "requests.json").is_file())
 
@@ -84,6 +106,189 @@ class SuccessfulTurnEvidenceTests(unittest.TestCase):
         self.server.shutdown.assert_called_once_with()
         self.worker.join.assert_called_once_with()
         self.server.server_close.assert_called_once_with()
+
+    def test_paid_retry_completes_the_turn_while_ordinary_allowance_stays_exhausted(self):
+        self.events.insert(3, {"type": "item.completed", "item": {"type": "error",
+            "message": "[codex-alab credits] Retrying this request once with usage credits (reported balance 30965.02000)."}})
+        result = self.case("paid", "existing-usage-credits")
+        self.assertEqual((result["modelRequests"], result["consumeRequests"], result["creditNotices"]), (3, 0, 1))
+
+        message = self.events[3]["item"]["message"]
+        with patch.dict(self.events[3]["item"], message=message.replace("[codex-alab credits]", "[codex-alab reset]")):
+            with self.assertRaisesRegex(RuntimeError, "unexpected recovery notice label"):
+                weekly_reset.check_reset_notice_events("existing-usage-credits", self.events, self.model.requests)
+        for label, text in (("stale", message.replace("30965.02000", "30966.04065")),
+                            ("generic", "[codex-alab credits] Retrying this request once with available usage credits.")):
+            self.events[3]["item"]["message"] = text
+            with self.subTest(label=label), self.assertRaisesRegex(RuntimeError, "authorizing balance"):
+                self.case(label, "existing-usage-credits")
+        self.events[3]["item"]["message"] = message
+
+        read = weekly_reset.Mock.usage
+
+        def changed_balance(model):
+            reading = read(model)
+            if model.credit_listings:
+                reading["credits"]["has_credits"] = False
+            return reading
+
+        with patch.object(weekly_reset.Mock, "usage", changed_balance), self.assertRaisesRegex(
+                RuntimeError, "credit retry requires a fresh balance"):
+            self.case("revoked", "existing-usage-credits")
+
+    def test_paid_retry_requires_the_returned_balance_to_belong_to_the_active_login(self):
+        notice = {"type": "item.completed", "item": {"type": "error", "message":
+            weekly_reset.CREDIT_NOTICE_PREFIX + "Retrying this request once with usage credits (reported balance 30965.02000)."}}
+        self.events.insert(3, notice)
+        native_usage = weekly_reset.Mock.usage
+        for field in ("account_id", "user_id"):
+            for owner in (None, "different"):
+                def returned_usage(model):
+                    response = native_usage(model)
+                    if model.credit_listings:
+                        response[field] = owner
+                    return response
+                label = f"mismatched-{field}-{owner}"
+                with self.subTest(field=field, owner=owner), patch.object(weekly_reset.Mock, "usage", returned_usage):
+                    with self.assertRaisesRegex(RuntimeError, "fixture account and user"):
+                        self.case(label, "existing-usage-credits")
+                    self.assertFalse((self.root / label / "existing-usage-credits" / "result.json").exists())
+
+    def test_blocked_final_read_preserves_the_paid_retry_for_a_later_open_read(self):
+        name = "spend-control-reopens"
+        notice = {"type": "item.completed", "item": {"type": "error", "message":
+            weekly_reset.CREDIT_NOTICE_PREFIX + "Retrying this request once with usage credits (reported balance 30965.02000)."}}
+        self.events.insert(3, notice)
+        result = self.case("reopened", name)
+        self.assertEqual((result["modelRequests"], result["consumeRequests"], result["creditNotices"]), (3, 0, 1))
+
+        requests = self.model.requests
+        readings = [r for r in requests if r["path"].endswith("/usage") and r.get("afterCreditSelection")]
+        blocked, reopened, authorized = readings
+        with patch.dict(blocked["response"]["credits"], balance="0"), self.assertRaisesRegex(
+                RuntimeError, "positive balance must remain unchanged"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with patch.dict(blocked["response"]["spend_control"], reached=False), self.assertRaisesRegex(
+                RuntimeError, "observe the new spending block"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with patch.dict(reopened, at=blocked["at"] + 1), self.assertRaisesRegex(RuntimeError, "paced account poll"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with patch.dict(authorized["response"]["spend_control"], reached=True), self.assertRaisesRegex(
+                RuntimeError, "blocked reading cannot authorize"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        restrictions = [
+            {"rate_limit_reached_type": {"type": "workspace_member_credits_depleted"}},
+            {"rate_limit_reached_type": {"type": "workspace_owner_usage_limit_reached"}},
+            {"spend_control": {"reached": False, "individual_limit": {"remaining_percent": 0}}},
+            {"rate_limit_upsell": {}},
+        ]
+        for reading in (reopened, authorized):
+            for restriction in restrictions:
+                with self.subTest(stage=reading["at"], restriction=restriction), patch.dict(reading["response"], restriction):
+                    with self.assertRaisesRegex(RuntimeError, "spending reopened|blocked reading"):
+                        weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with patch.dict(authorized["response"]["spend_control"], individual_limit={"remaining_percent": 1}):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with self.assertRaisesRegex(RuntimeError, "authorizing balance in one notice"):
+            weekly_reset.check_reset_notice_events(name, self.events + [notice], requests)
+
+    def test_refused_paid_retry_retains_one_notice_and_the_original_tool_work(self):
+        name = "paid-retry-refused"
+        notice = {"type": "item.completed", "item": {"type": "error", "message":
+            weekly_reset.CREDIT_NOTICE_PREFIX + "Retrying this request once with usage credits (reported balance 30965.02000)."}}
+        self.events[2:] = [notice, self.events[2]]
+        result = self.case("refused", name)
+        self.assertTrue(result["cancelled"])
+        self.assertEqual((result["exit"], result["modelRequests"], result["consumeRequests"], result["creditNotices"]),
+                         (130, 3, 0, 1))
+
+        requests = self.model.requests
+        retry = [r for r in requests if r["path"] == "/v1/responses"][-1]
+        polls = [r for r in requests if r["at"] > retry["at"] and r["path"].endswith("/usage")]
+        with self.assertRaisesRegex(RuntimeError, "second paced poll"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests[:-1])
+        with patch.dict(polls[-1], at=polls[0]["at"] + 2), self.assertRaisesRegex(RuntimeError, "second paced poll"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        middle = dict(polls[0], at=polls[0]["at"] + 15)
+        with self.assertRaisesRegex(RuntimeError, "second paced poll"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests[:-1] + [middle, polls[-1]])
+        with patch.dict(polls[-1]["response"]["credits"], has_credits=False), self.assertRaisesRegex(
+                RuntimeError, "funded quota wall"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests)
+        with self.assertRaisesRegex(RuntimeError, "paid retry must follow"):
+            weekly_reset.check_reset_notice_events(name, self.events, requests + [retry])
+
+        self.events.append(notice)
+        with self.assertRaisesRegex(RuntimeError, "one notice"):
+            self.case("duplicate-paid-notice", name)
+        self.events.pop()
+        self.events.remove(notice)
+        self.events.insert(0, notice)
+        with self.assertRaisesRegex(RuntimeError, "pending turn"):
+            self.case("paid-notice-before-turn", name)
+
+    def test_plan_renewal_with_credits_requires_ordinary_notice_and_fresh_allowance(self):
+        name = "plan-renewed-before-credit-retry"
+        event = {"type": "item.completed", "item": {"type": "error",
+            "message": "[codex-alab reset] Allowance restored; continuing the original request without spending another reset."}}
+        self.events.insert(3, event)
+        result = self.case("renewed", name)
+        self.assertEqual((result["modelRequests"], result["consumeRequests"], result["resetNotices"]), (3, 0, 1))
+
+        read = weekly_reset.Mock.usage
+
+        def remains_exhausted(model):
+            reading = read(model)
+            reading["rate_limit"]["allowed"] = False
+            return reading
+
+        with patch.object(weekly_reset.Mock, "usage", remains_exhausted), self.assertRaisesRegex(
+                RuntimeError, "restored usage before retry"):
+            self.case("still-exhausted", name)
+
+        reply = weekly_reset.Mock.reply
+
+        def delayed_poll(model, method, path, body, **kwargs):
+            after_listing = model.renewed_after_listing
+            result = reply(model, method, path, body, **kwargs)
+            if after_listing:
+                model.requests[-1]["at"] += 30
+            return result
+
+        with patch.object(weekly_reset.Mock, "reply", delayed_poll), self.assertRaisesRegex(
+                RuntimeError, "later quota poll"):
+            self.case("delayed", name)
+
+        event["item"]["message"] = "[codex-alab credits] Retrying this request once with usage credits (reported balance 30965.02000)."
+        with self.assertRaisesRegex(RuntimeError, "before the recovered answer"):
+            self.case("incorrect-paid-notice", name)
+
+    def test_credit_retry_notice_reaches_the_original_turn_before_its_answer(self):
+        cases = {"existing-usage-credits": "Retrying this request once with usage credits (reported balance 30965.02000).",
+                 "plan-renewed-before-credit-retry":
+                     "Allowance restored; continuing the original request without spending another reset."}
+        original = self.events.copy()
+        for name, message in cases.items():
+            prefix = (weekly_reset.CREDIT_NOTICE_PREFIX if name == "existing-usage-credits"
+                      else weekly_reset.RESET_NOTICE_PREFIX)
+            notice = {"type": "item.completed", "item": {"type": "error", "message": prefix + message}}
+            for index in (0, 4, 5):
+                with self.subTest(case=name, index=index):
+                    self.events = original[:index] + [notice] + original[index:]
+                    with self.assertRaisesRegex(RuntimeError, "before the recovered answer"):
+                        self.case(f"{name}-{index}", name)
+
+    def test_duplicate_tool_output_with_the_same_id_cannot_pass(self):
+        reply = weekly_reset.Mock.reply
+
+        def duplicate(model, method, path, body, **kwargs):
+            if path == "/v1/responses" and model.models:
+                body["input"].append(body["input"][-1])
+            return reply(model, method, path, body, **kwargs)
+
+        with patch.object(weekly_reset.Mock, "reply", duplicate), self.assertRaisesRegex(
+                RuntimeError, "completed plan outputs"):
+            self.case("duplicate-output")
 
     def test_missing_wrong_or_duplicate_answer_cannot_pass(self):
         original = self.events[3]
@@ -186,11 +391,11 @@ class WeeklyResetCleanupTests(unittest.TestCase):
             evidence.doCleanups()
 
     def case(self, fixture):
-        return weekly_reset.case(fixture.binary, fixture.output, "preflight-beyond-48h")
+        return weekly_reset.case(fixture.binary, fixture.output, "preflight-beyond-24h")
 
     def main(self, fixture):
         with patch.object(sys, "argv", [str(weekly_reset.__file__), "--codex", str(fixture.binary),
-                                       "--output", str(fixture.output), "--case", "preflight-beyond-48h",
+                                       "--output", str(fixture.output), "--case", "preflight-beyond-24h",
                                        "--case", "preflight-weekly-49h"]):
             return weekly_reset.main()
 
@@ -203,7 +408,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
     def assert_cleanup(self, fixture, *, shutdown_failed=False, write_failed=False):
         expected = ["shutdown", "close", "write"] if shutdown_failed else ["shutdown", "join", "close", "write"]
         self.assertEqual(fixture.calls, expected)
-        trace = fixture.output / "preflight-beyond-48h/requests.json"
+        trace = fixture.output / "preflight-beyond-24h/requests.json"
         if write_failed:
             self.assertFalse(trace.exists())
         else:
@@ -223,7 +428,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertEqual((result["modelRequests"], result["consumeRequests"]), (2, 1))
             self.assert_cleanup(fixture)
-            self.assertEqual(fixture.saved, [(fixture.output / "preflight-beyond-48h/result.json",
+            self.assertEqual(fixture.saved, [(fixture.output / "preflight-beyond-24h/result.json",
                                               result, fixture.calls)])
 
     def test_each_cleanup_failure_fails_the_case_and_attempts_later_safe_actions(self):
@@ -233,7 +438,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
                 self.assertIsNone(caught)
                 self.assertFalse(result["passed"])
                 self.assertIn("cleanup " + phase, json.dumps(result["cleanupErrors"]))
-                self.assertEqual(json.loads((fixture.output / "preflight-beyond-48h/result.json").read_text()), result)
+                self.assertEqual(json.loads((fixture.output / "preflight-beyond-24h/result.json").read_text()), result)
                 self.assert_cleanup(fixture, shutdown_failed=phase == "shutdown", write_failed=phase == "write")
                 self.assertFalse(any(value["passed"] for _path, value, _calls in fixture.saved))
 
@@ -248,7 +453,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
                     self.assertIs(caught, primary)
                     self.assert_diagnostics(caught, phase, "OSError", "cleanup " + phase)
                     self.assert_cleanup(fixture, shutdown_failed=phase == "shutdown", write_failed=phase == "write")
-                    self.assertFalse((fixture.output / "preflight-beyond-48h/result.json").exists())
+                    self.assertFalse((fixture.output / "preflight-beyond-24h/result.json").exists())
 
     def test_simultaneous_cleanup_failures_do_not_replace_cancellation(self):
         stop = KeyboardInterrupt("body stopped")
@@ -280,7 +485,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
             report = json.loads((fixture.output / "result.json").read_text())
             self.assertFalse(report["passed"])
             self.assertFalse(report["fullSuite"])
-            self.assertEqual(report["failedCase"], "preflight-beyond-48h")
+            self.assertEqual(report["failedCase"], "preflight-beyond-24h")
             self.assertEqual(len(report["cases"]), 1)
             self.assertFalse(report["cases"][0]["passed"])
             self.assertIn("cleanup close", json.dumps(report["cases"][0]["cleanupErrors"]))
@@ -303,7 +508,7 @@ class WeeklyResetCleanupTests(unittest.TestCase):
                     report = json.loads((fixture.output / "result.json").read_text())
                     self.assertFalse(report["passed"])
                     self.assertFalse(report["fullSuite"])
-                    self.assertEqual(report["failedCase"], "preflight-beyond-48h")
+                    self.assertEqual(report["failedCase"], "preflight-beyond-24h")
                     self.assertEqual(report["cases"], [])
                     for key, value in self.assert_diagnostics(primary, phase, "OSError").items():
                         self.assertEqual(report[key], value)
@@ -456,6 +661,39 @@ class BinaryIdentityReportTests(unittest.TestCase):
         self.executable.write_bytes(b"inert initial fixture; never executed")
         self.initial = hashlib.sha256(self.executable.read_bytes()).hexdigest()
         self.output = self.root / "report"
+
+    def test_package_observation_must_match_before_a_credit_case_starts(self):
+        source = "a" * 40
+        package = self.root / "package"
+        (package / "bin").mkdir(parents=True)
+        self.executable.rename(package / "bin" / "codex")
+        common = {"version": "test", "target": "test"}
+        (package / "codex-package.json").write_text(json.dumps({**common, "entrypoint": "bin/codex"}))
+        for name, recorded_source, built, packaged, expected in [
+            ("match", source, self.initial, self.initial, True),
+            ("different-binary", source, "b" * 64, "b" * 64, False),
+            ("changed-during-packaging", source, "b" * 64, self.initial, False),
+            ("different-source", "c" * 40, self.initial, self.initial, False),
+            ("legacy", None, None, None, True),
+        ]:
+            with self.subTest(name=name):
+                build = {**common, "source": source}
+                if recorded_source is not None:
+                    build["compiler"] = {"verification": {"source": recorded_source, "binaries": {
+                        "codex": {"built_sha256": built, "packaged_sha256": packaged}}}}
+                (package / "alab-build.json").write_text(json.dumps(build))
+                args = SimpleNamespace(case=["no-credit"], package=package, output=self.root / name)
+                with patch.object(weekly_reset, "case", return_value={"passed": True}) as run_case, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    code = weekly_reset.main(args)
+                report = json.loads((args.output / "result.json").read_text())
+                self.assertEqual(code, 0 if expected else 1)
+                self.assertEqual(report["passed"], expected)
+                self.assertEqual(report["binarySha256"], self.initial)
+                self.assertEqual(run_case.call_count, int(expected))
+                if not expected:
+                    self.assertEqual(report["cases"], [])
+                    self.assertNotIn("failedCase", report)
 
     def run_probe(self, action=lambda: None, selected=("late-credit", "lost-ack")):
         args = ["weekly_reset.py", "--codex", str(self.executable), "--output", str(self.output)]
@@ -822,7 +1060,7 @@ class RedemptionPolicyFixtureTests(unittest.TestCase):
                 self.assertTrue(mock.spent)
 
     def test_weekly_redemption_has_a_strict_24_hour_boundary(self):
-        for remaining in (24 * 3600 - 1, 24 * 3600, 24 * 3600 + 1):
+        for remaining in (24 * 3600 - 1, 24 * 3600, 24 * 3600 + 1, 25 * 3600, 48 * 3600, 49 * 3600):
             with self.subTest(remaining=remaining), patch.object(weekly_reset.time, "time", return_value=1000):
                 mock = weekly_reset.Mock("preflight-weekly")
                 mock.reset = 1000 + remaining
@@ -882,6 +1120,11 @@ class RedemptionPolicyFixtureTests(unittest.TestCase):
                     self.assertFalse(mock.spent)
 
 
+def weekly_usage_read(reset_at):
+    return {"path": "/backend-api/wham/usage", "response": {"rate_limit": {"secondary_window": {
+        "limit_window_seconds": 604800, "used_percent": 99, "reset_at": reset_at}}}}
+
+
 class ResetNoticeEvidenceTests(unittest.TestCase):
     @staticmethod
     def event(message, *, event_type="item.completed", item_type="error"):
@@ -890,7 +1133,7 @@ class ResetNoticeEvidenceTests(unittest.TestCase):
 
     @staticmethod
     def inventory():
-        return [{"path": "/backend-api/wham/rate-limit-reset-credits", "response": {
+        return [weekly_usage_read(1_900_000_000), {"path": "/backend-api/wham/rate-limit-reset-credits", "response": {
             "available_count": 2, "credits": [
                 {"status": "available", "reset_type": "codex_rate_limits",
                  "expires_at": "2098-01-01T00:00:00Z"},
@@ -901,12 +1144,12 @@ class ResetNoticeEvidenceTests(unittest.TestCase):
         messages = [self.event("Considered earned usage reset: 2 available; expirations: "
                               "2098-01-01T00:00:00+00:00, 2099-02-03T04:05:06+00:00.")]
         if preserved:
-            messages.append(self.event("Reset not used: the weekly allowance refreshes within "
-                                       "24 hours; preserving earned resets."))
+            messages.append(self.event("Reset not used: the weekly allowance refreshes at "
+                                       "2030-03-17T17:46:40+00:00 (within 24 hours); preserving earned resets."))
         else:
             messages.extend([
                 self.event("Using an earned usage reset automatically: the weekly allowance "
-                           "refreshes more than 24 hours away."),
+                           "refreshes at 2030-03-17T17:46:40+00:00, more than 24 hours away."),
                 self.event("Usage allowance restored after the earned reset; "
                            "continuing the original request.")])
         return messages
@@ -917,7 +1160,7 @@ class ResetNoticeEvidenceTests(unittest.TestCase):
                   {"type": "error", "message": weekly_reset.RESET_NOTICE_PREFIX + "fatal"},
                   {"type": "item.completed", "item": {"type": "error", "message": "unrelated"}},
                   {"type": "item.completed", "item": None}]
-        self.assertEqual(weekly_reset.reset_notice_messages(events), ["visible"])
+        self.assertEqual(weekly_reset.notice_messages(events, weekly_reset.RESET_NOTICE_PREFIX), ["visible"])
 
     def test_positive_cases_require_inventory_automatic_decision_and_confirmation(self):
         for case in weekly_reset.NOTICE_SUCCESS_CASES:

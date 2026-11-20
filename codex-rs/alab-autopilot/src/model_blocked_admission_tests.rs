@@ -6,8 +6,300 @@
 use super::*;
 use crate::repo::RepoRead;
 use crate::repo_tests::scratch_git;
+use codex_alab_core::wall_kind::LimitClass;
 
 const CLEAN: &str = "Nothing left: all merged and pushed to origin/main.";
+
+struct ModelQuotaRecordGate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl ModelQuotaRecordGate {
+    fn release(&self) {
+        *lock(&self.0.0) = true;
+        self.0.1.notify_all();
+    }
+}
+
+impl Drop for ModelQuotaRecordGate {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// The model's committed block and following provider quota wall belong to one real
+/// native turn. A later unread chronology must retain its readiness retry without
+/// treating that turn's lost quota allowance as permission for another dispatch.
+#[test]
+fn a_model_blocked_goal_rechecks_unread_chronology_after_quota_invalidation() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            use codex_alab_core::session::RecoveryWall;
+            use codex_alab_core::wake::Reading;
+            use std::future::Future;
+            use std::task::Poll;
+
+            const CALL: &str = "model-block-before-quota-wall";
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            h.fake.set_policy_key("limit_wait", "true");
+            h.fake.set_policy_key("resume_limits", "true");
+            h.fake.set_policy_key("probe_api", "false");
+            wait_for_supervisor(|| {
+                h.autopilot.sup.policy().is_some_and(|policy| {
+                    policy.limit_wait && policy.resume_limits && !policy.probe_api
+                })
+            })
+            .await;
+            let original = seed(&h, &goals).await;
+            let reset_epoch = i64::try_from(now_ms() / 1000).expect("current epoch") + 24 * 3600;
+            responses::mount_response_handler(&h._server, move |request| {
+                if request.body_contains_text(words::MODEL_BLOCKED_GOAL_CONTINUE) {
+                    return wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(60));
+                }
+                if !request.has_function_call(CALL) {
+                    return responses::sse_response(responses::sse(vec![
+                        responses::ev_response_created("native-model-block-before-quota"),
+                        responses::ev_function_call(
+                            CALL,
+                            codex_goal_extension::UPDATE_GOAL_TOOL_NAME,
+                            &serde_json::json!({ "status": "blocked" }).to_string(),
+                        ),
+                        responses::ev_completed_with_tokens("native-model-block-before-quota", 10),
+                    ]));
+                }
+                wiremock::ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "the model stopped its goal before this quota wall",
+                        "resets_at": reset_epoch,
+                        "plan_type": "pro"
+                    }
+                }))
+            })
+            .await;
+            let evaluations_before_turn = h.rt.evaluations();
+            start_and_complete(&h).await;
+            wait_for_supervisor(|| h.rt.evaluations() > evaluations_before_turn).await;
+            let bound = lock(&h.rt.model_blocked_goal)
+                .clone()
+                .expect("the actual successful model tool owns recovery");
+            assert!(lock(&h.rt.model_goal_import).goal.is_none());
+            let stopped = goal(&h).await;
+            assert_eq!(stopped.goal_id, original.goal_id);
+            assert_eq!(stopped.status, ThreadGoalStatus::Blocked);
+            let before = h.rt.state();
+            let turn_id = before
+                .point_turn_id
+                .clone()
+                .expect("the native failed turn");
+            assert_eq!(turn_id, bound.goal.turn);
+            let reset = match before.point.as_ref().and_then(|point| point.wall.as_ref()) {
+                Some(Wall::Usage {
+                    reset_at: Some(reset),
+                    ..
+                }) => *reset,
+                wall => {
+                    panic!("the same native turn must end on its provider quota wall: {wall:?}")
+                }
+            };
+            assert!(reset > clock() + Duration::from_secs(3600));
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                2
+            );
+            h.immediate_point().await;
+            let asleep = Arc::new(Mutex::new(Duration::ZERO));
+            let reading = Arc::clone(&asleep);
+            h.autopilot.set_wake_read(Arc::new(move || {
+                Some(Reading {
+                    asleep: *lock(&reading),
+                    last: None,
+                })
+            }));
+            let quota = h.shared.quota();
+            let identity = QuotaIdentity {
+                account: "fixture-account".into(),
+                user: Some("fixture-user".into()),
+                owner: 0,
+            };
+            let generation =
+                quota.select_owner(&identity.account, identity.user.as_deref(), identity.owner);
+            let wall = quota.wall_for(identity.account.clone(), "codex".into(), clock());
+            *lock(&h.autopilot.quota_test_identity) = Some(identity.clone());
+            *lock(&h.rt.quota_wall) = Some(QuotaWall {
+                wall: wall.clone(),
+                identity: identity.clone(),
+            });
+            quota.start_read(1, clock());
+            quota.accept(1, &identity.account, vec!["codex".into()], clock());
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+
+            // Gate the real recovery write after authority capture. The writer
+            // releases its source and record locks before waiting for the test.
+            let writer = Arc::new(codex_alab_tui::session::Writer::new(
+                h.shared,
+                codex_alab_tui::record::sessions_dir(h.test.codex_home_path()),
+                Duration::ZERO,
+                None,
+            ));
+            writer
+                .write_now()
+                .expect("write the actual initial session record");
+            let gate =
+                ModelQuotaRecordGate(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+            let waiting = Arc::clone(&gate.0);
+            let (entered, recorded) = tokio::sync::oneshot::channel();
+            let entered = Mutex::new(Some(entered));
+            let shared = h.shared;
+            let recorded_turn = turn_id.clone();
+            assert!(shared.set_flush(Box::new(move || {
+                let written = writer.write_now().is_ok();
+                let target = shared.recovery().is_some_and(|recovery| {
+                    recovery.turn_id == recorded_turn
+                        && matches!(recovery.wall, RecoveryWall::Usage { .. })
+                });
+                if target && let Some(entered) = lock(&entered).take() {
+                    entered
+                        .send(())
+                        .expect("the recovery write observer remains");
+                    let (released, changed) = &*waiting;
+                    let ready = lock(released);
+                    let (ready, _) = changed
+                        .wait_timeout_while(ready, Duration::from_secs(60), |released| !*released)
+                        .expect("record gate lock");
+                    assert!(*ready, "the recovery write gate must be released");
+                }
+                written
+            })));
+            h.autopilot
+                .set_recovery_write_budget(Duration::from_secs(60));
+            drop(evaluation);
+            recorded
+                .await
+                .expect("the native idle evaluation captures recovery after quota authority");
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let marker = codex_alab_core::goal_chronology_fence::marker_path(
+                h.test.codex_home_path(),
+                h.rt.key(),
+            )
+            .expect("original chronology marker");
+            let journal = match std::fs::read(&marker) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("read the original chronology marker: {error}"),
+            };
+            let held = codex_alab_core::goal_chronology_fence::lock_current(
+                h.test.codex_home_path(),
+                h.rt.key(),
+            )
+            .expect("hold the real stable chronology lock");
+            let chronology = held.generation();
+            assert_eq!(chronology, bound.goal.chronology_fence_generation);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key()
+                )
+                .unwrap_err()
+                .kind(),
+                std::io::ErrorKind::WouldBlock,
+            );
+            let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let custody = h.shared.model_goal_custody(h.rt.key());
+            quota.invalidate();
+            assert_eq!(quota.generation(), generation);
+            assert_eq!(h.autopilot.quota_identity(), Some(identity.clone()));
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let mut next = Box::pin(h.rt.hold_eval_when_free());
+            std::future::poll_fn(|cx| {
+                assert!(next.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            let earliest_retry = clock() + RECHECK;
+            gate.release();
+            let next = next.await;
+            assert!(h.autopilot.sup.journal().iter().any(|note| {
+                note.contains("could not read the model-blocked goal; recovery waits")
+            }));
+            assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+            assert!(h.rt.timer_due().is_some_and(|at| at >= earliest_retry));
+            assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&bound));
+            assert_eq!(h.shared.model_goal_custody(h.rt.key()), custody);
+            assert_eq!(goal(&h).await, stopped);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert!(h.fake.acts().is_empty());
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                2
+            );
+            drop(held);
+            assert_eq!(std::fs::read(&marker).ok(), journal);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key()
+                )
+                .unwrap(),
+                chronology,
+            );
+
+            let (started, fresh) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_park) = Some(Box::new(move || {
+                started
+                    .send(())
+                    .expect("the delayed timer's fresh evaluation");
+            }));
+            *lock(&asleep) = RECHECK * 2;
+            drop(next);
+            fresh
+                .await
+                .expect("the delayed timer rechecks after journal release");
+            let fresh = h.rt.hold_eval_when_free().await;
+            let owed = h.rt.owed_timer().expect("ordinary future usage reset");
+            assert_eq!(owed.rule, words::RULE_LIMIT_RESUME);
+            assert!(owed.not_before >= reset.checked_sub(RECHECK * 2).expect("future reset"));
+            assert_eq!(goal(&h).await, stopped);
+            assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&bound));
+            assert_eq!(h.shared.model_goal_custody(h.rt.key()), custody);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert!(h.fake.acts().is_empty());
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                2
+            );
+
+            h.autopilot.watching.store(false, Ordering::SeqCst);
+            h.autopilot.watch_claims();
+            quota.start_read(2, clock());
+            quota.accept(2, &identity.account, vec!["codex".into()], clock());
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            assert!(owed.not_before > clock() + RECHECK);
+            drop(fresh);
+            wait_for_supervisor(|| h.fake.acts().contains(&words::RULE_LIMIT_RESUME.into())).await;
+            wait_requests(&h, 3).await;
+            let resumed = goal(&h).await;
+            assert_eq!(resumed.goal_id, original.goal_id);
+            assert_eq!(resumed.objective, original.objective);
+            assert_eq!(resumed.token_budget, original.token_budget);
+            assert_eq!(resumed.status, ThreadGoalStatus::Active);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+            let requests = responses::received_responses_requests(&h._server).await;
+            assert_eq!(requests.len(), 3);
+            assert!(requests[2].body_contains_text(OBJECTIVE));
+            assert!(requests[2].body_contains_text(words::MODEL_BLOCKED_GOAL_CONTINUE));
+            finish(&h).await;
+        })
+        .await
+        .expect("model chronology and quota retry hang detector");
+    });
+}
 
 #[test]
 fn compact_admission_requires_the_current_model_stop_epoch() {
@@ -307,6 +599,7 @@ fn a_usage_reset_resumes_the_original_goal_the_model_had_already_blocked() {
                         questions: false,
                         worked: Duration::from_secs(600),
                         wall: Some(Wall::Usage {
+                            limit_class: LimitClass::Ordinary,
                             reset_at: Some(at),
                             reset_label: None,
                         }),

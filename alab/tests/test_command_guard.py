@@ -86,6 +86,134 @@ class CommandGuardTests(unittest.TestCase):
                                            f"raise SystemExit({code})"]), code)
         self.assert_reaped()
 
+    def test_running_disk_refusal_preserves_an_already_retired_command_status(self):
+        observe = GUARD.observe_exit_with_disk
+        for backend in ("kqueue", "waitid"):
+            if not hasattr(select if backend == "kqueue" else os, backend):
+                continue
+            for code in (0, 23):
+                with self.subTest(backend=backend, code=code):
+                    floor = mock.Mock()
+
+                    def observe_after_exit(pid, disk_floor):
+                        GUARD.observe_exit(pid)  # The guardian still owns the unreaped PID.
+                        disk_floor.check.side_effect = GUARD.DiskSpaceError("late running floor")
+                        if backend == "waitid":
+                            with mock.patch.object(GUARD, "select", object()):
+                                observe(pid, disk_floor)
+                        else:
+                            observe(pid, disk_floor)
+
+                    with (self.tracked_spawn(),
+                          mock.patch.object(GUARD, "observe_exit_with_disk", observe_after_exit)):
+                        self.assertEqual(GUARD.run([sys.executable, "-IB", "-c", f"raise SystemExit({code})"],
+                                                   disk_floor=floor), code)
+                    self.assert_reaped()
+
+    def test_running_floor_between_command_retirement_and_custodian_exit_keeps_receipt(self):
+        directory = Path(tempfile.mkdtemp(prefix="alab-guard-retired-command-"))
+        print(f"preserved command completion receipts: {directory}", flush=True)
+        retire, finish = GUARD.retire_command, GUARD.finish_custodian
+        for expected in (0, 23):
+            with self.subTest(expected=expected):
+                retired, report = os.pipe()
+                release, allow = os.pipe()
+
+                def receive(fd):
+                    if not select.select([fd], [], [], 60)[0] or os.read(fd, 1) != b"x":
+                        raise RuntimeError("retirement fixture did not reach its peer")
+
+                def after_retirement(*args, **kwargs):
+                    code = retire(*args, **kwargs)
+                    os.write(report, b"x")
+                    receive(release)
+                    return code
+
+                def before_finish(*args, **kwargs):
+                    os.write(allow, b"x")
+                    return finish(*args, **kwargs)
+
+                floor = mock.Mock()
+
+                def check():
+                    if floor.check.call_count > 1:
+                        receive(retired)
+                        raise GUARD.DiskSpaceError("floor fell after command retirement")
+
+                floor.check.side_effect = check
+                result = directory / f"{expected}.json"
+                argv = [sys.executable, "-IB", "-c", f"raise SystemExit({expected})"]
+                try:
+                    with (self.tracked_spawn(),
+                          mock.patch.object(GUARD, "retire_command", after_retirement),
+                          mock.patch.object(GUARD, "finish_custodian", before_finish)):
+                        self.assertEqual(GUARD.run_recorded(argv, result_file=result, disk_floor=floor),
+                                         expected)
+                    self.assertEqual(result.read_bytes(), GUARD.completion_bytes(argv, expected))
+                finally:
+                    for fd in (retired, report, release, allow):
+                        os.close(fd)
+                self.assert_reaped()
+
+    def test_running_floor_keeps_a_resource_stop_for_cooperative_exit_zero(self):
+        ready, report = os.pipe()
+        os.set_inheritable(report, True)
+        floor = mock.Mock()
+
+        def check():
+            if floor.check.call_count == 1:
+                return
+            if not select.select([ready], [], [], 60)[0] or os.read(ready, 1) != b"x":
+                raise RuntimeError("cooperative test child did not start")
+            raise GUARD.DiskSpaceError("floor fell before cooperative termination")
+
+        floor.check.side_effect = check
+        argv = [sys.executable, "-IB", "-c",
+                f"import os, signal, sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+                f"os.write({report}, b'x'); signal.pause()"]
+        try:
+            with self.tracked_spawn(), self.assertRaisesRegex(GUARD.DiskSpaceError, "before cooperative"):
+                GUARD.run(argv, disk_floor=floor, inherit_fds=True, cooperative_controller=True)
+            self.assertEqual(self.children[-1].returncode, 0)
+            self.assert_reaped()
+        finally:
+            os.close(ready)
+            os.close(report)
+
+    @unittest.skipUnless(hasattr(select, "kqueue"), "requires macOS kqueue")
+    def test_custodian_handles_simultaneous_exit_and_lifeline_events(self):
+        pid, lifeline = 123, 42
+        exited = select.kevent(pid, filter=select.KQ_FILTER_PROC, fflags=select.KQ_NOTE_EXIT)
+        eof = select.kevent(lifeline, filter=select.KQ_FILTER_READ, flags=select.KQ_EV_EOF)
+        error = select.kevent(lifeline, filter=select.KQ_FILTER_READ,
+                              flags=select.KQ_EV_ERROR, data=errno.EIO)
+        with mock.patch.object(GUARD.select, "kqueue") as make:
+            queue = make.return_value
+            for events in ([exited, eof], [eof, exited]):
+                queue.control.return_value = events
+                self.assertTrue(GUARD.observe_lifeline(pid, lifeline))
+            queue.control.return_value = [exited, error]
+            with self.assertRaises(OSError) as caught:
+                GUARD.observe_lifeline(pid, lifeline)
+            self.assertEqual(caught.exception.errno, errno.EIO)
+
+    @unittest.skipUnless(hasattr(os, "waitid"), "requires non-reaping waitid")
+    def test_custodian_rechecks_command_exit_when_lifeline_wakes_waitid(self):
+        reader, writer = os.pipe()
+        os.close(writer)
+        try:
+            select_only = mock.Mock(spec=["select"])
+            select_only.select.side_effect = select.select
+            for last, expected in [(None, False), (object(), True)]:
+                with (mock.patch.object(GUARD, "select", select_only),
+                      mock.patch.object(GUARD.os, "waitid", side_effect=[None, last]) as wait):
+                    self.assertEqual(GUARD.observe_lifeline(123, reader), expected)
+                    self.assertEqual(wait.call_count, 2)
+                    for call in wait.call_args_list:
+                        self.assertEqual(call.args, (os.P_PID, 123, os.WEXITED | os.WNOWAIT | os.WNOHANG))
+        finally:
+            os.close(reader)
+
     def test_exec_failure_restores_cancellation_mask_without_a_live_child(self):
         directory = Path(tempfile.mkdtemp(prefix="alab-guard-exec-failure-"))
         print(f"preserved exec-failure fixture: {directory}", flush=True)
@@ -520,6 +648,21 @@ signal.pause()
         self.assertEqual(timeouts, [0.25, 0.25])
 
     @unittest.skipUnless(hasattr(select, "kqueue"), "requires macOS kqueue")
+    def test_disk_refusal_polls_the_registered_exit_without_waiting(self):
+        queue = mock.Mock()
+        queue.control.side_effect = [[], [select.kevent(123, filter=select.KQ_FILTER_PROC,
+                                                        fflags=select.KQ_NOTE_EXIT)]]
+        floor = mock.Mock()
+        floor.check.side_effect = [None, GUARD.DiskSpaceError("late running floor")]
+        with mock.patch.object(GUARD.select, "kqueue", return_value=queue):
+            GUARD.observe_exit_with_disk(123, floor, 0.25)
+        registration, poll = queue.control.call_args_list
+        changes, count, timeout = registration.args
+        self.assertEqual((len(changes), count, timeout), (1, 1, 0.25))
+        self.assertEqual(poll, mock.call([], 1, 0))
+        queue.close.assert_called_once_with()
+
+    @unittest.skipUnless(hasattr(select, "kqueue"), "requires macOS kqueue")
     def test_disk_kqueue_error_is_not_retried_with_waitid(self):
         space = type("Space", (), {"f_bavail": 35 * 2**30, "f_frsize": 1})()
         queue = mock.Mock()
@@ -566,14 +709,15 @@ signal.pause()
                 if resource_failure:
                     floor.check.side_effect = error
                 with (mock.patch.object(GUARD, "select", object()),
-                      mock.patch.object(GUARD.os, "waitid", create=True, side_effect=error) as waitid,
+                      mock.patch.object(GUARD.os, "waitid", create=True, return_value=None,
+                                        side_effect=None if resource_failure else error) as waitid,
                       mock.patch.object(GUARD.os, "waitpid") as waitpid,
                       mock.patch.object(GUARD.time, "sleep") as sleep,
                       self.assertRaises(type(error)) as failed):
                     GUARD.observe_exit_with_disk(123, floor, 0.25)
                 self.assertIs(failed.exception, error)
                 floor.check.assert_called_once_with()
-                self.assertEqual(waitid.call_count, 0 if resource_failure else 1)
+                waitid.assert_called_once_with(os.P_PID, 123, os.WEXITED | os.WNOWAIT | os.WNOHANG)
                 waitpid.assert_not_called()
                 sleep.assert_not_called()
 

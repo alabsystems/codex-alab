@@ -237,7 +237,11 @@ struct ExecCommandEndTracePayload<'a> {
     interaction_input: Option<&'a str>,
     aggregated_output: &'a str,
     exit_code: i32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    exit_code_unavailable: bool, // ALAB(shell-output): trace the availability of the legacy integer.
     duration: Duration,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    duration_unavailable: bool, // ALAB(shell-output): preserve whether the trace has a measured duration.
     status: &'a ExecCommandStatus,
 }
 
@@ -257,7 +261,9 @@ impl<'a> From<&'a ExecCommandEndEvent> for ExecCommandEndTracePayload<'a> {
             interaction_input,
             aggregated_output,
             exit_code,
+            exit_code_unavailable, // ALAB(shell-output): copy native exit availability into the trace.
             duration,
+            duration_unavailable, // ALAB(shell-output): read timing availability independently of the exit code.
             status,
         } = event;
         Self {
@@ -274,7 +280,9 @@ impl<'a> From<&'a ExecCommandEndEvent> for ExecCommandEndTracePayload<'a> {
             interaction_input: interaction_input.as_deref(),
             aggregated_output,
             exit_code: *exit_code,
+            exit_code_unavailable: *exit_code_unavailable, // ALAB(shell-output): retain the wire indicator for trace readers.
             duration: *duration,
+            duration_unavailable: *duration_unavailable, // ALAB(shell-output): write the original timing availability.
             status,
         }
     }

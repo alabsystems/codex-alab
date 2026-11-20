@@ -287,6 +287,7 @@ async fn a_handoff_seal_stands_only_for_its_claim_and_the_receipt_on_record() {
                         account: "c".repeat(64),
                         user: "d".repeat(64),
                     }),
+                    limit: None,
                     openai_scope: true,
                     local: false,
                     account: "a".repeat(64),

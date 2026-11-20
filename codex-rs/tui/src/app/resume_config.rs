@@ -127,6 +127,7 @@ impl App {
                 crate::session_resume::ResumeCwdContext {
                     current_cwd: &current_cwd,
                     remembered_current_cwd,
+                    local_workspace: !uses_remote_workspace_or_environment, // ALAB(accounts): the selected backend and execution environment share local paths.
                     allow_remember_current: !uses_remote_workspace_or_environment
                         || cwd_override.is_some(),
                     mode: resume_cwd_mode,

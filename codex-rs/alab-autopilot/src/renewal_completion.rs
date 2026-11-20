@@ -682,6 +682,7 @@ mod tests {
                     account: "d".repeat(64),
                     user: "e".repeat(64),
                 }),
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: "a".repeat(64),

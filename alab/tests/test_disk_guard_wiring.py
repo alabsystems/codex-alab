@@ -63,7 +63,9 @@ class DiskGuardWiringTests(unittest.TestCase):
     def assert_paths(self, args, common=None):
         self.assertEqual(args[args.index("--min-free-gib") + 1], "20")
         paths = [args[i + 1] for i, value in enumerate(args) if value == "--disk-path"]
-        self.assertEqual(paths, [str(self.fixture / "cache"), str(self.output), str(self.output / "codex"),
+        cache = self.fixture / "cache"
+        self.assertEqual(paths, [str(cache), str(cache / "v8"), str(cache / "cargo-home"),
+                                 str(self.output), str(self.output / "codex"),
                                  str(self.home / "Developer"), str(common or self.common_dir(ROOT)),
                                  str(self.cargo),
                                  "/tmp", str(self.temporary)])
@@ -203,9 +205,10 @@ class DiskGuardWiringTests(unittest.TestCase):
                           'alab_build_command /usr/bin/true',
                           str(target), str(self.cargo), str(trust))
         paths = [args[i + 1] for i, value in enumerate(args) if value == "--disk-path"]
-        self.assertEqual(paths, [str(target), str(target / "build.noindex"), str(ROOT / "codex-rs"), str(ROOT / "codex-rs"),
+        self.assertCountEqual(paths, [str(target), str(target / "build.noindex"), str(ROOT / "codex-rs"), str(ROOT / "codex-rs"),
                                  str(self.common_dir(ROOT)), str(self.cargo), str(trust), str(self.cargo),
-                                 "/tmp", str(self.temporary)])
+                                 "/tmp", str(self.temporary)]
+                         + ([str(target / ".ubd/build.noindex")] if sys.platform == "darwin" else []))
         self.assertIn("--inherit-fds", args)
         self.assertEqual(args[args.index("--min-free-gib") + 1], "20")
         self.assertFalse(target.exists(), "guard wiring does not allocate a build target")
@@ -312,6 +315,74 @@ assert os.read(43, 8) == b"allowed\n"
                     with self.assertRaisesRegex(guard.DiskSpaceError, "19.00 GiB"):
                         guard.run(["unused"], disk_floor=guard.DiskFloor(paths, 20))
 
+    def test_redirected_cargo_paths_guard_the_current_and_launch_destinations(self):
+        spec = importlib.util.spec_from_file_location("redirected_disk_guard", ROOT / "alab/command_guard.py")
+        guard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guard)
+        original = self.fixture / "first volume"
+        redirected = self.fixture / "second volume"
+        original.mkdir()
+        redirected.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.fixture)], check=True)
+        alias = self.fixture / "cache link"
+        for variable in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR",
+                         "CARGO_HOME", "TARGO_HOME"):
+            with self.subTest(variable=variable):
+                alias.symlink_to(original, target_is_directory=True)
+                with mock.patch.dict(self.environment, {variable: alias.name}):
+                    args = self.shell('. "$1/alab/lib.sh"; cd "$2"; alab_build_command /usr/bin/true',
+                                      str(self.fixture))
+                self.record.unlink()
+                paths = [arg for flag, arg in zip(args, args[1:]) if flag == "--disk-path"]
+                floor = guard.DiskFloor(paths, 20)
+                low = None
+
+                def space(path):
+                    gib = 19 if path == low else 35
+                    return os.statvfs_result((1, 1, 0, 0, gib * 2**30, 0, 0, 0, 0, 0))
+
+                with mock.patch.object(guard.os, "statvfs", side_effect=space):
+                    floor.check()
+                    alias.unlink()
+                    alias.symlink_to(redirected, target_is_directory=True)
+                    floor.check()
+                    for low in (redirected, original):
+                        with self.assertRaisesRegex(guard.DiskSpaceError, "19.00 GiB"):
+                            floor.check()
+                alias.unlink()
+
+    @unittest.skipUnless(sys.platform == "darwin", "native intermediate routing is macOS-only")
+    def test_native_intermediate_volume_is_guarded_unless_the_build_directory_is_explicit(self):
+        target = self.fixture / "target"
+        volume = self.fixture / "intermediate volume"
+        volume.mkdir()
+        (target / ".ubd").mkdir(parents=True)
+        routed = target / ".ubd/build.noindex"
+        routed.symlink_to(volume, target_is_directory=True)
+        self.environment["CARGO_TARGET_DIR"] = str(target)
+        spec = importlib.util.spec_from_file_location("native_disk_guard", ROOT / "alab/command_guard.py")
+        guard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guard)
+
+        def space(path):
+            free = 19 if path == volume else 35
+            return os.statvfs_result((1, 1, 0, 0, free * 2**30, 0, 0, 0, 0, 0))
+
+        ran = self.fixture / "command ran"
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit):
+                if explicit:
+                    self.record.unlink()
+                    self.environment["CARGO_BUILD_BUILD_DIR"] = str(self.fixture / "chosen build")
+                    (target / "build.noindex").symlink_to(volume, target_is_directory=True)
+                args = self.shell('. "$1/alab/lib.sh"; cd "$1/codex-rs"; alab_build_command /usr/bin/touch "$2"',
+                                  str(ran))
+                argv = args[args.index(str(ROOT / "alab/command_guard.py")):]
+                with (mock.patch.object(guard.sys, "argv", argv),
+                      mock.patch.object(guard.os, "statvfs", side_effect=space)):
+                    self.assertEqual(guard.main(), 0 if explicit else 75)
+                self.assertEqual(ran.exists(), explicit)
+
     @unittest.skipUnless(sys.platform == "darwin", "native shared build shim is macOS-only")
     def test_unset_target_covers_the_native_shims_shared_intermediate_root(self):
         args = self.shell('. "$1/alab/lib.sh"; cd "$1/codex-rs"; alab_build_command /usr/bin/true')
@@ -390,6 +461,15 @@ assert os.read(43, 8) == b"allowed\n"
         paths = [Path(args[i + 1]) for i, value in enumerate(args) if value == '--disk-path']
         self.assertIn(self.cargo / 'intermediates', paths)
         self.assertIn(trust / 'intermediates', paths)
+
+    def test_cache_home_template_substitutes_absolute_names_before_anchoring_the_result(self):
+        self.environment.update(CARGO_HOME="cargo link", TARGO_HOME="trust link",
+                                CARGO_BUILD_BUILD_DIR="prefix/{cargo-cache-home}/intermediates")
+        args = self.shell('. "$1/alab/lib.sh"; cd "$1/codex-rs"; alab_build_command /usr/bin/true')
+        paths = [Path(arg) for flag, arg in zip(args, args[1:]) if flag == "--disk-path"]
+        cwd = ROOT / "codex-rs"
+        for home in ("cargo link", "trust link"):
+            self.assertIn(Path(f"{cwd}/prefix/{cwd}/{home}/intermediates"), paths)
 
     def test_unit_cargo_is_guarded_inside_its_detached_session_with_argv_env_and_fd(self):
         compiler = self.fixture / "inert compiler"

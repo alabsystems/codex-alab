@@ -6,7 +6,7 @@ use pretty_assertions::assert_eq;
 #[test]
 fn kimi_profiles_are_opt_in_and_use_subscription_api_keys() {
     let defaults: toml::Table = toml::from_str(crate::ALAB_DEFAULTS).expect("ALab defaults");
-    assert_eq!(defaults["model"].as_str(), Some("gpt-6.2-sol"));
+    assert_eq!(defaults.get("model"), None);
     assert_eq!(defaults["model_reasoning_effort"].as_str(), Some("ultra"));
     assert_eq!(defaults.get("model_provider"), None);
 
@@ -45,7 +45,7 @@ fn kimi_profiles_are_opt_in_and_use_subscription_api_keys() {
 fn selected_packaged_profiles_overlay_defaults_without_changing_the_base() {
     let defaults = crate::alab_defaults(crate::UPSTREAM_DEFAULTS, false).expect("ALab defaults");
     let base: toml::Table = toml::from_str(&defaults).expect("base defaults");
-    assert_eq!(base["model"].as_str(), Some("gpt-6.2-sol"));
+    assert_eq!(base.get("model"), None);
     assert_eq!(base["model_reasoning_effort"].as_str(), Some("ultra"));
     assert_eq!(base.get("model_provider"), None);
 

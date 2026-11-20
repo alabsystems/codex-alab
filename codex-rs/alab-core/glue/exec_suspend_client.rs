@@ -45,11 +45,24 @@ impl InProcessClientSender {
         turn: String,
         configuration: codex_core::config::ExecConfiguration,
     ) -> io::Result<SuspendedExec> {
+        self.suspend_exec_turn_if_observed(thread, turn, configuration, None)
+            .await?
+            .ok_or_else(|| io::Error::other("unconditional suspension was declined"))
+    }
+
+    pub async fn suspend_exec_turn_if_observed(
+        &self,
+        thread: ThreadId,
+        turn: String,
+        configuration: codex_core::config::ExecConfiguration,
+        wall: Option<codex_core::ExecQuotaDrain>,
+    ) -> io::Result<Option<SuspendedExec>> {
         let (reply, receive) = oneshot::channel();
         self.try_send_client_message(InProcessClientMessage::AlabExecSuspend(Request::Suspend {
             thread,
             turn,
             configuration: Box::new(configuration),
+            wall,
             reply,
         }))?;
         receive

@@ -2211,6 +2211,8 @@ class LostLoginCases(unittest.TestCase):
             "content": [{"type": "input_text", "text": text}]}}
         rollout = [said("<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"), said(probe.PROMPT),
                    said("A plan.", role="assistant"), end("unauthorized"), end()]
+        rollout[0]["payload"]["internal_chat_message_metadata_passthrough"] = {
+            "content_item_metadata": [{"provenance": {"type": "harness", "hook": False}}]}
         self.assertEqual(thread_proof(rollout), {"turnEndedAtLoginWall": True, "userMessagesInThread": 1})
         self.assertEqual(thread_proof(rollout[:-1], answered=False),
                          {"turnEndedAtLoginWall": True, "userMessagesInThread": 1})
@@ -2223,10 +2225,10 @@ class LostLoginCases(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"once answered: \['usage_limit_exceeded', None\]"):
             thread_proof(rollout[:3] + [end("usage_limit_exceeded"), end()])
         # Anything typed for the move is a second user message.
-        for typed in ("Continue the original task.", probe.PROMPT):
-            with self.assertRaisesRegex(RuntimeError, "the thread holds 2 typed user messages, not the one prompt"):
+        for typed in ("Continue the original task.", probe.PROMPT, "<continue/>", "  <environment_context/>"):
+            with self.assertRaisesRegex(RuntimeError, "2 parts outside attributed context"):
                 thread_proof(rollout[:4] + [said(typed), end()])
-        with self.assertRaisesRegex(RuntimeError, "the thread holds 0 typed user messages"):
+        with self.assertRaisesRegex(RuntimeError, "0 parts outside attributed context"):
             thread_proof([rollout[0], *rollout[2:]])
         request = {"body": {"input": [said("<context>")["payload"], said(probe.PROMPT)["payload"],
                                       said("answer", role="assistant")["payload"], {"type": "function_call"}]}}
@@ -2361,7 +2363,10 @@ class LostLoginRun(unittest.TestCase):
             **({"error": {"codex_error_info": error}} if error else {}))}
         said = lambda text: {"type": "response_item", "payload": {"type": "message", "role": "user",
             "content": [{"type": "input_text", "text": text}]}}
-        return [said("<environment_context/>"), said(probe.PROMPT), end("unauthorized"),
+        context = said("<environment_context/>")
+        context["payload"]["internal_chat_message_metadata_passthrough"] = {
+            "content_item_metadata": [{"provenance": {"type": "harness", "hook": False}}]}
+        return [context, said(probe.PROMPT), end("unauthorized"),
                 *[said(text) for text in typed], *([end()] if answered else [])]
 
     @staticmethod
@@ -2440,6 +2445,126 @@ class LostLoginMoved(LostLoginRun):
         # An ask traced before the loss is not this wall's.
         self.calls(("login-rotation", "prepare", "OK codex-login-rotation state=not-needed", 5))
         self.assertIsNone(self.failure(silent, now=12))
+
+    def test_markup_cannot_hide_new_input_in_the_rollout_or_wire_requests(self):
+        self.moved()
+        for text in ("<continue/>", "<environment_context/>"):
+            with self.subTest(text=text):
+                records = self.rollout(typed=[text])
+                records[-2]["payload"]["internal_chat_message_metadata_passthrough"] = {
+                    "content_item_metadata": [{"provenance": {"type": "user"}}]}
+                with self.assertRaisesRegex(RuntimeError, "2 parts outside attributed context"):
+                    self.verdict(rollout=records)
+                with self.assertRaisesRegex(RuntimeError, "request input differs"):
+                    self.verdict(requests=self.requests(text))
+
+    def test_wire_message_forms_preserve_only_the_original_input(self):
+        from capacity_exec import PROMPT
+        self.moved()
+        for content in (PROMPT, [{"type": "input_text", "text": PROMPT}]):
+            requests = self.requests()
+            requests[-1]["body"]["input"][-1] = {"role": "user", "content": content}
+            self.verdict(requests=requests)
+        for content in ("<continue/>", [{"type": "input_text", "text": "<continue/>"}],
+                        ["<continue/>"], [], None):
+            with self.subTest(content=content):
+                requests = self.requests()
+                requests[-1]["body"]["input"].append({"role": "user", "content": content})
+                with self.assertRaisesRegex(RuntimeError, "request input"):
+                    self.verdict(requests=requests)
+        requests = self.requests()
+        requests[-1]["body"]["input"][0]["content"][0]["type"] = "input_image"
+        with self.assertRaisesRegex(RuntimeError, "unexpected user content in request input"):
+            self.verdict(requests=requests)
+
+    def test_aborts_and_errors_without_a_code_cannot_count_as_recovery(self):
+        self.moved()
+        for kind in ("task_complete", "turn_complete"):
+            for error in ({"message": "request failed"}, {"message": "request failed", "codex_error_info": None}):
+                records = self.rollout()
+                records[-1]["payload"].update(type=kind, error=error)
+                with self.subTest(kind=kind, error=error), self.assertRaisesRegex(RuntimeError, "unclassified error"):
+                    self.verdict(rollout=records)
+        records = self.rollout()
+        records.insert(-1, {"type": "event_msg", "payload": {"type": "turn_aborted", "reason": "replaced"}})
+        with self.assertRaisesRegex(RuntimeError, "aborted turn"):
+            self.verdict(rollout=records)
+
+    def test_only_the_original_prompt_may_appear_in_ui_events(self):
+        from capacity_exec import PROMPT
+        self.moved()
+        text = {"type": "text", "text": PROMPT}
+        def item(kind, identity, *parts):
+            return {"type": kind, "item": {"type": "UserMessage", "id": identity, "content": list(parts)}}
+        def verdict(before=(), after=()):
+            records = self.rollout()
+            wrap = lambda events: [{"type": "event_msg", "payload": event} for event in events]
+            return self.verdict(rollout=[*records[:2], *wrap(before), records[2], *wrap(after), records[3]])
+
+        legacy = {"type": "user_message", "message": PROMPT}
+        start = item("item_started", "original", text)
+        complete = item("item_completed", "original", text)
+        start["item"]["client_id"] = "client-1"
+        verdict(before=[complete])  # The signed rollout persists just the completion.
+        verdict(before=[start, dict(legacy, client_id="client-1"), complete])
+        verdict(before=[start], after=[complete])
+        for before, after in (
+            ([legacy, legacy], []), ([complete, item("item_completed", "second", text)], []),
+            ([start, dict(legacy, client_id="client-2")], []),
+            ([dict(legacy, message="<continue/>")], []), ([dict(legacy, file_ids=["file-1"])], []),
+            ([item("item_started", "original", text, {"type": "image"})], []),
+            ([], [legacy]), ([], [complete]), ([start], [item("item_completed", "original",
+                {"type": "text", "text": "<continue/>"})]),
+        ):
+            with self.subTest(before=before, after=after), self.assertRaisesRegex(RuntimeError, "UI user message"):
+                verdict(before, after)
+
+    def test_context_and_user_input_can_share_a_message(self):
+        from renewal_follow import thread_proof
+        records = self.rollout()
+        context = records.pop(0)["payload"]
+        message = records[0]["payload"]
+        message["content"] = context["content"] + message["content"]
+        meta = message["internal_chat_message_metadata_passthrough"] = {"content_item_metadata": [
+            {"harness_injected": True}, {"provenance": {"type": "user"}}]}
+        self.assertEqual(thread_proof(records, requests=self.requests())["userMessagesInThread"], 1)
+        meta["content_item_metadata"].reverse()
+        with self.assertRaisesRegex(RuntimeError, "could not verify the original prompt alone"):
+            thread_proof(records)
+        meta["content_item_metadata"].pop()
+        with self.assertRaisesRegex(RuntimeError, "misaligned"):
+            thread_proof(records)
+
+    def test_legacy_context_and_explicit_provenance_in_a_moved_login(self):
+        self.moved()
+        for origin in ({"source_tool_namespace": "local", "harness_injected": False},
+                       {"source_tool_namespace": ""}, {"harness_injected": True},
+                       {"provenance": {"type": "tool", "namespace": "other"}},
+                       {"provenance": {"type": "developer_instructions", "from_additional_requirements": False}}):
+            with self.subTest(origin=origin):
+                records = self.rollout()
+                records[0]["payload"]["internal_chat_message_metadata_passthrough"]["content_item_metadata"] = [origin]
+                self.assertEqual(self.verdict(rollout=records)["userMessagesInThread"], 1)
+        for source in ("user", "unknown", "user_configured"):
+            with self.subTest(source=source):
+                records = self.rollout()
+                origin = {"provenance": {"type": source}, "source_tool_namespace": "local", "harness_injected": True}
+                records[0]["payload"]["internal_chat_message_metadata_passthrough"]["content_item_metadata"] = [origin]
+                with self.assertRaisesRegex(RuntimeError, "2 parts outside attributed context"):
+                    self.verdict(rollout=records)
+
+    def test_malformed_attribution_cannot_authorize_extra_context(self):
+        from renewal_follow import thread_proof
+        for origin in ({"source_tool_namespace": 7, "harness_injected": True},
+                       {"source_tool_namespace": "local", "harness_injected": 1},
+                       {"provenance": {"type": "harness", "hook": "false"}},
+                       {"provenance": {"type": "developer_instructions"}},
+                       {"provenance": {"type": "tool", "namespace": 1}}):
+            with self.subTest(origin=origin):
+                records = self.rollout()
+                records[0]["payload"]["internal_chat_message_metadata_passthrough"]["content_item_metadata"] = [origin]
+                with self.assertRaisesRegex(RuntimeError, "invalid"):
+                    thread_proof(records)
 
     def test_the_verdict_records_the_whole_move(self):
         self.moved()
@@ -2769,9 +2894,9 @@ class LostLoginMoved(LostLoginRun):
         with self.assertRaisesRegex(RuntimeError, "were not both held to the bytes written"):
             self.verdict(logins={self.OLD: self.logins[self.OLD]})
         # Nothing was typed for the move, by the requests and by the thread's own record.
-        with self.assertRaisesRegex(RuntimeError, "something was typed beside the original prompt"):
+        with self.assertRaisesRegex(RuntimeError, "request input differs"):
             self.verdict(requests=self.requests("Continue the original task."))
-        with self.assertRaisesRegex(RuntimeError, "the thread holds 2 typed user messages"):
+        with self.assertRaisesRegex(RuntimeError, "2 parts outside attributed context"):
             self.verdict(rollout=self.rollout(typed=["Continue the original task."]))
         with self.assertRaisesRegex(RuntimeError, r"once answered: \['unauthorized'\]"):
             self.verdict(rollout=self.rollout(answered=False))
@@ -2793,7 +2918,7 @@ class LostLoginStayed(LostLoginRun):
         word = LOST_LOGIN_CASES[case][0]
         arguments = dict(policy=self.POLICY, case=LOST_LOGIN_CASES[case], old_auth=self.OLD,
             new_auth=self.NEW, logins=self.logins, rollout=self.rollout(answered=False),
-            held_us=self.HELD * 1_000_000)
+            held_us=self.HELD * 1_000_000, requests=self.requests())
         arguments.update(changes)
         return login_stayed_verdict(self.root, self.events(word, moved=False) if events is None else events,
                                     **arguments)
@@ -2858,6 +2983,15 @@ class LostLoginStayed(LostLoginRun):
         (self.root / "native-actions.jsonl").unlink()
         (sessions / "12.json").write_text(json.dumps({"env": {"CODEX_AUTH_PATH": self.NEW}}))
         self.assertEqual(found(), ["session process 12 runs on the other login file"])
+
+    def test_a_held_login_checks_each_provider_request_for_additional_input(self):
+        self.own_path()
+        self.veto("revoked")
+        requests = self.requests("<continue/>")
+        for request in requests:
+            request["body"]["input"] = requests[-1]["body"]["input"]
+        with self.assertRaisesRegex(RuntimeError, "request input differs"):
+            self.verdict(requests=requests)
 
     def test_the_verdict_records_what_stopped_the_move_for_each_refusal(self):
         from renewal_follow import LOST_LOGIN_CASES, LOST_LOGIN_MOVED, VETO_WORDS

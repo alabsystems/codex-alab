@@ -86,8 +86,10 @@ impl PreparedExecContext {
             snapshot.retain_inherited_user_messages && !fresh.retain_inherited_user_messages;
         let mut restored = ContextManager {
             item_id_generator,
+            // Suspension can stop after a call is recorded but before its result arrives.
+            // Every input we install came from that stopped runtime.
+            restored_through_sequence: self.sampling.last_sequence,
             sampling: self.sampling,
-            restored_through_sequence: snapshot.restored_through_sequence,
             items: self.items,
             review_history: self.review_history,
             review_budgeting: snapshot.review_budgeting.into(),
@@ -418,7 +420,7 @@ mod tests {
             &original.item_id_generator
         ));
         assert_eq!(restored.sampling.capture_exec(), (21, 13));
-        assert_eq!(restored.restored_through_sequence, 8);
+        assert_eq!(restored.restored_through_sequence, 21);
         assert_eq!(restored.review_budgeting, ContextBudgeting::Elastic);
         assert_eq!(
             restored.rejected_audio_file_ids,
@@ -448,6 +450,61 @@ mod tests {
             restored.guardian_review_context_revision,
             original.guardian_review_context_revision
         );
+    }
+
+    #[tokio::test]
+    async fn memory_handoff_projects_a_pending_custom_call_without_acknowledging_it() {
+        if !crate::alab_test_process::child(concat!(
+            module_path!(),
+            "::memory_handoff_projects_a_pending_custom_call_without_acknowledging_it"
+        )) {
+            return;
+        }
+        codex_alab_core::activate();
+        let mut source = ContextManager::default();
+        let call = ResponseItem::CustomToolCall {
+            encrypted_content: None,
+            id: None,
+            status: None,
+            name: "apply_patch".into(),
+            namespace: None,
+            call_id: "pending-patch".into(),
+            input: "patch contents".into(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+        source.record_items([&call], TruncationPolicy::Tokens(1000));
+        let fresh = ContextManager::default();
+        let restored = ContextManager::prepare_exec_context(source.capture_exec_context().unwrap())
+            .unwrap()
+            .install(Arc::clone(&fresh.item_id_generator), &fresh);
+
+        assert_eq!(restored.sampling.capture_exec(), (1, 0));
+        assert_eq!(restored.restored_through_sequence, 1);
+        let prompt = restored
+            .clone()
+            .for_prompt(
+                &[InputModality::Text],
+                &codex_attachment_store::InlineAttachmentStore,
+            )
+            .await;
+        let [
+            original,
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            },
+        ] = prompt.as_slice()
+        else {
+            panic!("expected the transferred call and its prompt-only result");
+        };
+        assert_eq!(original, &call);
+        assert_eq!(call_id, "pending-patch");
+        assert_eq!(
+            output.text_content(),
+            Some(codex_alab_core::execution::missing_tool_result_text(
+                "aborted"
+            ))
+        );
+        assert_eq!(restored.raw_items().len(), 1);
     }
 
     #[test]

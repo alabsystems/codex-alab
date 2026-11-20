@@ -2321,6 +2321,7 @@ mod tests {
 
 #[path = "../../alab-core/glue/initial_session_client.rs"]
 mod alab_initial_session_client;
+pub use alab_initial_session_client::{SavedResumeObservation, SavedResumeQuery}; // ALAB(retained-ui): expose only the captured saved chooser's read-only result query.
 pub use alab_initial_session_client::{scope_original_side_injection, SideRollbackOperation, SideRollbackCheckpoint, SideView, SideViewCloseOperation, SideViewCloseCheckpoint, InitialSessionSelection, InitialSessionResult, NextSelection, InitialAction, InitialConstructionOperation, InitialConstructionCheckpoint, ClientConstructionOperation, ClientConstructionCheckpoint, ClientPreparationRetirement, ClientConstructionOffer, ClientConstructionSelection, ClientConstructionResult, ClientPresentation, observe_client_construction, observe_initial_session, owns_construction_fallback, scope_initial_session, initial_session_result, next_initial_selection}; // ALAB(owned-local): typed metadata on real IO, never a synthesized client.
 
 #[cfg(unix)]
@@ -2351,3 +2352,6 @@ mod alab_retained_backend_identity; // ALAB(retained-ui): bind aggregate local c
 
 #[cfg(unix)]
 pub use alab_retained_backend_identity::OriginalRequestIdentity; // ALAB(retained-ui): opaque weak original-command identity carries no client/credential owner.
+
+#[path = "../../alab-core/glue/upgrade_client_events.rs"]
+mod alab_upgrade_events; // ALAB(upgrade-events): inspect the original facade queues without receiving events.

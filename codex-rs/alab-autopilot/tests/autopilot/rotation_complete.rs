@@ -37,6 +37,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+#[path = "rotation_named_limit.rs"]
+mod named_limit;
+
 const VERB: &str = "codex-rotation";
 /// The journal's line for a report that was sent (`renewal_completion.rs`).
 const REPORTED: &str = "its completion report, asked";
@@ -257,6 +260,7 @@ impl Walled {
             renewal: Some(AccountHandoff {
                 purpose,
                 destination: to,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: from.account,
@@ -966,6 +970,7 @@ fn a_resumed_turn_whose_end_is_older_than_the_canary_hold_is_not_reported() {
 /// stands in for aterm's relaunch).
 struct Restored {
     fake: FakeAterm,
+    record: std::path::PathBuf,
     shared: &'static Shared,
     autopilot: Arc<Autopilot>,
     _test: TestCodex,
@@ -989,15 +994,43 @@ impl Drop for Restored {
 /// `consumed`. Its host's status reads wait until the thread's manager is bound
 /// (`rotation_decline.rs` `restarted_under`).
 async fn restored(walled: &Walled, owed: OwedAct) -> Restored {
-    let rollout = walled
-        .h
+    let manager = fixtures::manager(
+        walled.h.test.home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+    )
+    .await;
+    restore_rotation(
+        &walled.h,
+        owed,
+        &walled.wall,
+        &walled.receipt(),
+        manager,
+        |_| {},
+    )
+    .await
+}
+
+fn install_writer(shared: &'static Shared, dir: std::path::PathBuf) -> std::path::PathBuf {
+    let writer = codex_alab_tui::session::Writer::new(shared, dir, Duration::ZERO, None);
+    let path = writer.path();
+    assert!(shared.set_flush(Box::new(move || writer.write_now().is_ok())));
+    path
+}
+
+async fn restore_rotation(
+    h: &Harness,
+    owed: OwedAct,
+    wall: &str,
+    receipt: &str,
+    manager: Arc<codex_login::AuthManager>,
+    configure_host: impl FnOnce(&FakeAterm),
+) -> Restored {
+    let rollout = h
         .test
         .codex
         .rollout_path()
         .unwrap_or_else(|| panic!("the walled turn's rollout"));
-    walled
-        .h
-        .test
+    h.test
         .codex
         .shutdown_and_wait()
         .await
@@ -1009,24 +1042,22 @@ async fn restored(walled: &Walled, owed: OwedAct) -> Restored {
     for (key, value) in ROTATION {
         fake.set_policy_key(key, value);
     }
+    configure_host(&fake);
     let line = |request: String| format!("@{} {request}", fake.sid());
     fake.reply_always(
         &line(format!("{VERB} status id={}", receipt_id())),
-        &format!("OK {VERB} state=committed {}\n", walled.receipt()),
+        &format!("OK {VERB} state=committed {}\n", receipt),
     );
     fake.reply_always(
-        &line(format!(
-            "{VERB} consume id={} turn={}",
-            receipt_id(),
-            walled.wall
-        )),
-        &walled.consumed(),
+        &line(format!("{VERB} consume id={} turn={}", receipt_id(), wall)),
+        &format!("OK {VERB} state=consumed {receipt}\n"),
     );
     fake.gate("status");
     let shared: &'static Shared = Box::leak(Box::new(Shared::new()));
+    let record = install_writer(shared, dir.path().join("records"));
     shared.set_owed_act(Some(owed.clone()));
     assert!(shared.set_inherited(Inherited {
-        session_id: Some(walled.h.thread.clone()),
+        session_id: Some(h.thread.clone()),
         owed_act: Some(owed),
         ..Default::default()
     }));
@@ -1042,27 +1073,30 @@ async fn restored(walled: &Walled, owed: OwedAct) -> Restored {
     let mut builder = ExtensionRegistryBuilder::<Config>::new();
     let autopilot = Autopilot::new(sup, None, None, quick(), |_| true);
     autopilot.register(&mut builder);
-    let home = Arc::clone(&walled.h.test.home);
-    let manager = fixtures::manager(home.path(), codex_login::AuthCredentialsStoreMode::File).await;
+    let home = Arc::clone(&h.test.home);
+    let cwd = h.test.config.cwd.clone();
+    let model = h.test.config.model.clone();
     let test = test_codex()
         .with_extensions(Arc::new(builder.build()))
-        .with_config(|config| {
+        .with_config(move |config| {
+            config.cwd = cwd;
+            config.model = model;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
         })
         .with_auth_manager(manager)
-        .resume(&walled.h._server, home, rollout)
+        .resume(&h._server, home, rollout)
         .await
         .unwrap_or_else(|err| panic!("the resumed thread: {err}"));
     autopilot.bind_thread_manager(Arc::downgrade(&test.thread_manager));
     let thread = test.session_configured.thread_id.to_string();
-    assert_eq!(thread, walled.h.thread, "the same session");
+    assert_eq!(thread, h.thread, "the same session");
     shared.observe(
         &Frame {
             primary_thread: Some(&thread),
             displayed_thread: Some(&thread),
             rollout_path: None,
-            cwd: test.cwd_path(),
+            cwd: test.config.cwd.as_path(),
             model: "gpt-5",
             codex_home: test.codex_home_path(),
             embedded: true,
@@ -1078,6 +1112,7 @@ async fn restored(walled: &Walled, owed: OwedAct) -> Restored {
     fake.open_gate("status");
     Restored {
         fake,
+        record,
         shared,
         autopilot,
         _test: test,

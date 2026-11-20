@@ -239,6 +239,8 @@ if case.startswith(('stdout_', 'refused_stdout_', 'missing_stdout_', 'status_ass
 if consumer == 'feature_evidence':
     operation_name = 'snapshot' if case in ('snapshot_success', 'semantic_log_root') else (
         'bundle' if case in ('bundle_success', 'semantic_missing_destination') else 'validate')
+    if case == 'semantic_missing_export_destination':
+        operation_name = 'export-progress'
     arguments = [str(path), operation_name, '--source', source, '--upstream', source,
                  '--record', str(pending if case == 'snapshot_success' else record_path)]
     if case == 'bundle_success':
@@ -247,6 +249,8 @@ if consumer == 'feature_evidence':
         arguments += ['--log-root', str(witness_path.parent)]
     elif case == 'semantic_destination':
         arguments += ['--destination', str(destination)]
+    elif case == 'semantic_part':
+        arguments += ['--part', str(record_path)]
 elif consumer == 'upstream_status':
     arguments = [str(path)]
     if status_assessment:
@@ -262,7 +266,7 @@ tree = ast.parse(source_bytes, filename=str(path))
 entries = [node for node in tree.body if isinstance(node, ast.If)
            and isinstance(node.test, ast.Compare) and isinstance(node.test.left, ast.Name)
            and node.test.left.id == '__name__']
-assert len(entries) == 1
+assert len(entries) == (2 if consumer == 'feature_evidence' else 1)
 entry = ast.Module(body=entries, type_ignores=[])
 witness['original_entry_guards'] = len(entries)
 witness['entry_ast_sha256'] = hashlib.sha256(ast.dump(entry).encode()).hexdigest()
@@ -330,7 +334,7 @@ class FeatureCliStatusTests(unittest.TestCase):
         witness = json.loads(witness_path.read_text())
         self.observations.append(dict(consumer=consumer, case=case, invocation=invocation,
                                       actual_exit=done.returncode, witness=witness))
-        self.assertEqual(witness['original_entry_guards'], 1)
+        self.assertEqual(witness['original_entry_guards'], 2 if consumer == 'feature_evidence' else 1)
         self.assertEqual(len(witness['entry_ast_sha256']), 64)
         self.assertEqual(witness['source_sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
         self.assertTrue(witness['source_unchanged'])
@@ -668,15 +672,22 @@ class FeatureCliStatusTests(unittest.TestCase):
                         self.assertIn('usage:', done.stdout if status == 0 else done.stderr)
 
     def test_evidence_semantic_parser_errors_stay_outside_operation_guard(self):
+        destination_error = 'bundle and export-progress require --destination and only those operations accept it'
+        errors = {
+            'semantic_log_root': '--log-root requires validate, progress or export-progress',
+            'semantic_destination': destination_error,
+            'semantic_missing_destination': destination_error,
+            'semantic_missing_export_destination': destination_error,
+            'semantic_part': '--part requires bundle, progress or export-progress',
+        }
         for invocation in ('entry', 'main'):
-            for case in ('semantic_log_root', 'semantic_destination', 'semantic_missing_destination'):
+            for case, expected_error in errors.items():
                 with self.subTest(invocation=invocation, case=case):
                     done, witness = self.child('feature_evidence', case, invocation)
                     self.assertEqual(done.returncode, 2)
                     self.assertFalse(witness['operation_returned'])
                     self.assertFalse(witness['raw_main_returned'])
-                    self.assertIn('--log-root requires validate; --destination is required only for bundle',
-                                  done.stderr)
+                    self.assertIn(expected_error, done.stderr)
 
 
 if __name__ == '__main__':

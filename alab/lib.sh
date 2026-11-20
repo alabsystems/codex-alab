@@ -61,6 +61,26 @@ alab_python_311() {
   esac
 }
 
+# Give native test fixtures room for concurrent thread stores, sockets and subprocesses.
+# launchd commonly supplies 256 soft descriptors. Respect the inherited hard ceiling.
+alab_native_test_nofile() {
+  local soft hard wanted limit
+  soft="$(ulimit -Sn)" || return $?
+  [[ "${soft}" != unlimited ]] || return 0
+  wanted="$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo 10240)"
+  (( wanted > 65536 )) && wanted=65536
+  (( soft < wanted )) || return 0
+  hard="$(ulimit -Hn)" || return $?
+  limit="${wanted}"
+  if [[ "${hard}" != unlimited ]] && (( hard < wanted )); then
+    limit="${hard}"
+    alab_say "native tests have a hard open-file limit of ${hard} (wanted ${wanted}): tests may fail with EMFILE"
+  fi
+  if (( soft < limit )) && ! ulimit -Sn "${limit}" 2>/dev/null; then
+    alab_say "open-file limit stays ${soft} (could not raise it to ${limit}): tests may fail with EMFILE"
+  fi
+}
+
 # alab_spec_lines: the pathspecs in an alab/*-paths file on stdin, one per line (comments,
 # blank lines and surrounding blanks dropped).
 alab_spec_lines() {
@@ -91,7 +111,7 @@ alab_pristine() {
 }
 
 # alab_pristine_config <alab-tree>: the cargo --config value under which a pristine upstream tree
-# builds with the crates <alab-tree>'s alab/vendor carries in place of upstream's (each one's
+# builds with the toolchain compatibility crates in <alab-tree>'s alab/vendor (each one's
 # ALAB-SOURCE.json: the very version and archive upstream locks, adapted to the Trust toolchain;
 # alab/vendor/README.md), or nothing when it carries none. Without them upstream alone does not
 # build under Trust at all (allocative 0.3.6: E0119, `impl Allocative for !` beside Infallible's,
@@ -100,9 +120,19 @@ alab_pristine() {
 # in as path overrides, which change no dependency and leave upstream's lockfile as it is
 # (--locked holds): upstream alone, as this toolchain builds it.
 alab_pristine_config() {
-  local record dir paths=""
+  local record dir override paths=""
   for record in "$1"/alab/vendor/*/ALAB-SOURCE.json; do
     [[ -f "${record}" ]] || continue
+    # Product behavior patches belong only to the ALab build being compared.
+    override="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -B -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    value = json.load(source).get("pristine_override", True)
+if type(value) is not bool:
+    sys.exit("pristine_override must be a boolean")
+print("true" if value else "false")
+' "${record}")" || { alab_say "cannot read pristine override in ${record}"; return 1; }
+    [[ "${override}" == true ]] || continue
     dir="$(alab_real "$(dirname "${record}")")" || return 1
     case "${dir}" in *\"* | *\\*)
       alab_say "alab_pristine_config: ${dir} cannot be named in a cargo --config string"
@@ -121,37 +151,39 @@ alab_pristine_clean() {
     "$1" "$2" "$3" "${TMPDIR:-/tmp}"
 }
 
-# alab_pristine_trees <checkout>: legacy path plus registered clean revision trees for
-# daily's existing target-only cleanup, NUL-delimited. Unknown, replaced and dirty keyed paths stay kept.
+# Print each registered, clean, detached pristine checkout eligible for target cleanup.
 alab_pristine_trees() {
-  local base field tree key
-  base="$(git -C "$1" rev-parse --path-format=absolute --git-path alab-pristine)" || return 1
-  printf '%s\0' "${base}"
-  while IFS= read -r -d '' field; do
-    [[ "${field}" == 'worktree '* ]] || continue
-    tree="${field#worktree }"
-    [[ "${tree}" == "${base}"-* ]] || continue
-    key="${tree#"${base}"-}"
-    [[ "${key}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || continue
-    alab_pristine_clean "${tree}" "${key}" "$1" || continue
-    printf '%s\0' "${tree}"
-  done < <(git -C "$1" worktree list --porcelain -z)
+  "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${alab_library_root}/alab/pristine_state.py" \
+    --cleanup-trees "$1" "${TMPDIR:-/tmp}"
 }
 
 # alab_pristine_at <checkout> <rev>: create the revision's tree with one ordinary add.
 # Occupied dirty, mismatched, broken or symlink paths are kept and refused, regardless of
 # cleanup policy. No repair or forced checkout can overwrite an existing build world.
+# --for-build applies the build's disk guardian to a missing tree's checkout.
 # A tree already at <rev> and unmodified is left alone, so a call from alab/check.sh run
 # contained (alab_contained: git cannot write there) succeeds once alab/sync.sh has put it there.
 alab_pristine_at() {
   local dir want
+  case "${3:-}" in "" | --for-build) ;; *) return 1 ;; esac
   want="$(git -C "$1" rev-parse -q --verify "$2^{commit}")" || return 1
   dir="$(alab_pristine "$1" "${want}")" || return 1
   if alab_pristine_clean "${dir}" "${want}" "$1"; then
     return 0
   fi
   if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
-    git -C "$1" worktree add --quiet --detach "${dir}" "${want}" || return $?
+    local add=(worktree add --quiet --detach "${dir}" "${want}")
+    if [[ "${3:-}" == --for-build ]]; then
+      # The candidate and the per-worktree Git directory can be on different volumes.
+      (
+        if [[ "${ALAB_CHECK_OUTCOME_FD:-}" == 19 ]]; then exec 18>&- 19>&-; fi
+        cd "$1/codex-rs" || exit 1
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${PWD}/target}" \
+          alab_build_command --disk-path "${dir}" git -C .. "${add[@]}"
+      ) || return $?
+    else
+      git -C "$1" "${add[@]}" || return $?
+    fi
     if alab_pristine_clean "${dir}" "${want}" "$1"; then
       return 0
     fi
@@ -177,19 +209,36 @@ alab_locked() {
   fi
 }
 
-# alab_build_target_ready <workspace> <target>: publish the real workspace to a capable Rust
+# Replace the calling process with the host package manager. Use a subshell for queries.
+alab_exec_pkg() {
+  if [[ -n "${ALAB_ATERM:-}" ]]; then
+    exec "${ALAB_ATERM}" pkg "$@"
+  elif [[ -n "${ATPKG_BIN:-}" && -x "${ATPKG_BIN}/atpkg" ]]; then
+    exec "${ATPKG_BIN}/atpkg" "$@"
+  elif command -v atpkg >/dev/null 2>&1; then
+    exec atpkg "$@"
+  elif command -v aterm >/dev/null 2>&1; then
+    exec aterm pkg "$@"
+  fi
+  return 127
+}
+
+# alab_build_target_ready <workspace> <target> [registration-refusal-file]: publish the real workspace to a capable Rust
 # cache registrar BEFORE making its target, then print the existing Cargo output location.
 # Old hosts keep unmarked targets unmanaged. A marked target always requires a working owner
 # gate; neither an unavailable helper nor a refused publication may start a build in it.
 alab_build_target_ready() {
   local workspace target home marked_root capabilities="" marked=0 helper=""
-  local registrar=() required=()
+  local retry_file="${3:-}" status
+  local required=() markers=()
   workspace="$(alab_real "$1")" || return 1
   target="$2"
   case "${target}" in /*) ;; *) target="${workspace}/${target}" ;; esac
   target="$(alab_real "${target}")" || return 1
   home="$(alab_real "${HOME:?}")" || return 1
-  for helper in "${target}/.aterm-build-cache.json" "${target}/build.noindex/.aterm-build-cache.json"; do
+  markers=("${target}/.aterm-build-cache.json" "${target}/.ubd/build.noindex/.aterm-build-cache.json"
+           "${target}/build.noindex/.aterm-build-cache.json")
+  for helper in "${markers[@]}"; do
     if [[ -e "${helper}" || -L "${helper}" ]]; then
       marked=1
       marked_root="$(alab_real "$(dirname "${helper}")")" || return 75
@@ -199,24 +248,16 @@ alab_build_target_ready() {
       esac
     fi
   done
-  if [[ -n "${ALAB_ATERM:-}" ]]; then
-    registrar=("${ALAB_ATERM}" pkg)
-  elif [[ -n "${ATPKG_BIN:-}" && -x "${ATPKG_BIN}/atpkg" ]]; then
-    registrar=("${ATPKG_BIN}/atpkg")
-  elif helper="$(command -v atpkg 2>/dev/null)"; then
-    registrar=("${helper}")
-  elif helper="$(command -v aterm 2>/dev/null)"; then
-    registrar=("${helper}" pkg)
-  fi
-  if [[ ${#registrar[@]} -gt 0 ]]; then
-    capabilities="$(HOME="${home}" "${registrar[@]}" __build_cache_register --capabilities 2>/dev/null)" \
-      || capabilities=""
-  fi
+  capabilities="$(HOME="${home}" alab_exec_pkg __build_cache_register --capabilities 2>/dev/null)" || {
+    status=$?
+    if [[ "$status" -eq 75 || "$status" -gt 128 ]]; then return "$status"; fi
+    capabilities=""
+  }
   if [[ "${capabilities}" == aterm-build-cache-register-v1 ]]; then
     mkdir -p "$(dirname "${target}")" || return 1
     # A compatible helper distinguishes a published/protected owner from an unmanaged
     # observation. Never accept the latter for an existing marked cache.
-    for helper in "${target}/.aterm-build-cache.json" "${target}/build.noindex/.aterm-build-cache.json"; do
+    for helper in "${markers[@]}"; do
       if [[ -e "${helper}" || -L "${helper}" ]]; then
         marked=1
         marked_root="$(alab_real "$(dirname "${helper}")")" || return 75
@@ -224,14 +265,20 @@ alab_build_target_ready() {
       fi
     done
     [[ "${marked}" -eq 0 ]] || required=(--require-owned)
-    if ! (cd "${workspace}" && HOME="${home}" "${registrar[@]}" __build_cache_register \
+    (cd "${workspace}" && HOME="${home}" alab_exec_pkg __build_cache_register \
       ${required[@]+"${required[@]}"} targo --unverified build \
-      "--manifest-path=${workspace}/Cargo.toml" "--target-dir=${target}") >/dev/null; then
+      "--manifest-path=${workspace}/Cargo.toml" "--target-dir=${target}") >/dev/null || {
+      status=$?
+      if [[ "$status" -gt 128 ]]; then return "$status"; fi
+      # Only a refusal from the registrar itself can justify another campaign attempt.
+      if [[ "$status" -eq 75 && -n "$retry_file" ]]; then
+        (set -C; printf '%s\n' "$status" > "$retry_file") || return 1
+      fi
       alab_say "cache owner publication failed for ${target}; no build started"
       return 75
-    fi
+    }
   else
-    for helper in "${target}/.aterm-build-cache.json" "${target}/build.noindex/.aterm-build-cache.json"; do
+    for helper in "${markers[@]}"; do
       [[ ! -e "${helper}" && ! -L "${helper}" ]] || marked=1
     done
     if [[ "${marked}" -ne 0 ]]; then
@@ -295,8 +342,14 @@ alab_check_targets_ready() {
 # detach through Perl. Preserve inherited descriptors, argv and environment; no
 # source/cache ownership or deletion policy changes here.
 alab_build_command() {
-  local target common cargo_home trust_home private_home build alternate shared workspace manifest="" word next=0
-  local extra=() result_args=() result_fd=""
+  local target common cargo_home trust_home private_home build alternate cwd workspace manifest="" word next=0 path
+  local paths=() disk_args=() result_args=() result_fd=""
+  # A preparatory Git checkout also writes its revision-specific destination.
+  if [[ "${1:-}" == --disk-path ]]; then
+    [[ $# -ge 3 && "$2" == /* ]] || return 1
+    disk_args+=(--disk-path "$2")
+    shift 2
+  fi
   case "${1:-}" in
     --result-file)
       [[ $# -ge 3 && "$2" == /* && ! -e "$2" && ! -L "$2" ]] || return 1
@@ -310,7 +363,8 @@ alab_build_command() {
       shift 2
       ;;
   esac
-  workspace="$(pwd -P)" || return 75
+  cwd="$(pwd -P)" || return 75
+  workspace="${cwd}"
   # The runner helper names ALab's workspace while building from pristine's
   # cwd. These producers name workspace manifests, never a member manifest.
   for word in "$@"; do
@@ -330,9 +384,14 @@ alab_build_command() {
     workspace="$(dirname "${manifest}")"
   fi
   target="${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-${workspace}/target}}"
-  target="$(alab_real "${target}")" || return 1
-  cargo_home="$(alab_real "${CARGO_HOME:-${HOME:?}/.cargo}")" || return 1
-  trust_home="$(alab_real "${TARGO_HOME:-${CARGO_HOME:-${HOME:?}/.cargo}}")" || return 1
+  cargo_home="${CARGO_HOME:-${HOME:?}/.cargo}"
+  trust_home="${TARGO_HOME:-${cargo_home}}"
+  [[ "${cargo_home}" == /* ]] || cargo_home="${cwd}/${cargo_home}"
+  [[ "${trust_home}" == /* ]] || trust_home="${cwd}/${trust_home}"
+  common="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
+  private_home="$(alab_cargo_home)" || return 1
+  paths=("${target}" "${workspace}" "${cwd}" "${common}" "${cargo_home}" "${trust_home}"
+          "${private_home}")
   if [[ -n "${CARGO_BUILD_BUILD_DIR:-}" ]]; then
     build="${CARGO_BUILD_BUILD_DIR//\{workspace-root\}/${workspace}}"
     alternate="${build//\{cargo-cache-home\}/${trust_home}}"
@@ -341,26 +400,29 @@ alab_build_command() {
       alab_say "disk resource stop: unresolved Cargo build directory ${build}; no command started"
       return 75
     fi
-    build="$(alab_real "${build}")" || return 75
-    extra+=(--disk-path "${build}")
+    paths+=("${build}")
     if [[ "${alternate}" != "${build}" ]]; then
-      alternate="$(alab_real "${alternate}")" || return 75
-      extra+=(--disk-path "${alternate}")
+      paths+=("${alternate}")
     fi
-  elif [[ -z "${CARGO_TARGET_DIR:-}" && -z "${CARGO_BUILD_TARGET_DIR:-}" && "$(uname -s)" == Darwin ]]; then
-    # The native macOS shim keeps intermediates here without moving Cargo's
-    # target artifacts. Checking the root also follows a volume-mounted alias.
-    shared="${HOME:?}/Library/Caches/aterm/.ubd/cargo-build.noindex"
-    extra+=(--disk-path "${shared}")
+  else
+    paths+=("${target}/build.noindex")
+    if [[ "$(uname -s)" == Darwin ]]; then
+      # Current and older shims can place intermediates on a volume under the target.
+      paths+=("${target}/.ubd/build.noindex")
+      if [[ -z "${CARGO_TARGET_DIR:-}" && -z "${CARGO_BUILD_TARGET_DIR:-}" ]]; then
+        paths+=("${HOME:?}/Library/Caches/aterm/.ubd/cargo-build.noindex")
+      fi
+    fi
   fi
-  common="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
-  private_home="$(alab_cargo_home)" || return 1
+  # Cargo opens these names during the build. Leave symlinks intact for the guardian's polls.
+  for path in "${paths[@]}"; do
+    [[ "${path}" == /* ]] || path="${cwd}/${path}"
+    disk_args+=(--disk-path "${path}")
+  done
   local guardian=("${ALAB_PYTHON:-/usr/bin/python3}" -I -B
     "${alab_library_root}/alab/command_guard.py" --inherit-fds --resource-stop
-    ${result_args[@]+"${result_args[@]}"} --min-free-gib 20 --disk-path "${target}"
-    --disk-path "${target}/build.noindex" --disk-path "${workspace}" --disk-path "$(pwd -P)" --disk-path "${common}"
-    --disk-path "${cargo_home}" --disk-path "${trust_home}" --disk-path "${private_home}"
-    --disk-path /tmp --disk-path "${TMPDIR:-/tmp}" ${extra[@]+"${extra[@]}"} -- "$@")
+    ${result_args[@]+"${result_args[@]}"} --min-free-gib 20 "${disk_args[@]}"
+    --disk-path /tmp --disk-path "${TMPDIR:-/tmp}" -- "$@")
   [[ -z "${ALAB_CHECK_VERDICT_FD:-}" || "${ALAB_CHECK_VERDICT_FD}" == 9 ]] || return 1
   case "${ALAB_CHECK_RESULT_FD:-}" in
     11 | 13) [[ "${result_fd}" == "${ALAB_CHECK_RESULT_FD}" ]] || return 1 ;;
@@ -414,8 +476,9 @@ _alab_package_cache_guard() {
     else
       cargo_home="${common}/alab-cargo-home"
     fi
-    # The artifact child can resolve onto another volume beneath the output directory.
-    disk_args=(--min-free-gib 20 --disk-path "${cache}" --disk-path "${output}" --disk-path "${output}/codex"
+    # V8, ripgrep's Cargo home and the published packages may each have their own volume.
+    disk_args=(--min-free-gib 20 --disk-path "${cache}" --disk-path "${cache}/v8" --disk-path "${cache}/cargo-home"
+      --disk-path "${output}" --disk-path "${output}/codex"
       --disk-path "${HOME:?}/Developer" --disk-path "${common}" --disk-path "${cargo_home}"
       --disk-path /tmp --disk-path "${TMPDIR:-/tmp}")
   fi
@@ -1011,7 +1074,10 @@ alab_contained() {
 }
 
 # Native project compiler selection and explicit admission, shared by gate and package.
-alab_project_run() (
+alab_project_run() ( alab_project_exec "$@"; )
+
+# Become the native lease owner when the caller's own PID is the cancellation target.
+alab_project_exec() {
   local repo="$1" source="$2" native cargo_home key
   shift 2
   # Selection and its controller use this repository, not inherited Git redirects.
@@ -1030,14 +1096,11 @@ alab_project_run() (
     alab_say "atpkg-publish must resolve to an absolute executable"
     return 1 ;;
   esac
-  if [[ -n "${source}" ]]; then
-    CARGO_HOME="${cargo_home}" TARGO_HOME="${cargo_home}" \
-      "${native}" toolchain run --repo "${repo}" --source "${source}" -- "$@"
-  else
-    CARGO_HOME="${cargo_home}" TARGO_HOME="${cargo_home}" \
-      "${native}" toolchain run --repo "${repo}" -- "$@"
-  fi
-)
+  local selection=(--repo "${repo}")
+  if [[ -n "${source}" ]]; then selection+=(--source "${source}"); fi
+  export CARGO_HOME="${cargo_home}" TARGO_HOME="${cargo_home}"
+  exec "${native}" toolchain run "${selection[@]}" -- "$@"
+}
 
 # Called only by a controller the native runner started. These fields carry the
 # already selected tools; they are not a replacement for native authentication.
@@ -1063,6 +1126,21 @@ alab_project_selected() {
   done
   export ALAB_CARGO="${alab_library_root}/alab/project-targo.sh"
 }
+
+# Run inside the working project's native toolchain lease. Only the lockfile
+# and the registered target are writable in the source checkout.
+alab_project_resolve_cargo_lock() (
+  local workspace="$1" build_target
+  alab_project_selected || return $?
+  build_target="$(alab_build_target_ready "${workspace}" "${CARGO_TARGET_DIR:-${workspace}/target}")" \
+    || return $?
+  export CARGO_TARGET_DIR="${build_target}"
+  cd "${workspace}" || return $?
+  alab_contained --read "${alab_library_root}/alab" --read "${ATPKG_PROJECT_FRONT}" \
+    --read "${ATPKG_PROJECT_EXECUTION}" "${workspace}/Cargo.lock" "${build_target}" -- \
+    /bin/bash -c '. "$1/alab/lib.sh"; shift; alab_build_command "$@"' \
+    alab-resolver-disk "${alab_library_root}" "${ALAB_CARGO}" metadata --format-version 1
+)
 
 # Resolve only local metadata through the existing isolated Git reader. No
 # compiler is queried and no source/cache tree is written.

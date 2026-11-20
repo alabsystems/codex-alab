@@ -254,3 +254,115 @@ fn enhanced_header_speed_row_stays_inside_narrow_terminal_widths() {
         }
     }
 }
+
+#[test]
+fn plain_header_keeps_model_tier_and_effort_before_indenting() {
+    use crate::history_cell::SessionHeaderHistoryCell;
+    use crate::line_truncation::line_width;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use ratatui::style::Style;
+    use ratatui::style::Stylize;
+    use ratatui::text::Line;
+
+    let _scope = interface::scoped(Box::leak(Box::new(interface::State::new())));
+    interface::configure(true);
+    for (model, effort) in [
+        ("gpt-6.2-astra · Fast", Some(ReasoningEffort::XHigh)),
+        ("gpt-6.2-astra · Ultrafast", Some(ReasoningEffort::XHigh)),
+        ("سلام ｶﾞ 👩🏽‍💻", None),
+    ] {
+        let suffix = effort
+            .as_ref()
+            .map(|effort| format!(" ({})", effort.as_str()));
+        let header = SessionHeaderHistoryCell::new(model.into(), effort, "project".into(), "test");
+        let text = format!("{model}{}", suffix.as_deref().unwrap_or_default());
+        let fit = line_width(&Line::from(text.as_str()));
+        for width in fit..=fit + 6 {
+            let line = crate::terminal_palette::with_test_default_colors(None, || {
+                header
+                    .display_lines(width as u16)
+                    .into_iter()
+                    .nth_back(1)
+                    .unwrap()
+            });
+            let indent = " ".repeat((width - fit).min(5));
+            assert_eq!(line.to_string(), format!("{indent}{text}"), "width {width}");
+            let model_span = line
+                .spans
+                .iter()
+                .find(|span| span.content == model)
+                .unwrap();
+            assert_eq!(model_span.style, Style::default());
+            if let Some(suffix) = &suffix {
+                assert_eq!(line.spans.last(), Some(&suffix.as_str().dim()));
+            }
+        }
+        if suffix.is_some() {
+            // Even the final "(xhigh)" is too wide for a six-cell continuation.
+            let clipped = header.display_lines(6).into_iter().nth_back(1).unwrap();
+            assert!(!clipped.to_string().starts_with(' '));
+            assert!(clipped.to_string().ends_with('…'));
+        }
+    }
+}
+
+#[test]
+fn plain_header_wraps_model_and_effort_before_the_directory() {
+    use crate::history_cell::SessionHeaderHistoryCell;
+    use crate::line_truncation::line_width;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use ratatui::style::Modifier;
+
+    let _scope = interface::scoped(Box::leak(Box::new(interface::State::new())));
+    interface::configure(true);
+    for (model, effort, width, expected, dimmed) in [
+        (
+            "GPT-6.2-Astra · Ultrafast",
+            Some(ReasoningEffort::XHigh),
+            13,
+            &["GPT-6.2-Astra", "· Ultrafast", "(xhigh)"][..],
+            &["", "", "(xhigh)"][..],
+        ),
+        (
+            "GPT-6.2-Astra · Ultrafast",
+            Some(ReasoningEffort::XHigh),
+            28,
+            &["     GPT-6.2-Astra", "     · Ultrafast (xhigh)"],
+            &["", " (xhigh)"],
+        ),
+        (
+            "organization/deployment-with-long-name · Fast",
+            Some(ReasoningEffort::High),
+            26,
+            &["organization/deployment-w…", "· Fast (high)"],
+            &["", " (high)"],
+        ),
+        (
+            "M",
+            Some(ReasoningEffort::Custom("one two three".into())),
+            10,
+            &["M (one two", "three)"],
+            &[" (one two", "three)"],
+        ),
+        ("سلام ｶﾞ 👩🏽‍💻", None, 6, &[" سلام", " ｶﾞ 👩🏽‍💻"], &["", ""]),
+    ] {
+        let header = SessionHeaderHistoryCell::new(model.into(), effort, "project".into(), "test");
+        let lines =
+            crate::terminal_palette::with_test_default_colors(None, || header.display_lines(width));
+        let directory = lines.len() - 1;
+        let model_rows = &lines[directory - expected.len()..directory];
+        for ((row, &expected), &dimmed) in model_rows.iter().zip(expected).zip(dimmed) {
+            assert_eq!(row.to_string(), expected);
+            assert_eq!(
+                row.spans
+                    .iter()
+                    .filter(|span| span.style.add_modifier.contains(Modifier::DIM))
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                dimmed
+            );
+            assert!(line_width(row) <= usize::from(width));
+        }
+        assert!(lines.last().unwrap().to_string().contains("project") || width < 7);
+    }
+}

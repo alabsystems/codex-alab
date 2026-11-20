@@ -107,6 +107,29 @@ fn occupied_stash_and_size_bounds_do_not_replace_actual_editor_owners() {
 }
 
 #[test]
+fn a_matching_clock_keeps_the_editor_behind_a_replayed_view() -> io::Result<()> {
+    let mut source = pane();
+    source.set_composer_text("original draft".into(), Vec::new(), Vec::new());
+    let bytes = capture_no_primary(&source, &HashMap::new(), BUDGET)?;
+    let editor = BottomPane::alab_prepare_retained_no_primary_checkpoint(&bytes, BUDGET, 1024)?;
+    let saved_clock = source.alab_capture_delayed_approvals(BUDGET)?;
+    let clock = PreparedDelayed::decode(&saved_clock, BUDGET)?;
+    let mut destination = pane();
+    clock.prime_before_original_replay(&mut destination)?;
+    destination.show_selection_view(Default::default());
+
+    clock.prime_before_original_replay(&mut destination)?;
+    assert!(
+        editor
+            .install_with_stash(&mut destination, &mut HashMap::new(), Some(&clock))
+            .is_err()
+    );
+    assert!(destination.has_active_modal());
+    assert!(destination.composer_text().is_empty());
+    Ok(())
+}
+
+#[test]
 fn late_native_editor_move_preserves_register_pending_command_and_real_approval() -> io::Result<()>
 {
     use crate::bottom_pane::ApprovalRequest;
@@ -176,7 +199,7 @@ fn late_native_editor_move_preserves_register_pending_command_and_real_approval(
     destination
         .composer
         .handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-    assert!(destination.composer.attachments.local_images.len() >= 1);
+    assert!(!destination.composer.attachments.local_images.is_empty());
     Ok(())
 }
 

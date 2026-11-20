@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import json
+import runpy
 from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "smoke"))
 import renewal_follow as renewal
+
+FIXTURE = Path(__file__).parent / "fixtures/renewal-plan-custody"
 
 
 class SuccessorRestTests(unittest.TestCase):
@@ -39,7 +42,7 @@ class SuccessorRestTests(unittest.TestCase):
         self.assertEqual(renewal.successor_rest(record, "thread")["kind"], "none")
 
     def test_terminal_proof_is_required_in_addition_to_retained_plan(self):
-        events = json.loads((Path(__file__).parent / "fixtures/renewal-plan-custody/rollout.json").read_text())
+        events = json.loads((FIXTURE / "rollout.json").read_text())
         wall = events[0]["payload"]["turn_id"]
         terminal = {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": wall}}
         events.insert(3, copy.deepcopy(terminal))
@@ -59,6 +62,30 @@ class SuccessorRestTests(unittest.TestCase):
                 changed.insert(4, changed.pop())
             with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 renewal.validate_completed_original_turn(changed, wall)
+
+    def test_completed_plan_must_be_recorded_before_the_first_terminal_event(self):
+        start, call, output, resume = json.loads((FIXTURE / "rollout.json").read_text())
+        wall = start["payload"]["turn_id"]
+        project = runpy.run_path(str(FIXTURE / "project.py"))["project"]
+        completed = {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": wall}}
+        for kind in ("task_complete", "turn_complete", "turn_aborted"):
+            end = {"type": "event_msg", "payload": {"type": kind, "turn_id": wall}}
+            for prefix in ([start, call, end, output], [start, end, call, output]):
+                rows = [*prefix, resume, completed]
+                for evidence in (rows, project(rows)):
+                    with self.subTest(kind=kind, prefix=prefix), self.assertRaisesRegex(RuntimeError, "first turn ended"):
+                        renewal.validate_completed_original_turn(evidence, wall)
+
+    def test_boundary_aliases_can_change_during_a_chain_of_resumes(self):
+        start, call, output, resume = json.loads((FIXTURE / "rollout.json").read_text())
+        wall = start["payload"]["turn_id"]
+
+        def boundary(kind):
+            return {"type": "event_msg", "payload": {"type": kind, "turn_id": wall}}
+
+        events = [start, call, output, boundary("turn_complete"), boundary("turn_started"),
+                  boundary("task_complete"), resume, boundary("task_complete")]
+        self.assertEqual(renewal.validate_completed_original_turn(events, wall, 3), [wall] * 3)
 
 
 if __name__ == "__main__":

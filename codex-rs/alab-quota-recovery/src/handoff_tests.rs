@@ -283,11 +283,11 @@ async fn weekly_wall_without_credit_yields_to_a_ready_account_handoff() {
     );
 }
 
-/// A creditless ordinary wall still reaches account handoff more than a day away.
+/// A creditless ordinary wall still reaches account handoff beyond the reset boundary.
 #[tokio::test]
 async fn a_distant_creditless_weekly_wall_still_reaches_handoff() {
     let fixture = Fixture::new().await;
-    let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+    let reset = chrono::Utc::now().timestamp() + 49 * 3600;
     Mock::given(method("GET"))
         .and(path(USAGE))
         .respond_with(usage(true, false, reset))
@@ -324,7 +324,7 @@ async fn a_distant_creditless_weekly_wall_still_reaches_handoff() {
 async fn a_distant_creditless_wall_keeps_polling_until_restored() {
     for with_host in [false, true] {
         let fixture = Fixture::new().await;
-        let reset = chrono::Utc::now().timestamp() + 25 * 3600;
+        let reset = chrono::Utc::now().timestamp() + 49 * 3600;
         let reads = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&reads);
         Mock::given(method("GET"))

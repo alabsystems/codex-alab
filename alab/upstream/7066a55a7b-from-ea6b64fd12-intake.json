@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "base": "ea6b64fd12b804ca1fbce54f772df6ac44d538ad",
+  "target": "7066a55a7b94345757758385a538c72fda571b84",
+  "frontier": "ea6b64fd12b804ca1fbce54f772df6ac44d538ad",
+  "commits": [
+    {
+      "sha": "e73da8bd1be78317a8748867606dd143a6c6a63b",
+      "subject": "Preserve base and developer instructions in host child preparation (#62128)",
+      "paths": [
+        "codex-rs/core/src/agent/child_config.rs",
+        "codex-rs/core/src/agent/host/invocation.rs",
+        "codex-rs/core/src/agent/host/types.rs",
+        "codex-rs/core/tests/suite/scenarios_reserved_spawn.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__reserved_spawn__prepared_child_instructions_subagent_override.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "The live host-child preparation result should carry the same base-instruction provenance and developer-instruction inheritance that native subagents use.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 11ca037182836e600c00c2044ae5cacf70d9cf9bb1f8b6d1bd791382e4abd4ff.",
+        "Host preparation still verifies the active invocation and registered thread before returning data. Its developer instruction now uses the same V2 override and parent fallback as native child creation. The returned BaseInstructions includes both text and provenance.",
+        "The reserved-spawn scenarios apply that data to a destination with a different model. Their cases cover custom base text, model-owned base re-resolution and the V2 developer override. These scenarios have not been run on the ALab integration."
+      ],
+      "revisit": "Run the reserved-spawn scenarios after integration, including the existing stale invocation and child admission cases. Keep instruction provenance distinct from the runtime authority of the destination."
+    },
+    {
+      "sha": "7066a55a7b94345757758385a538c72fda571b84",
+      "subject": "Support enterprise MCP sign-in without refresh tokens (#62129)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/config/src/mcp_types.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/rmcp-client/src/ema_auth.rs",
+        "codex-rs/rmcp-client/src/ema_auth_tests.rs",
+        "codex-rs/rmcp-client/src/ema_exchange.rs",
+        "codex-rs/rmcp-client/src/ema_exchange_tests.rs",
+        "codex-rs/rmcp-client/src/ema_identity.rs",
+        "codex-rs/rmcp-client/src/ema_identity_tests.rs",
+        "codex-rs/rmcp-client/src/enterprise_oauth_login.rs",
+        "codex-rs/rmcp-client/src/enterprise_oauth_login_tests.rs",
+        "codex-rs/rmcp-client/src/oauth.rs",
+        "codex-rs/rmcp-client/src/oauth/ema_identity.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Support identity providers that issue a current OIDC ID token without a refresh token within configured ema_auth. Retain the separate account refresh credential path and the existing issuer, client and transport restrictions.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 24ce1f10b7588e4eeb6a57a02a4d93db0083a7992c5e6416dac501f7691aee5c.",
+        "The stored-login path prefers a bound refresh token. For an ID-token exchange subject it verifies issuer, audience, authorized party and expiration locally. The configured IdP verifies the credential during exchange. The credential lease pins the atomic login record, revalidates the subject and releases before resource authorization I/O.",
+        "The account-backed resolver still requires its refresh credential. The changed tests cover offline_access, login with and without refresh tokens, expired and foreign issuer assertions, and the selected subject token type. The update pins rmcp 3.6.0 to b11a40d889e022087d7f2b8cd23aa28e19ceaf5b."
+      ],
+      "revisit": "Qualify the exact SDK revision and run merged login, stored-identity and exchange tests, including credential replacement and issuer/client mismatch. Check the ALab credential and transport gates continue to hold through both exchange requests."
+    }
+  ]
+}

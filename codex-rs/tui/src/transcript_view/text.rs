@@ -42,7 +42,7 @@ use ratatui::text::Line;
 
 /// One cell's logical text and its width-dependent display rows.
 pub(crate) struct TextLayout {
-    pub(super) image: Option<std::sync::Arc<crate::transcript_image::TranscriptImage>>,
+    pub(super) images: Vec<std::sync::Arc<crate::transcript_image::TranscriptImage>>, // ALAB(image-history): a prompt can own multiple attachments.
     logical: Vec<LogicalLine>,
     text: String,
     rows: Vec<TextRow>,
@@ -168,7 +168,7 @@ impl TextLayout {
         if let Some(control) = &self.disclosure_control {
             layout = layout.with_control(control.label.clone(), control.anchor);
         }
-        layout.image = self.image.clone();
+        layout.images = self.images.clone(); // ALAB(image-history): retain attachment order across reflow.
         if self.leading_blank_hidden {
             layout = layout.without_leading_blank_row();
         }
@@ -357,23 +357,19 @@ impl TextLayout {
         // Images occupy visual space, but have no searchable or selectable text rows.
         self.text_row_count()
             + self
-                .visible_image()
-                .map_or(0, |image| usize::from(image.rows))
+                .visible_images()
+                .map(|image| usize::from(image.rows))
+                .sum::<usize>() // ALAB(image-history): each visible preview reserves its own rows.
     }
 
     pub(super) fn text_row_count(&self) -> usize {
         self.rows.len()
     }
 
-    pub(super) fn visible_image(
+    pub(super) fn visible_images(
         &self,
-    ) -> Option<&std::sync::Arc<crate::transcript_image::TranscriptImage>> {
-        self.image.as_ref().filter(|image| {
-            image.columns + 2 <= self.width
-                && (image.protocol != crate::pets::ImageProtocol::Sixel
-                    || crate::transcript_image::terminal_cell_size()
-                        == Some((image.cell_width, image.cell_height)))
-        })
+    ) -> impl Iterator<Item = &std::sync::Arc<crate::transcript_image::TranscriptImage>> {
+        super::image_layout::visible(&self.images, self.width) // ALAB(image-history): only reserve and draw previews that fit the current terminal.
     }
 
     /// A control label is visible activity even when its selectable source is empty.
@@ -475,7 +471,7 @@ impl TextLayout {
 
     /// Find the display row containing a source position, including omitted wrapping whitespace.
     pub(super) fn row_for_offset(&self, offset: usize) -> usize {
-        if self.visible_image().is_some() && offset >= self.text.len() {
+        if offset >= self.text.len() && self.visible_images().next().is_some() { // ALAB(image-history): anchor the text end to the last preview row.
             return self.row_count().saturating_sub(1);
         }
         let before_control = if let Some(control_row) = self.disclosure_row() {
@@ -615,7 +611,7 @@ impl TextLayout {
             }
         }
         Self {
-            image: None,
+            images: Vec::new(), // ALAB(image-history): text-only layouts allocate no previews.
             logical,
             text,
             rows,
@@ -784,3 +780,7 @@ mod tab_tests;
 // ALAB(retained-ui): preserve exact held layout revisions without rendering.
 #[path = "../../../alab-tui/glue/retained_text_layout.rs"]
 pub(crate) mod alab_retained_layout;
+
+// ALAB(banner): project native launch artwork only while materializing a visual selection.
+#[path = "../../../alab-tui/glue/banner_selection.rs"]
+mod alab_banner_selection;

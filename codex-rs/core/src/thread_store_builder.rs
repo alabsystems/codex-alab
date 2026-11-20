@@ -66,14 +66,22 @@ impl<'config> ThreadStoreBuilder<'config> {
                     .features
                     .enabled(Feature::BackgroundPaginatedRolloutMigration);
                 let has_state_db = state_db.is_some();
+                #[cfg(unix)]
+                let shell_output_home = config.codex_home.to_path_buf(); // ALAB(shell-output): the local store home identifies its retained logs.
                 let store = Arc::new(
                     LocalThreadStore::new(LocalThreadStoreConfig::from_config(config), state_db)
                         .with_thread_data_cleanup(move |thread_ids| {
                             let additional_cleanup = additional_cleanup.clone();
+                            #[cfg(unix)]
+                            let shell_output_home = shell_output_home.clone(); // ALAB(shell-output): the existing cleanup may run concurrently for distinct threads.
                             Box::pin(async move {
+                                #[cfg(unix)]
+                                let shell_output_threads = thread_ids.clone(); // ALAB(shell-output): preserve existing host cleanup's ownership and refusal order.
                                 if let Some(cleanup) = additional_cleanup {
                                     cleanup(thread_ids).await?;
                                 }
+                                #[cfg(unix)]
+                                crate::alab_shell_log_store::delete_threads(shell_output_home, shell_output_threads).await?; // ALAB(shell-output): retire captures under the store's deletion and writer locks.
                                 Ok(())
                             })
                         }),

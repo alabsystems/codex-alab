@@ -48,15 +48,10 @@ impl ExecCell {
                         ));
                     }
                 }
-                if call.duration.is_some() || output.exit_code != 0 {
-                    let mut result: Line = if output.exit_code == 0 {
-                        Line::from("✓".green().bold())
-                    } else {
-                        Line::from(vec![
-                            "✗".red().bold(),
-                            format!(" ({})", output.exit_code).into(),
-                        ])
-                    };
+                // ALAB(shell-output): a retained preview may predate explicit completion status.
+                if !call.is_pending()
+                    && let Some(mut result) = output.transcript_outcome()
+                {
                     if let Some(duration) = call.duration {
                         let duration = format_duration(duration);
                         result.push_span(format!(" • {duration}").dim());

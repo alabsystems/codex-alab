@@ -227,22 +227,32 @@ impl Session {
     ///
     /// Callers must serialize updates through completion, including model
     /// resolution, so each sparse patch sees the preceding publication.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the final managed-policy check and active settings publication must remain atomic"
-    )]
     pub(super) async fn apply_turn_settings(
         &self,
         turn_id: &str,
         update: TurnSettingsUpdate,
     ) -> TurnSettingsUpdateOutcome {
+        self.apply_checked_turn_settings(turn_id, update, None).await // ALAB(defaults): share the same live authorization with confirmed model retirement.
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the final managed-policy check and active settings publication must remain atomic"
+    )]
+    async fn apply_checked_turn_settings(
+        &self,
+        turn_id: &str,
+        update: TurnSettingsUpdate,
+        retirement: Option<&alab_model_retirement::ConfirmedRetirement>, // ALAB(defaults): require the original task and current serving catalog for an automatic retry.
+    ) -> TurnSettingsUpdateOutcome {
+        let _activation = self.alab_serialize_model_activation().await; // ALAB(defaults): serialize sparse client and retirement updates through publication.
         let updates_model_settings = update.model.is_some()
             || update.effort.is_some()
             || update.summary.is_some()
             || update.service_tier.is_some();
         let requires_model_switching = updates_model_settings
             || (update.approvals_reviewer.is_none() && update.environments.is_none());
-        if requires_model_switching && !self.features.enabled(Feature::StepModelSwitching) {
+        if requires_model_switching && retirement.is_none() && !self.features.enabled(Feature::StepModelSwitching) { // ALAB(defaults): an authenticated retirement is distinct from client-requested model switching.
             return TurnSettingsUpdateOutcome::Rejected {
                 reason: "turn settings updates require the step_model_switching feature"
                     .to_string(),
@@ -351,6 +361,7 @@ impl Session {
         // safety checks together with applying the update under state and active_turn; no model
         // lookup or other preparation runs under these locks.
         let state = self.state.lock().await;
+        if retirement.is_some_and(|proof| !proof.still_targets(self, &task.turn_context, &state.session_configuration)) { return TurnSettingsUpdateOutcome::TargetUnavailable; } // ALAB(defaults): a stale rejection cannot replace a newer selection, task, or account.
         // Environment configuration can arrive before its executor connects. If this update
         // omits environments, use what the running turn's manager knows now.
         let current_environments = self.services.turn_environments.selections();
@@ -496,6 +507,8 @@ fn any_environment_has_full_disk_write(
             .has_full_disk_write_access(),
     }
 }
+
+#[path = "../../../alab-core/glue/model_retirement.rs"] mod alab_model_retirement; // ALAB(defaults): recover a pre-stream provider retirement using normal active-step validation.
 
 #[cfg(test)]
 #[path = "step_activation_tests.rs"]

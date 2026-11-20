@@ -2,6 +2,7 @@
 # Copyright 2026 Andrew Yates
 # SPDX-License-Identifier: Apache-2.0
 """Inspect explicit local artifact/process identities without running the artifact."""
+import ctypes
 import hashlib
 from contextlib import ExitStack
 import json
@@ -24,20 +25,31 @@ def _close_descriptor(descriptor, primary):
             raise
         selected, secondary = primary, cleanup_error
         phase = 'artifact descriptor cleanup'
-        if isinstance(primary, Exception) and not isinstance(cleanup_error, Exception):
+        # A reported __class__ must not execute callbacks or change cancellation authority.
+        if (issubclass(type(primary), Exception)
+                and not issubclass(type(cleanup_error), Exception)):
             selected, secondary = cleanup_error, primary
             phase = 'artifact observation'
         try:
             selected.add_note(f'{phase} failed: {secondary!r}')
         except BaseException as note_error:
-            if isinstance(selected, Exception) and not isinstance(note_error, Exception):
+            if (issubclass(type(selected), Exception)
+                    and not issubclass(type(note_error), Exception)):
                 raise note_error from selected
         if selected is not primary:
             raise selected from primary
 
 
+def resolve_pointer(path):
+    try:
+        return Path(path).resolve(strict=True)
+    except RuntimeError as error:
+        # pathlib reports a symlink loop as RuntimeError before Python 3.13.
+        raise ValueError(str(error)) from error
+
+
 def package_identity(directory):
-    root = Path(directory).resolve(strict=True)
+    root = resolve_pointer(directory)
     manifest = root / 'alab-build.json'
     image = root / 'bin/codex'
     with ExitStack() as opened:
@@ -68,6 +80,8 @@ def package_identity(directory):
             if (file_identity(before) != file_identity(os.fstat(fd))
                     or file_identity(before) != file_identity(named)):
                 raise ValueError('artifact changed during inspection')
+        if resolve_pointer(directory) != root:
+            raise ValueError('package pointer changed during inspection')
         return {'source': value['source'], 'version': value['version'],
                 'package': str(root), 'image': str(image),
                 'manifest_sha256': hashlib.sha256(raw).hexdigest(),
@@ -76,12 +90,14 @@ def package_identity(directory):
 
 
 def executable_identity(executable):
-    image = Path(executable).resolve(strict=True)
+    image = resolve_pointer(executable)
     if image.name != 'codex' or image.parent.name != 'bin':
         raise ValueError('executable does not resolve to a packaged bin/codex')
     result = package_identity(image.parent.parent)
     if result['image'] != str(image):
         raise ValueError('executable differs from the package image')
+    if resolve_pointer(executable) != image:
+        raise ValueError('executable pointer changed during inspection')
     result['executable_pointer'] = str(executable)
     return result
 
@@ -130,9 +146,36 @@ def mapped_images(output, pid):
     return images
 
 
+def process_main_image(pid):
+    """Read the macOS kernel's main executable path, not an arbitrary mapping."""
+    if type(pid) is not int or not 0 < pid <= 0x7fffffff:
+        raise ValueError('running PID must fit a positive native pid_t')
+    if sys.platform != 'darwin':
+        raise ValueError('running-image inspection currently supports macOS only')
+    try:
+        proc_pidpath = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_pidpath
+    except AttributeError as error:
+        raise ValueError('kernel main executable inspection is unavailable') from error
+    proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    proc_pidpath.restype = ctypes.c_int
+    buffer = ctypes.create_string_buffer(4096)
+    length = proc_pidpath(pid, buffer, len(buffer))
+    if length <= 0:
+        raise OSError(ctypes.get_errno(), 'kernel main executable path is unavailable')
+    if length >= len(buffer):
+        raise ValueError('kernel main executable path is truncated')
+    raw = buffer.raw
+    if raw[length] != 0 or b'\0' in raw[:length]:
+        raise ValueError('kernel main executable path has an invalid length')
+    image = os.fsdecode(raw[:length])
+    if not Path(image).is_absolute():
+        raise ValueError('kernel main executable path is not absolute')
+    return image
+
+
 def running_identity(pid):
-    if type(pid) is not int or pid <= 0:
-        raise ValueError('running PID must be a positive integer')
+    if type(pid) is not int or not 0 < pid <= 0x7fffffff:
+        raise ValueError('running PID must fit a positive native pid_t')
     if sys.platform != 'darwin':
         raise ValueError('running-image inspection currently supports macOS only')
 
@@ -145,21 +188,24 @@ def running_identity(pid):
         return value
 
     started = start_time()
+    main_image = process_main_image(pid)
     output = subprocess.check_output(
         ['/usr/sbin/lsof', '-a', '-p', str(pid), '-d', 'txt', '-FniD'],
         text=True, stderr=subprocess.PIPE, timeout=5)
     images = {(row['path'], row.get('device'), row.get('inode')) for row in mapped_images(output, pid)
-              if 'path' in row and Path(row['path']).name == 'codex'}
+              if row.get('path') == main_image}
     if len(images) != 1:
-        raise ValueError('no unique loaded codex image')
+        raise ValueError('no unique loaded main executable image')
     image, device, inode = images.pop()
     result = executable_identity(image)
     if device != result['image_device'] or inode != str(result['image_inode']):
         raise ValueError('loaded image device/inode differs from the current artifact')
+    if process_main_image(pid) != main_image:
+        raise ValueError('kernel main executable changed during inspection')
     if start_time() != started:
         raise ValueError('PID identity changed during inspection')
     result.update(pid=pid, process_started_at=started,
-                  identity_basis='loaded process image device/inode and packaged manifest')
+                  identity_basis='kernel main executable path, loaded device/inode and packaged manifest')
     return result
 
 

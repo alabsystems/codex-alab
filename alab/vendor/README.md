@@ -17,10 +17,18 @@ The golden test helper also normalizes Rust's internal `alloc::rcs::arc::Arc` na
 to its public `alloc::sync::Arc` spelling. Its allocation sizes, fields and edges
 remain checked against the unchanged snapshot.
 
-The workspace has one `ALAB(toolchain)` patch entry. Drop this copy and entry when
+The workspace selects this copy with its `ALAB(toolchain)` patch entry. Drop this copy and entry when
 upstream ships equivalent compatibility and Codex's committed lockfile selects it.
 
 Pristine upstream (alab/check.sh's comparisons, alab/sync.sh's lane-fault build) is built
-with these copies too, as path overrides (`lib.sh`, `alab_pristine_config`): without them
-upstream alone does not compile under Trust. Each copy's `ALAB-SOURCE.json` is what names it,
-and a path override takes only a copy whose manifest keeps upstream's dependencies.
+with the toolchain compatibility copies too, as path overrides (`lib.sh`, `alab_pristine_config`): without them
+upstream alone does not compile under Trust. Each toolchain copy's `ALAB-SOURCE.json` names
+its original archive, and a path override keeps upstream's dependencies.
+
+`portable-pty/` carries the locked crates.io 0.9.0 library and its MIT license.
+The one-line Unix change passes an explicit working directory to the child even
+when the path is missing. The OS then reports the failed launch. An omitted
+directory still defaults to the home directory. The receipt records the original
+archive and file digests. Its `pristine_override` is false so upstream comparisons
+use crates.io's original behavior. Retire the patch when the locked upstream
+version requires an explicit working directory.

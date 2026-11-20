@@ -423,6 +423,7 @@ impl Server {
 
 enum Reply {
     Capacity(u64),
+    StreamedCapacity(&'static str),
     Quota,
     Stream(VecDeque<(Option<oneshot::Receiver<()>>, String)>),
 }
@@ -561,6 +562,10 @@ async fn provider_response(
             StatusCode::SERVICE_UNAVAILABLE,
             [("retry-after", seconds.to_string())],
             Json(json!({"error": {"code": "server_is_overloaded", "message": "fixture model at capacity"}})),
+        ).into_response(),
+        Some(Reply::StreamedCapacity(retry_after)) => (
+            [("content-type", "text/event-stream"), ("retry-after", retry_after)],
+            responses::sse_failed("overload", "server_is_overloaded", "fixture model at capacity"),
         ).into_response(),
         Some(Reply::Quota) => (
             [("content-type", "text/event-stream"), ("retry-after", "600")],
@@ -778,7 +783,7 @@ fn capacity_errors(messages: &[Value]) -> Vec<ErrorNotification> {
         .collect()
 }
 
-fn exact_notice(error: &ErrorNotification, thread: &str, turn: &str) {
+fn exact_notice(error: &ErrorNotification, thread: &str, turn: &str, retry_after: u64) {
     assert_eq!(error.thread_id, thread);
     assert_eq!(error.turn_id, turn);
     assert!(error.will_retry);
@@ -787,6 +792,15 @@ fn exact_notice(error: &ErrorNotification, thread: &str, turn: &str) {
         Some(CodexErrorInfo::ServerOverloaded)
     );
     assert_eq!(error.error.message, CAPACITY_RETRY_NOTICE);
+    // The whole client scenario runs within CASE_LIMIT. A late rejoin can see
+    // fewer seconds than the header, including the last positive second.
+    let earliest = retry_after.saturating_sub(CASE_LIMIT.as_secs()).max(1);
+    let details = error.error.additional_details.as_deref();
+    assert!(
+        (earliest..=retry_after)
+            .any(|seconds| details == Some(format!("Retry scheduled in {seconds}s.").as_str())),
+        "expected the remaining provider wait ({earliest}..={retry_after}s), got {details:?}"
+    );
 }
 
 async fn create_thread(client: &mut Client) -> Result<(String, String)> {
@@ -833,19 +847,14 @@ async fn start_turn(client: &mut Client, thread: &str, id: i64, prompt: &str) ->
     Ok(response.turn.id)
 }
 
-async fn original_capacity(client: &mut Client, thread: &str, turn: &str) -> Result<()> {
+async fn original_capacity(
+    client: &mut Client,
+    thread: &str,
+    turn: &str,
+    retry_after: u64,
+) -> Result<()> {
     let (params, _) = client.notification("error").await?;
-    let error: ErrorNotification = serde_json::from_value(params)?;
-    assert_eq!(error.thread_id, thread);
-    assert_eq!(error.turn_id, turn);
-    assert!(error.will_retry);
-    assert_eq!(error.error.message, CAPACITY_RETRY_NOTICE);
-    // The capacity retry emitter preserves its specific error kind; it does
-    // not use the ordinary reconnecting-stream wrapper.
-    assert_eq!(
-        error.error.codex_error_info,
-        Some(CodexErrorInfo::ServerOverloaded)
-    );
+    exact_notice(&serde_json::from_value(params)?, thread, turn, retry_after);
     Ok(())
 }
 
@@ -969,7 +978,8 @@ where
 async fn metadata_only_disconnect_rejoin_restores_notice_to_exact_connection_and_successor()
 -> Result<()> {
     assert!(!codex_alab_core::active());
-    let replies = vec![Reply::Capacity(600), Reply::Capacity(600)];
+    // The successor gets its distinct deadline only from the opening HTTP header.
+    let replies = vec![Reply::Capacity(600), Reply::StreamedCapacity("240")];
     using_provider(replies, |provider| {
         Box::pin(async move {
             let fixture = Fixture::new("alab-capacity-rejoin-", &provider.uri)?;
@@ -978,7 +988,7 @@ async fn metadata_only_disconnect_rejoin_restores_notice_to_exact_connection_and
                 let mut a = Client::connect(&server, &fixture, "original").await?;
                 let (thread, session) = create_thread(&mut a).await?;
                 let turn = start_turn(&mut a, &thread, 20, PROMPT).await?;
-                original_capacity(&mut a, &thread, &turn).await?;
+                original_capacity(&mut a, &thread, &turn, 600).await?;
                 // A thread becomes resumable only after its first user turn materializes
                 // the rollout. Drain this peer's legitimate initial replay before using
                 // its later response as a barrier against accidental broadcasts.
@@ -986,7 +996,7 @@ async fn metadata_only_disconnect_rejoin_restores_notice_to_exact_connection_and
                 let (_, before_peer) = peer.resume(&thread, 11).await?;
                 assert!(capacity_errors(&before_peer).is_empty());
                 let (params, _) = peer.notification("error").await?;
-                exact_notice(&serde_json::from_value(params)?, &thread, &turn);
+                exact_notice(&serde_json::from_value(params)?, &thread, &turn, 600);
                 provider.count(1).await?;
                 a.stream.close(None).await?;
                 drop(a);
@@ -1030,7 +1040,7 @@ async fn metadata_only_disconnect_rejoin_restores_notice_to_exact_connection_and
                         .all(|message| message["method"] != "turn/started"),
                     "resume/hydration must not manufacture a turn/started event"
                 );
-                exact_notice(&notices[0], &thread, &turn);
+                exact_notice(&notices[0], &thread, &turn, 600);
                 // Only now ask the peer for its own response barrier; any earlier mistaken
                 // broadcast would already precede that response. Its later replay is valid.
                 let (_, peer_barrier) = peer.resume(&thread, 40).await?;
@@ -1055,10 +1065,10 @@ async fn metadata_only_disconnect_rejoin_restores_notice_to_exact_connection_and
                 assert!(resume_window(&mut rejoin, &thread, 60).await?.is_empty());
                 let successor = start_turn(&mut rejoin, &thread, 70, "new successor input").await?;
                 assert_ne!(successor, turn);
-                original_capacity(&mut rejoin, &thread, &successor).await?;
+                original_capacity(&mut rejoin, &thread, &successor, 240).await?;
                 let notices = resume_window(&mut rejoin, &thread, 80).await?;
                 assert_eq!(notices.len(), 1);
-                exact_notice(&notices[0], &thread, &successor);
+                exact_notice(&notices[0], &thread, &successor, 240);
                 assert!(notices.iter().all(|notice| notice.turn_id != turn));
                 assert_eq!(provider.requests().len(), 2);
                 interrupt(&mut rejoin, &thread, &successor, 90).await?;
@@ -1089,7 +1099,7 @@ async fn actual_progress_and_completion_retire_the_capacity_snapshot() -> Result
                 let mut client = Client::connect(&server, &fixture, "progress").await?;
                 let (thread, _) = create_thread(&mut client).await?;
                 let turn = start_turn(&mut client, &thread, 20, PROMPT).await?;
-                original_capacity(&mut client, &thread, &turn).await?;
+                original_capacity(&mut client, &thread, &turn, 1).await?;
                 provider.count(2).await?; // Actual retry, not a sleep-based readiness inference.
                 progress
                     .send(())
@@ -1192,7 +1202,7 @@ async fn cold_process_resume_does_not_invent_a_live_capacity_wait() -> Result<()
                 let mut client = Client::connect(&first, &fixture, "before-cold").await?;
                 let (thread, _) = create_thread(&mut client).await?;
                 let turn = start_turn(&mut client, &thread, 20, PROMPT).await?;
-                original_capacity(&mut client, &thread, &turn).await?;
+                original_capacity(&mut client, &thread, &turn, 600).await?;
                 provider.count(1).await?;
                 Ok::<_, anyhow::Error>((thread, turn))
             })

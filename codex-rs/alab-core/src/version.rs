@@ -31,10 +31,14 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RunningIdentity {
-    /// The client version: what upstream's code and OpenAI's servers see.
+    /// Stamped client version, or the entry point's Cargo version for a local build.
     version: &'static str,
+    /// Committed client line for an unstamped executable with the workspace placeholder version.
+    source_client: Option<&'static str>,
     /// codex-alab's own version, when the package names one apart from the client version.
     product: Option<&'static str>,
+    /// The numeric baseline independently recorded in the ALab package, including snapshots.
+    package_baseline: Option<&'static str>,
     upstream_release: Option<&'static str>,
     upstream_commit: Option<&'static str>,
 }
@@ -61,7 +65,9 @@ mod update_ownership_tests {
         assert!(vendor_updates_for(None));
         let mut identity = RunningIdentity {
             version: "0.168.0",
+            source_client: None,
             product: None,
+            package_baseline: None,
             upstream_release: None,
             upstream_commit: None,
         };
@@ -75,17 +81,19 @@ mod update_ownership_tests {
 
 /// Capture package identity in the final executable, leaving library inputs stable.
 ///
-/// The expansion returns the result of [`initialize_package`]. `CODEX_ALAB_BUILD_VERSION`
-/// is the client version (its meaning before codex-alab had a line of its own, so a
+/// `CODEX_ALAB_BUILD_VERSION` is the client version (its meaning before codex-alab had a line of its own, so a
 /// historical source given it still tells the server what it told it then);
-/// `CODEX_ALAB_PRODUCT_VERSION` is codex-alab's own version. Source builds without the
-/// package input keep their entry point's Cargo version for both.
+/// `CODEX_ALAB_PRODUCT_VERSION` is codex-alab's own version and `CODEX_ALAB_BASELINE` names
+/// its Codex baseline even when a snapshot lacks upstream history. An unstamped workspace
+/// executable keeps its local product identity and sends the source tree's client line.
 #[macro_export]
 macro_rules! initialize_running_build {
     () => {
-        $crate::version::initialize_package(
+        $crate::version::initialize_compiled_identity(
             option_env!("CODEX_ALAB_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            option_env!("CODEX_ALAB_BUILD_VERSION").is_none(),
             option_env!("CODEX_ALAB_PRODUCT_VERSION"),
+            option_env!("CODEX_ALAB_BASELINE"),
             option_env!("CODEX_ALAB_UPSTREAM_VERSION"),
             option_env!("CODEX_ALAB_UPSTREAM_COMMIT"),
         )
@@ -132,11 +140,48 @@ pub fn initialize_package(
     upstream_release: Option<&'static str>,
     upstream_commit: Option<&'static str>,
 ) -> Result<(), IdentityConflict> {
+    initialize_stamped_package(client, product, None, upstream_release, upstream_commit)
+}
+
+/// Install the independently stamped identities captured by the final executable.
+#[doc(hidden)]
+pub fn initialize_stamped_package(
+    client: &'static str,
+    product: Option<&'static str>,
+    package_baseline: Option<&'static str>,
+    upstream_release: Option<&'static str>,
+    upstream_commit: Option<&'static str>,
+) -> Result<(), IdentityConflict> {
+    initialize_compiled_identity(
+        client,
+        false,
+        product,
+        package_baseline,
+        upstream_release,
+        upstream_commit,
+    )
+}
+
+/// The executable captures the stamp. The source tree supplies the workspace client line.
+#[doc(hidden)]
+pub fn initialize_compiled_identity(
+    client: &'static str,
+    unstamped: bool,
+    product: Option<&'static str>,
+    package_baseline: Option<&'static str>,
+    upstream_release: Option<&'static str>,
+    upstream_commit: Option<&'static str>,
+) -> Result<(), IdentityConflict> {
+    let product = nonempty(product);
+    let source_client = (unstamped && client == "0.0.0")
+        .then(|| include_str!("../../../alab/client-version").trim());
     initialize_with(
         &RUNNING_IDENTITY,
         RunningIdentity {
             version: client,
-            product: nonempty(product),
+            source_client,
+            product,
+            package_baseline: product.and(nonempty(package_baseline)),
             upstream_release: nonempty(upstream_release),
             upstream_commit: nonempty(upstream_commit),
         },
@@ -158,19 +203,21 @@ fn initialize_with(
 /// The executable's full CLIENT version (upstream's numbering: what upstream's code and
 /// OpenAI's servers see), or the caller's Cargo version before initialization.
 ///
-/// Reading the fallback never initializes the identity. Tests and unstamped entry
-/// points retain their caller's version without preventing later initialization.
+/// Reading the fallback leaves initialization to the executable. Local workspace
+/// executables use their committed client line after initialization.
 pub fn running_version(fallback: &'static str) -> &'static str {
     version_with(&RUNNING_IDENTITY, fallback)
 }
 
 fn version_with(cell: &OnceLock<RunningIdentity>, fallback: &'static str) -> &'static str {
-    cell.get().map_or(fallback, |identity| identity.version)
+    cell.get().map_or(fallback, |identity| {
+        identity.source_client.unwrap_or(identity.version)
+    })
 }
 
 /// The executable's full version as codex-alab reports itself (`codex --version`, the
-/// session record): its own line when the package names one, else the client version, or
-/// the caller's Cargo version before initialization. Never sent to OpenAI's servers.
+/// session record). A one-version package reports its stamped version. An unstamped
+/// executable reports its Cargo package version.
 pub fn product_version(fallback: &'static str) -> &'static str {
     product_with(&RUNNING_IDENTITY, fallback)
 }
@@ -324,10 +371,24 @@ pub fn exec_title(fallback: &'static str) -> String {
     if crate::active() {
         format!(
             "codex-alab v{version} · based on OpenAI Codex {}",
-            upstream_release().unwrap_or("unreleased")
+            display_baseline().unwrap_or("unreleased")
         )
     } else {
         format!("OpenAI Codex v{version}")
+    }
+}
+
+/// The Codex baseline named in release labels. A published snapshot gets its
+/// baseline from the version ledger even though its Git history has no upstream base.
+pub fn display_baseline() -> Option<&'static str> {
+    RUNNING_IDENTITY
+        .get()
+        .and_then(|identity| identity.display_baseline())
+}
+
+impl RunningIdentity {
+    fn display_baseline(self) -> Option<&'static str> {
+        self.upstream_release.or(self.package_baseline)
     }
 }
 
@@ -367,6 +428,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_baseline_keeps_source_provenance_separate_from_the_snapshot_ledger() {
+        let mut identity = RunningIdentity {
+            version: "0.170.0-dev.1+gaaaaaaaaa",
+            source_client: None,
+            product: Some("0.11.0-dev.1+codex.0.169.1.gaaaaaaaaa"),
+            package_baseline: Some("0.169.1"),
+            upstream_release: None,
+            upstream_commit: None,
+        };
+        assert_eq!(identity.display_baseline(), Some("0.169.1"));
+        identity.upstream_commit = Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(identity.display_baseline(), Some("0.169.1"));
+        identity.upstream_release = Some("0.169.2");
+        assert_eq!(identity.display_baseline(), Some("0.169.2"));
+        identity.upstream_release = None;
+        identity.package_baseline = None;
+        assert_eq!(identity.display_baseline(), None);
+    }
+
+    #[test]
     fn a_fallback_read_cannot_commit_the_running_build_identity() {
         let cell = OnceLock::new();
         assert_eq!(version_with(&cell, "0.0.0"), "0.0.0");
@@ -374,7 +455,9 @@ mod tests {
         assert!(cell.get().is_none());
         let identity = RunningIdentity {
             version: "0.165.0-dev.1+gaaaaaaaaa",
+            source_client: None,
             product: None,
+            package_baseline: None,
             upstream_release: Some("0.164.0"),
             upstream_commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         };
@@ -388,7 +471,9 @@ mod tests {
         let cell = OnceLock::new();
         let first = RunningIdentity {
             version: "0.165.0-dev.1+gaaaaaaaaa",
+            source_client: None,
             product: None,
+            package_baseline: None,
             upstream_release: Some("0.164.0"),
             upstream_commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         };
@@ -397,6 +482,10 @@ mod tests {
         for replacement in [
             RunningIdentity {
                 version: "0.165.0-dev.2+gbbbbbbbbb",
+                ..first
+            },
+            RunningIdentity {
+                package_baseline: Some("0.164.1"),
                 ..first
             },
             RunningIdentity {
@@ -422,7 +511,9 @@ mod tests {
         assert_eq!(product_with(&cell, "0.0.0"), "0.0.0");
         let identity = RunningIdentity {
             version: "0.165.0-dev.13600+gaaaaaaaaa",
+            source_client: None,
             product: Some("0.1.0-dev.13600+gaaaaaaaaa"),
+            package_baseline: None,
             upstream_release: Some("0.164.0"),
             upstream_commit: None,
         };
@@ -452,7 +543,9 @@ mod tests {
         let cell = OnceLock::new();
         let identity = RunningIdentity {
             version: "0.165.0-dev.13600+gaaaaaaaaa",
+            source_client: None,
             product: Some("0.1.0-dev.13600+codex.0.164.0.gaaaaaaaaa"),
+            package_baseline: None,
             upstream_release: Some("0.164.0"),
             upstream_commit: None,
         };
@@ -471,7 +564,9 @@ mod tests {
         let cell = OnceLock::new();
         let identity = RunningIdentity {
             version: "0.165.0-dev.13595+ga109d7cc6",
+            source_client: None,
             product: nonempty(Some("")),
+            package_baseline: None,
             upstream_release: None,
             upstream_commit: None,
         };

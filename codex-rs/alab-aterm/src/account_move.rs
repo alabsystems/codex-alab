@@ -4,9 +4,9 @@
 //! Moving this session to another already-signed-in Codex account: aterm's
 //! `restart account=<label>` or `restart account-auto`, asked of this very process on the
 //! accounts connection. aterm stamps the restart with the account, ends the process, and its
-//! relaunch resumes the same conversation on that account once the account proves it serves
-//! there, else on the one it ran on. Nobody is signed in by this and no credential crosses it:
-//! only a roster label travels, and aterm judges every refusal on its own records.
+//! relaunch checks which account can serve the conversation. Nobody is signed in by this and
+//! no credential crosses it:
+//! confirmed picks carry the roster revision and native identity reference alongside the label.
 //!
 //! The answer is read into a closed [`Outcome`]; no reply text is returned or logged. An aterm
 //! before the account words answers `ERR bad restart argument: …` and nothing is restarted
@@ -30,9 +30,47 @@ pub const MOVE_TIMEOUT: Duration = Duration::from_secs(15);
 pub enum Target {
     /// The roster row with this label (`account=<label>`).
     Row(String),
+    /// A destination chosen from the native identity-bound roster.
+    Bound { label: String, selection: Selection },
     /// The row a new launch would get (`account-auto`, never `account=auto`: `auto` is a
     /// label a row may carry).
     Pool,
+}
+
+/// One explicit confirmation. A later confirmation of the same row has a new request ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub revision: String,
+    pub selection_ref: String,
+    pub request: String,
+}
+
+impl Selection {
+    pub fn new(revision: String, selection_ref: String) -> Self {
+        Self {
+            revision,
+            selection_ref,
+            request: crate::accounts::request_id(),
+        }
+    }
+
+    pub fn valid(&self) -> bool {
+        use codex_alab_core::managed_auth::valid_hex;
+        valid_hex(&self.revision, 64)
+            && valid_hex(&self.selection_ref, 64)
+            && valid_hex(&self.request, 32)
+    }
+
+    fn word(&self) -> String {
+        format!("selection={}:{}", self.revision, self.selection_ref)
+    }
+}
+
+/// The native source fence has either cancelled this exact attempt or still owns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cancellation {
+    Cancelled,
+    Pending,
 }
 
 /// What aterm answered a move.
@@ -100,6 +138,8 @@ pub enum Why {
     Off,
     /// `account-unknown`: no roster row has that label.
     UnknownLabel,
+    /// The confirmed roster selection changed before the host signalled.
+    SelectionChanged,
     /// `account-no-choice`: the pool has no row a launch would start on.
     NoChoice,
     /// `account-current`: the session already runs on that row (or the pool's choice is it).
@@ -131,7 +171,7 @@ pub enum Why {
 }
 
 /// Every refusal word aterm answers, with its [`Why`].
-const WORDS: [(&str, Why); 25] = [
+const WORDS: [(&str, Why); 26] = [
     ("not-the-hosts-agent", Why::NotTheHostsAgent),
     ("not-relaunchable", Why::NotRelaunchable),
     ("not-supervised", Why::NotSupervised),
@@ -146,6 +186,7 @@ const WORDS: [(&str, Why); 25] = [
     ("account-recovery-pending", Why::RecoveryPending),
     ("account-off", Why::Off),
     ("account-unknown", Why::UnknownLabel),
+    ("account-selection-changed", Why::SelectionChanged),
     ("account-no-choice", Why::NoChoice),
     ("account-current", Why::Current),
     ("account-same", Why::Same),
@@ -194,8 +235,15 @@ impl Target {
     /// This target's account word on the restart line.
     fn word(&self) -> String {
         match self {
-            Self::Row(label) => format!("account={label}"),
+            Self::Row(label) | Self::Bound { label, .. } => format!("account={label}"),
             Self::Pool => ACCOUNT_AUTO.to_owned(),
+        }
+    }
+
+    pub fn selection(&self) -> Option<&Selection> {
+        match self {
+            Self::Bound { selection, .. } => Some(selection),
+            Self::Pool | Self::Row(_) => None,
         }
     }
 }
@@ -241,7 +289,12 @@ fn outcome(line: &str, pid: u32, target: &Target) -> Outcome {
     // The tokens after the pid are read by key, in any order, each at most once: the cause,
     // what the escalation discarded, and the account, which must be the one asked.
     let asked = target.word();
-    let (mut cause, mut discarded, mut account) = (false, false, false);
+    let selection = target.selection().map(Selection::word);
+    let request = target
+        .selection()
+        .map(|value| format!("request={}", value.request));
+    let mut correlated = false;
+    let (mut cause, mut discarded, mut account, mut bound) = (false, false, false, false);
     for token in tokens.split(' ') {
         let seen = if token == "cause=stall" || token == "cause=asked" {
             &mut cause
@@ -252,6 +305,10 @@ fn outcome(line: &str, pid: u32, target: &Target) -> Outcome {
             &mut discarded
         } else if token == asked {
             &mut account
+        } else if selection.as_deref() == Some(token) {
+            &mut bound
+        } else if request.as_deref() == Some(token) {
+            &mut correlated
         } else {
             return Outcome::Unknown;
         };
@@ -259,7 +316,7 @@ fn outcome(line: &str, pid: u32, target: &Target) -> Outcome {
             return Outcome::Unknown;
         }
     }
-    if cause && account {
+    if cause && account && bound == selection.is_some() && correlated == request.is_some() {
         Outcome::Restarting
     } else {
         Outcome::Unknown
@@ -276,19 +333,55 @@ impl Client {
     /// survive the restart (the session record) is written before this is called. The answer
     /// is waited for at most [`MOVE_TIMEOUT`].
     pub async fn account_move(&self, target: &Target) -> Result<Outcome, Error> {
-        if let Target::Row(label) = target
+        if let Target::Row(label) | Target::Bound { label, .. } = target
             && !admissible_label(label)
         {
             return Err(Error::BadRequest("not an account label".into()));
         }
+        if target
+            .selection()
+            .is_some_and(|selection| !selection.valid())
+        {
+            return Err(Error::BadRequest("invalid account selection".into()));
+        }
         let pid = std::process::id();
-        let reply = self
-            .on_self_within(
-                &format!("restart pid={pid} {}", target.word()),
-                MOVE_TIMEOUT,
-            )
-            .await?;
+        let mut command = format!("restart pid={pid} {}", target.word());
+        if let Some(selection) = target.selection() {
+            command.push_str(&format!(
+                " {} request={}",
+                selection.word(),
+                selection.request
+            ));
+        }
+        let reply = self.on_self_within(&command, MOVE_TIMEOUT).await?;
         Ok(outcome(&reply.status, pid, target))
+    }
+    /// Cancel this process's exact confirmation. Unknown and uncorrelated answers cannot
+    /// release the source record, even when they came from the right host.
+    pub async fn cancel_account_selection(
+        &self,
+        selection: &Selection,
+    ) -> Result<Cancellation, Error> {
+        if !selection.valid() {
+            return Err(Error::BadRequest("invalid account selection".into()));
+        }
+        let arguments = format!(
+            "pid={} {} request={}",
+            std::process::id(),
+            selection.word(),
+            selection.request
+        );
+        let command = format!("codex-accounts cancel-selection {arguments}");
+        let reply = self.on_self_within(&command, MOVE_TIMEOUT).await?;
+        if reply.status == format!("OK {command} state=cancelled") {
+            Ok(Cancellation::Cancelled)
+        } else if reply.status == format!("OK {command} state=pending") {
+            Ok(Cancellation::Pending)
+        } else {
+            Err(Error::Malformed(
+                "unconfirmed account selection cancellation".into(),
+            ))
+        }
     }
 }
 
@@ -402,7 +495,7 @@ mod tests {
         let words = "not-the-hosts-agent|not-relaunchable|not-supervised|driver-lease|\
                      driver-turn|halted|start-unread|no-state|exit-owner-not-ready|\
                      account-unmanaged|account-not-resumable|account-recovery-pending|\
-                     account-off|account-unknown|account-no-choice|account-current|\
+                     account-off|account-unknown|account-selection-changed|account-no-choice|account-current|\
                      account-same|account-not-enrolled|account-signed-out|account-held|\
                      account-limited|account-identity|account-unread|account-restart-pending|\
                      account-busy";
@@ -460,6 +553,120 @@ mod tests {
             .into_iter()
             .filter(|line| line.split(' ').nth(1) == Some("restart"))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn bound_account_move_requires_every_echo_and_never_retries_by_label() {
+        let (_dir, host, client) = host().await;
+        let pid = std::process::id();
+        let selection = Selection::new("b".repeat(64), "c".repeat(64));
+        assert_ne!(
+            selection.request,
+            Selection::new(selection.revision.clone(), selection.selection_ref.clone()).request
+        );
+        let target = Target::Bound {
+            label: "work".into(),
+            selection: selection.clone(),
+        };
+        let reference = selection.word();
+        let request = format!("request={}", selection.request);
+        let ask = format!(
+            "@{} restart pid={pid} account=work {reference} {request}",
+            host.sid()
+        );
+        for (words, expected) in [
+            (
+                format!("account=work {reference} {request}"),
+                Outcome::Restarting,
+            ),
+            (
+                format!("{request} {reference} account=work"),
+                Outcome::Restarting,
+            ),
+            ("account=work".into(), Outcome::Unknown),
+            (format!("account=work {reference}"), Outcome::Unknown),
+            (
+                format!("account=work {reference} request=wrong"),
+                Outcome::Unknown,
+            ),
+            (format!("{reference} {request}"), Outcome::Unknown),
+            (
+                format!("account=other {reference} {request}"),
+                Outcome::Unknown,
+            ),
+            (
+                format!("account=work selection=wrong {request}"),
+                Outcome::Unknown,
+            ),
+            (
+                format!("account=work {reference} {reference} {request}"),
+                Outcome::Unknown,
+            ),
+        ] {
+            host.reply_once(
+                &ask,
+                &format!("OK restarting pid {pid} cause=asked {words}\n"),
+            );
+            assert_eq!(client.account_move(&target).await.unwrap(), expected);
+        }
+        assert_eq!(
+            client.account_move(&target).await.unwrap(),
+            Outcome::Unsupported
+        );
+        let mut bad = selection.clone();
+        bad.request = "private".into();
+        assert!(matches!(
+            client
+                .account_move(&Target::Bound {
+                    label: "work".into(),
+                    selection: bad.clone()
+                })
+                .await,
+            Err(Error::BadRequest(_))
+        ));
+        assert_eq!(restarts(&host), vec![ask; 10]);
+        assert_eq!(
+            outcome(
+                &format!("OK restarting pid {pid} cause=asked account=work {reference} {request}"),
+                pid,
+                &row("work")
+            ),
+            Outcome::Unknown
+        );
+
+        let cancel = format!("codex-accounts cancel-selection pid={pid} {reference} {request}");
+        let wire = format!("@{} {cancel}", host.sid());
+        for (reply, expected) in [
+            (
+                format!("OK {cancel} state=cancelled"),
+                Some(Cancellation::Cancelled),
+            ),
+            (
+                format!("OK {cancel} state=pending"),
+                Some(Cancellation::Pending),
+            ),
+            (
+                format!(
+                    "OK {} state=cancelled",
+                    cancel.replace(&request, "request=other")
+                ),
+                None,
+            ),
+            (format!("OK {cancel} state=absent"), None),
+            ("ERR unknown verb".into(), None),
+        ] {
+            host.reply_once(&wire, &format!("{reply}\n"));
+            assert_eq!(
+                client.cancel_account_selection(&selection).await.ok(),
+                expected
+            );
+        }
+        let count = host.requests().len();
+        assert!(matches!(
+            client.cancel_account_selection(&bad).await,
+            Err(Error::BadRequest(_))
+        ));
+        assert_eq!(host.requests().len(), count);
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ pub(crate) async fn command_sessions_state(
     manager: &UnifiedExecProcessManager,
 ) -> CommandSessionsState {
     let store = manager.process_store.lock().await;
+    let enhanced = codex_alab_core::active(); // ALAB(shell-invocation): vanilla snapshots retain their original shape.
     CommandSessionsState::new(
         store
             .processes
@@ -18,6 +19,7 @@ pub(crate) async fn command_sessions_state(
             .filter(|entry| !entry.initial_exec_command_active.load(Ordering::Acquire))
             .map(|entry| CommandSession {
                 session_id: entry.process_id,
+                invocation_id: if enhanced { entry.process.invocation_id } else { None }, // ALAB(shell-invocation): only the actual retained process supplies a writer.
                 status: if entry.process.has_exited() {
                     CommandSessionStatus::Exited
                 } else {

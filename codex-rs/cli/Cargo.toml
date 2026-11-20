@@ -163,3 +163,11 @@ path = "../alab-tui"
 # ALAB(accounts): isolated qualification candidate only, never a default/release capability.
 [features]
 alab-native-source-proof = []
+
+[[test]]
+name = "alab_tool_result_recovery"
+path = "../alab-core/glue/tool_result_recovery_integration.rs" # ALAB(tool-result-recovery): exercise the enhanced product CLI.
+
+[[test]]
+name = "alab_fleet_model"
+path = "../alab-tui/glue/fleet_model_integration.rs" # ALAB(fleet-model): isolated application receipt and retry.

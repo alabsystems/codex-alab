@@ -217,6 +217,9 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
             });
             logger.write_json_line(value);
         }
+        AppEvent::SavedChatReleased { target, request, receipt } => {
+            logger.write_json_line(receipt.session_log(now_ts(), *request, target.child)); // ALAB(retained-ui): record the status reported for the original unsubscribe.
+        }
         // Noise or control flow – record variant only
         other => {
             let variant: &'static str = other.into();

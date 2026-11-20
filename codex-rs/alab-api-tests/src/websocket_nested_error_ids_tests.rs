@@ -187,33 +187,6 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-fn request() -> codex_api::ResponsesApiRequest {
-    codex_api::ResponsesApiRequest {
-        model: "gpt-nested-error-ids".into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(json!({
-                "type":"message", "role":"user",
-                "content":[{"type":"input_text", "text":PRIVATE_INPUT}]
-            }))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    }
-}
-
 async fn regression(case: Case) {
     codex_alab_core::activate();
     let frame = case.frame();
@@ -262,7 +235,7 @@ async fn regression(case: Case) {
     .await
     .expect("public nested error Upgrade deadline")
     .unwrap();
-    let request = request();
+    let request = crate::streaming_request("gpt-nested-error-ids", PRIVATE_INPUT);
     let capture = Capture::default();
     let mut stream = {
         let subscriber = tracing_subscriber::registry().with(capture.clone());

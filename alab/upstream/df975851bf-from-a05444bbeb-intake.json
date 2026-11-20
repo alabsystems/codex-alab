@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "a05444bbeb6bb07f2875fff0143f2e4cba994463",
+  "target": "df975851bf906d71e5a1ead04f1eaec41d26ca16",
+  "frontier": "a05444bbeb6bb07f2875fff0143f2e4cba994463",
+  "commits": [
+    {
+      "sha": "df975851bf906d71e5a1ead04f1eaec41d26ca16",
+      "subject": "Use the system clock for in-memory MCP message boards (#62284)",
+      "paths": [
+        "codex-rs/core/tests/suite/scenarios_agent_message_board_http.rs",
+        "codex-rs/message-board-mcp/README.md",
+        "codex-rs/message-board-mcp/src/local.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Use backend UTC for explicitly enabled or registered in-memory HTTP MCP boards. Keep the original host's current thread and tree membership check before taking a timestamp and retain its recipient resolution and notification delivery.",
+      "evidence": [
+        "Managed comparison and fetched Git history contain one exact first-parent commit after a05444bbeb. Reviewed all three changed paths. Binary diff SHA-256 7db7e3b9d747f64d7395cd05ffddfac5a0cd6f40cb355218b6da1341ad33d7b7.",
+        "All three preimages are byte-identical in managed 0835b136edb2b947db9e4b19d1440e837b98a8f3 and private df1f24b87d. No ALab source adaptation is required.",
+        "BackendClockHost is used by both add_board and bind_agent. Its current_time checks agent_path first. LocalBoardHost already uses the same actor and registered path check in current_time before querying the runner clock. The bearer, session and caller routing still precede board tool dispatch.",
+        "The transport, direct non-HTTP board clock, standalone SQLite path, and feature defaults are outside this change. The existing agent_message_board_mcp opt-in, explicit connection precedence and bound service approval remain in force.",
+        "The shared-child HTTP scenario fails the injected tree-wide runner clock for in_memory and checks the child author and backend posting interval. The feature case reaches the caller-specific binding and checks the same interval. Existing wrong bearer, wrong Host, wrong caller/tree, and shutdown assertions remain.",
+        "Isolated integration source 1f88d721fcdd486625b51b4a053d468d4360de04 passed the protected Trust 15698 Core HTTP suite. All four child-post and root-read variants ran: explicit HTTP configuration, plugin, in-memory host with a failing clock, and feature-provisioned board. The process-backed cases used the binary built and identified from that same source. Test log SHA-256 32e65a71e509ddac1a76b25668631056cd6d856789cc44c85120a742fdebcd6e."
+      ],
+      "revisit": "Repeat the four HTTP shared-child cases when the clock or caller membership path changes."
+    }
+  ]
+}

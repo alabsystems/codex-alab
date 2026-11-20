@@ -10,6 +10,7 @@ use codex_alab_core::session::Inherited;
 use codex_alab_core::session::OwedAct;
 use codex_alab_core::session::Pace;
 use codex_alab_core::session::Shared;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -475,7 +476,7 @@ async fn restored_deadlines_begin_counting_sleep_at_materialization() {
 clock: crate::recovery::test_clock(0),
                 thread: rt.key.clone(), turn_id: "usage-turn".into(), point_at_ms: epoch - 60_000,
                 not_before_ms: epoch + 3_600_000, by_autopilot: true, by_person: false,
-                wall: RecoveryWall::Usage { quota: None, reset_at_ms: Some(epoch + 3_600_000), reset_label: Some("12:00".into()) },
+                wall: RecoveryWall::Usage { limit_class: LimitClass::Ordinary, quota: None, reset_at_ms: Some(epoch + 3_600_000), reset_label: Some("12:00".into()) },
             }),
             ..Default::default()
         });

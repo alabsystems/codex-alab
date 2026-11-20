@@ -1249,6 +1249,7 @@ impl Session {
                 .refresh_after_auth_change(http_client_factory)
                 .await;
         }
+        let explicit_model = updates.step_settings.model.is_some() || updates.step_settings.collaboration_mode.is_some(); // ALAB(defaults): this turn’s explicit model wins even when it equals the saved choice.
         let service_tier_for_turn = updates.service_tier_for_turn.clone();
         let commit = match self.update_settings_if(updates, should_start).await {
             Ok(Some(commit)) => commit,
@@ -1269,6 +1270,7 @@ impl Session {
             }
         };
         let mut configuration = commit.configuration;
+        configuration.alab_resolve_followed_turn(&self.services.models_manager).await?; // ALAB(defaults): honor the current account on this turn while retaining the saved preference.
         // Apply the override only to the turn's copy, after persisting thread settings.
         if let Some(service_tier) = service_tier_for_turn {
             Arc::make_mut(&mut configuration.step_settings).service_tier = Some(service_tier);
@@ -1277,6 +1279,7 @@ impl Session {
         let turn_context = self
             .new_turn_from_configuration(sub_id, configuration, turn_environments, options)
             .await;
+        turn_context.alab_keep_requested_model(explicit_model); // ALAB(defaults): retain request provenance for a pre-stream model rejection.
         Ok(Some((turn_context, commit.snapshot)))
     }
 

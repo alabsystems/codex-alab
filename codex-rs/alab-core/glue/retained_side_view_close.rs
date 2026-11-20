@@ -32,6 +32,11 @@ struct Guard {
     finished: bool,
     _tracked: tokio_util::task::task_tracker::TaskTrackerToken,
 }
+impl Guard {
+    fn finish(&mut self) {
+        self.finished = true;
+    }
+}
 impl Drop for Guard {
     fn drop(&mut self) {
         if !self.finished {
@@ -47,21 +52,128 @@ impl Drop for Guard {
     }
 }
 impl InitialSlot {
+    fn side_close_owner(&self) -> Result<Arc<InitialSessionOperation>, JSONRPCErrorError> {
+        self.0
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| invalid_request("actual Side view owner unavailable"))
+    }
+
     pub(crate) async fn close_side_view(
         &self,
         context: RequestContext,
         args: ThreadUnsubscribeParams,
         session: Arc<crate::message_processor::ConnectionSessionState>,
     ) -> Result<(), JSONRPCErrorError> {
-        let owner = self
-            .0
-            .get()
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| invalid_request("actual Side view owner unavailable"))?;
+        let owner = self.side_close_owner()?;
         owner.close_side_view(context, args, session).await
     }
 }
+
+impl ThreadRequestProcessor {
+    pub(crate) async fn alab_query_side_close(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(), JSONRPCErrorError> {
+        let owner = self.alab_initial_session.side_close_owner()?;
+        owner.check_side_close_origin(context).await?;
+        let claim = context
+            .alab_side_view
+            .as_deref()
+            .ok_or_else(|| invalid_request("Side close query missing"))?;
+        match &claim.selection {
+            metadata::Selection::ReadResult {
+                view,
+                operation,
+                parameters,
+            } => {
+                let result = owner.read_side_close_result(view, operation, parameters)?;
+                let payload = codex_app_server_protocol::alab_response_metadata::acknowledgment(
+                    metadata::READ_RESULT_KEY,
+                    serde_json::to_value(result)
+                        .map_err(|error| internal_error(error.to_string()))?,
+                )
+                .map_err(|error| internal_error(error.to_string()))?;
+                owner
+                    .processor
+                    .outgoing
+                    .send_response_as(context.alab_request_id().clone(), payload)
+                    .await;
+                Ok(())
+            }
+            metadata::Selection::AcknowledgeResult {
+                view, parameters, ..
+            } => {
+                let args = ThreadUnsubscribeParams {
+                    thread_id: view.thread_id.clone(),
+                };
+                owner
+                    .observe_side_close(context, &claim.selection, parameters, &args)
+                    .await
+            }
+            _ => Err(invalid_request("Side close query phase unavailable")),
+        }
+    }
+}
+
 impl InitialSessionOperation {
+    async fn check_side_close_origin(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(), JSONRPCErrorError> {
+        let origin =
+            context
+                .alab_connection_resource
+                .as_ref()
+                .and_then(
+                    codex_alab_core::connection_resource::ConnectionResource::downcast::<
+                        AcceptedOrigin,
+                    >,
+                )
+                .ok_or_else(|| invalid_request("Side close needs actual Native A"))?;
+        self.observe_bound_side_origin(&origin)
+            .await
+            .map_err(|_| invalid_request("Side close Native origin is not current"))
+    }
+
+    fn read_side_close_result(
+        &self,
+        view: &metadata::SideView,
+        operation: &str,
+        parameters: &serde_json::Value,
+    ) -> Result<metadata::ReadResult, JSONRPCErrorError> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.closed || self.input.is_stopped() {
+            return Err(invalid_request("Side close result owner closed"));
+        }
+        let scope = state
+            .clients
+            .get(&view.claim)
+            .ok_or_else(|| invalid_request("actual Side close result scope unavailable"))?;
+        let closings = scope
+            .side_closings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let job = closings
+            .jobs
+            .get(operation)
+            .ok_or_else(|| invalid_request("actual Side close result unavailable"))?;
+        if &job.parameters != parameters || job.args.thread_id != view.thread_id {
+            return Err(invalid_request(
+                "Side close readback changed full original wire",
+            ));
+        }
+        let progress = job.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        if progress.unknown {
+            return Err(invalid_request("Side close outcome remains unknown"));
+        }
+        let result = progress
+            .result
+            .as_ref()
+            .ok_or_else(|| invalid_request("Side close result pending"))?;
+        Ok(metadata::ReadResult::new(view, operation, result))
+    }
+
     async fn close_side_view(
         self: &Arc<Self>,
         context: RequestContext,
@@ -76,23 +188,14 @@ impl InitialSessionOperation {
             .as_deref()
             .cloned()
             .ok_or_else(|| invalid_request("Side view selection missing"))?;
-        let origin =
-            context
-                .alab_connection_resource
-                .as_ref()
-                .and_then(
-                    codex_alab_core::connection_resource::ConnectionResource::downcast::<
-                        AcceptedOrigin,
-                    >,
-                )
-                .ok_or_else(|| invalid_request("Side close needs actual Native A"))?;
-        self.observe_bound_side_origin(&origin)
-            .await
-            .map_err(|_| invalid_request("Side close Native origin is not current"))?;
+        self.check_side_close_origin(&context).await?;
         if matches!(selection, metadata::Selection::Observe { .. }) {
             return self
-                .observe_side_close(context, &selection, &parameters, &args)
+                .observe_side_close(&context, &selection, &parameters, &args)
                 .await;
+        }
+        if !matches!(selection, metadata::Selection::Close { .. }) {
+            return Err(invalid_request("original Side close phase unavailable"));
         }
         let prepared = {
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -360,7 +463,8 @@ impl InitialSessionOperation {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .joined = true;
-                guard.finished = true;
+                guard.finish();
+                drop(guard);
             })
             .await;
         }
@@ -489,7 +593,7 @@ impl Scope {
 impl InitialSessionOperation {
     async fn observe_side_close(
         &self,
-        context: RequestContext,
+        context: &RequestContext,
         selection: &metadata::Selection,
         parameters: &serde_json::Value,
         args: &ThreadUnsubscribeParams,
@@ -525,13 +629,12 @@ impl InitialSessionOperation {
                 }
             }
         };
-        let data = metadata::observation::Observation {
-            schema: 1,
-            operation: selection.operation().into(),
-            claim: selection.view().claim.clone(),
-            thread_id: args.thread_id.clone(),
-            state: observed,
-        };
+        let data = metadata::observation::Observation::new(
+            selection.operation().into(),
+            selection.view().claim.clone(),
+            args.thread_id.clone(),
+            observed,
+        );
         if !data.matches(
             selection.operation(),
             selection.view().claim.as_str(),
@@ -551,3 +654,7 @@ impl InitialSessionOperation {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "retained_side_view_close_guard_tests.rs"]
+mod guard_tests;

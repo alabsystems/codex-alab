@@ -5,6 +5,122 @@
 use super::*;
 
 #[test]
+fn a_pending_provider_reset_keeps_the_original_goal_timer_on_upgrade_refusal() {
+    native_test(|| async {
+        let goals = Arc::new(GoalService::new());
+        let mut h = Harness::new_with_goal_capabilities(
+            Some(Arc::clone(&goals)),
+            HarnessOptions {
+                seed_pending_act: false,
+                ..HarnessOptions::default()
+            },
+        )
+        .await;
+        h.fake.set_policy_key("limit_wait", "true");
+        h.fake.set_policy_key("probe_api", "false");
+        wait_for_supervisor(|| {
+            h.autopilot.sup.policy().is_some_and(|policy| {
+                policy.upgrade && policy.limit_wait && policy.resume_limits && !policy.probe_api
+            })
+        })
+        .await;
+        let resets_at = now_ms() / 1000 + 300;
+        responses::mount_response_handler(&h._server, move |_| {
+            wiremock::ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": {"type": "usage_limit_reached", "plan_type": "pro", "resets_at": resets_at}
+            }))
+        })
+        .await;
+        let db = h.test.codex.state_db().expect("goal database");
+        goals
+            .set_thread_goal(
+                &db,
+                GoalSetRequest {
+                    thread_id: h.rt.id,
+                    objective: GoalObjectiveUpdate::Set("Finish the original task"),
+                    status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    max_goal_token_budget: None,
+                },
+                async { Ok(()) },
+            )
+            .await
+            .expect("start the native goal")
+            .apply_runtime_effects(&goals)
+            .await;
+        let EventMsg::TurnComplete(done) = core_test_support::wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| matches!(event, EventMsg::TurnComplete(_)),
+            Duration::from_secs(60),
+        )
+        .await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            done.error.and_then(|error| error.codex_error_info),
+            Some(codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded)
+        );
+        wait_for_supervisor(|| h.rt.owed_timer().is_some()).await;
+        // The timer is published inside evaluate. Allow that decision to finish so
+        // the upgrade reaches its pending-wait check on the idle, original thread.
+        drop(h.rt.hold_eval_when_free().await);
+        let original = h.rt.owed_timer().expect("the provider wall owes a resume");
+        assert!(original.resume_goal);
+        assert_eq!(original.rule, words::RULE_LIMIT_RESUME);
+        assert_eq!(
+            original.native_origin.as_ref().unwrap().turn_id,
+            done.turn_id
+        );
+        let point = h.rt.state().point.expect("native terminal point");
+        let Some(Wall::Usage {
+            reset_at: Some(reset),
+            ..
+        }) = point.wall
+        else {
+            panic!("typed usage wall lost its dated reset");
+        };
+        assert_eq!(
+            original.not_before,
+            reset + h.autopilot.timing.reset_grace + h.rt.jitter
+        );
+        assert_eq!(h.rt.timer_due(), Some(original.not_before));
+        let goal_at_wall = db
+            .thread_goals()
+            .get_thread_goal(h.rt.id)
+            .await
+            .expect("read the walled goal")
+            .expect("the original goal");
+        assert_eq!(
+            goal_at_wall.status,
+            codex_state::ThreadGoalStatus::UsageLimited
+        );
+
+        assert!(!h.autopilot.try_upgrade().await);
+        let journal = h.autopilot.sup.journal();
+        assert!(
+            journal
+                .iter()
+                .any(|line| line.contains("upgrade waits: an autopilot wait is pending")),
+            "{journal:?}"
+        );
+        assert!(h.requests.try_recv().is_err());
+        assert!(!h.shared.exec_pending());
+        assert_eq!(h.rt.state().point_at(), Some(point.at));
+        assert_eq!(h.rt.timer_due(), Some(original.not_before));
+        assert_eq!(h.rt.owed_timer(), Some(original));
+        assert_eq!(
+            db.thread_goals()
+                .get_thread_goal(h.rt.id)
+                .await
+                .expect("read the goal after deferral"),
+            Some(goal_at_wall)
+        );
+        h.test.codex.shutdown_and_wait().await.unwrap();
+    });
+}
+
+#[test]
 fn unpublished_source_refusal_preserves_work_and_reopens_native_admission() {
     native_test(|| async {
         let mut h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
@@ -16,10 +132,17 @@ fn unpublished_source_refusal_preserves_work_and_reopens_native_admission() {
                 .is_err(),
             "this fixture runs outside a published native package"
         );
-        assert!(!h.autopilot.try_upgrade().await);
-        assert!(h.autopilot.sup.journal().iter().any(|line| {
+        let pilot = Arc::clone(&h.autopilot);
+        let mut upgrading = tokio::spawn(async move { pilot.try_upgrade().await });
+        let Err((leaving, journal)) =
+            before_upgrade_ends(&mut upgrading, h.requests.recv(), &h.autopilot.sup).await
+        else {
+            panic!("an unpublished source queued a terminal handoff");
+        };
+        assert!(!leaving);
+        assert!(journal.iter().any(|line| {
             line.contains("upgrade native image recipe: the running image has no exact native published build")
-        }), "{:?}", h.autopilot.sup.journal());
+        }), "{journal:?}");
         assert!(!h.shared.exec_pending());
         assert!(h.requests.try_recv().is_err());
         let restored =

@@ -105,7 +105,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             message,
             per_recording,
         }),
-        ApiError::ModelNotFound { message, status } => {
+        ApiError::ModelNotFound { message, status, .. } => {
             CodexErr::new(CodexErrorDetails::ModelNotFound { message, status })
         }
         ApiError::InvalidPrompt { message } => {

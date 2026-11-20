@@ -194,6 +194,28 @@ class UnitResultsTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         return plan
 
+    def test_default_collection_never_credits_split_outcomes(self):
+        state, process = self.prepare(self.candidate, "default-split-failure")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        log, status = self.execute(self.candidate, state)
+        log.write_text(log.read_text().replace(
+            "test " + TEST + " ... FAILED", "test " + TEST + " ... witness\nFAILED"))
+        process, result = self.collect(state, log, status)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn(b"failure lines disagree", process.stderr)
+        self.assertFalse(result.exists())
+
+        self.candidate.set_behavior(a="ok", b="ok")
+        state, process = self.prepare(self.candidate, "default-split-pass")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        log, status = self.execute(self.candidate, state)
+        log.write_text(log.read_text().replace(
+            "test " + TEST + " ... ok", "test " + TEST + " ... witness\nok"))
+        process, result = self.collect(state, log, status)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(result.read_text())["failed"], [])
+        self.assertEqual(json.loads(result.read_text())["passed"], [])
+
     def test_cursor_redraw_before_a_failed_result_keeps_its_artifact_identity(self):
         state, process = self.prepare(self.candidate, "redraw")
         self.assertEqual(process.returncode, 0, process.stderr)
@@ -704,6 +726,76 @@ class UnitResultsTests(unittest.TestCase):
                 self.assertEqual(tree.calls("a"), 0)
                 self.assertEqual(tree.calls("b"), 0)
 
+
+
+class ResultOutputTests(unittest.TestCase):
+    """Pure output-contract tests; no native runner or Cargo fixture executes."""
+
+    @classmethod
+    def setUpClass(cls):
+        import runpy
+        cls.module = runpy.run_path(str(SCRIPT))
+
+    def parse(self, text, *, sequential=True):
+        with tempfile.TemporaryDirectory(prefix="alab-result-output-") as temporary:
+            path = Path(temporary) / "unit.log"
+            path.write_text(text)
+            output = self.module["ResultOutput"](sequential=sequential)
+            for line in self.module["result_text"](path).splitlines():
+                output.observe(line)
+            output.finish()
+            return output.results
+
+    def test_actual_split_failure_and_success_keep_their_named_headers(self):
+        for outcome in ("FAILED", "ok"):
+            with self.subTest(outcome=outcome):
+                self.assertEqual(self.parse(
+                    "test app::upgrade_case ... kept UI catch-up witness: /private/fixture\n"
+                    + outcome + "\n"), [("app::upgrade_case", outcome)])
+
+    def test_ansi_redraw_separates_output_without_splitting_styled_names(self):
+        self.assertEqual(self.parse(
+            "test app::\x1b[1mupgrade_case\x1b[0m ... \x1b[?2026h"
+            "\x1b[1;1HShutting down...\x1b[0 qok\n"),
+            [("app::upgrade_case", "ok")])
+        self.assertEqual(self.parse(
+            "drawn text\x1b[Htest same::test_name ... \x1b[31mFAILED\x1b[0m\n",
+            sequential=False), [("same::test_name", "FAILED")])
+
+    def test_default_mode_retains_only_inline_failure_attribution(self):
+        self.assertEqual(self.parse("test named::case ... witness\nok\n",
+                                    sequential=False), [])
+        self.assertEqual(self.parse("test named::case ... witness\nFAILED\n",
+                                    sequential=False), [])
+        self.assertEqual(self.parse("test named::case ... ok\n", sequential=False),
+                         [("named::case", "ok")])
+
+    def test_second_header_before_outcome_is_ambiguous(self):
+        for second in ("test other::case ... ok", "test other::case ... witness",
+                       "test other::case ... ok test third::case ... FAILED"):
+            with self.subTest(second=second), self.assertRaises(self.module["Refusal"]):
+                self.parse("test named::case ... witness\n" + second + "\nFAILED\n")
+
+    def test_orphan_duplicate_and_inexact_outcomes_refuse(self):
+        for text in ("ok\n", "FAILED\n", "test named::case ... ok\nok\n",
+                     "test named::case ... witness\nFAILED suffix\n",
+                     "test named::case ... ok\ntest named::case ... ok\n"):
+            with self.subTest(text=text), self.assertRaises(self.module["Refusal"]):
+                self.parse(text)
+
+    def test_pending_result_cannot_cross_summary_round_artifact_or_details(self):
+        for boundary in ("test result: ok. 1 passed; 0 failed; 0 ignored",
+                         "ALAB_UNIT_ROUND 1", "ALAB_UNIT " + "a" * 64, "failures:"):
+            with self.subTest(boundary=boundary), self.assertRaises(self.module["Refusal"]):
+                self.parse("test named::case ... witness\n" + boundary + "\nok\n")
+        with self.assertRaises(self.module["Refusal"]):
+            self.parse("test named::case ... witness\n")
+
+    def test_diagnostic_text_cannot_supply_an_extra_or_prefixed_header(self):
+        for text in ("witness test named::case ... pending\nok\n",
+                     "test named::case ... witness test other::case ... pending\nok\n"):
+            with self.subTest(text=text), self.assertRaises(self.module["Refusal"]):
+                self.parse(text)
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,7 +58,7 @@ async fn capacity_refuses_original_waiter_before_request_or_callback_publication
     let (first, first_reply) = request(&outgoing, thread).await;
     let _first = wire.recv().await.ok_or("first request missing")?;
     let original = ledger(&outgoing)?
-        .capture(ConnectionId(1), &[first.clone()])
+        .capture(ConnectionId(1), std::slice::from_ref(&first))
         .map_err(|_| "original cell missing")?;
     let (refused, reply) = request(&outgoing, thread).await;
     if !matches!(reply.await, Ok(Err(_))) {
@@ -76,7 +76,7 @@ async fn capacity_refuses_original_waiter_before_request_or_callback_publication
         return Err("refused callback was registered");
     }
     let same = ledger(&outgoing)?
-        .capture(ConnectionId(1), &[first.clone()])
+        .capture(ConnectionId(1), std::slice::from_ref(&first))
         .map_err(|_| "original record was evicted")?;
     if !Arc::ptr_eq(&original[0], &same[0]) {
         return Err("capacity replaced original cell");
@@ -102,13 +102,13 @@ async fn whole_replay_capacity_failure_precedes_any_replayed_request() -> Result
         return Err("partial replay was published");
     }
     if ledger(&outgoing)?
-        .capture(ConnectionId(2), &[id.clone()])
+        .capture(ConnectionId(2), std::slice::from_ref(&id))
         .is_ok()
     {
         return Err("failed replay fabricated recipient association");
     }
     if ledger(&outgoing)?
-        .capture(ConnectionId(1), &[id.clone()])
+        .capture(ConnectionId(1), std::slice::from_ref(&id))
         .is_err()
     {
         return Err("failed replay evicted original");
@@ -197,7 +197,7 @@ async fn unspent_replay_budget_drops_without_retiring_endpoint_facts() -> Result
         return Err("unused budget leaked");
     }
     if ledger(&outgoing)?
-        .capture(ConnectionId(2), &[id.clone()])
+        .capture(ConnectionId(2), std::slice::from_ref(&id))
         .is_ok()
     {
         return Err("unused budget fabricated recipient");
@@ -214,6 +214,10 @@ async fn repeated_normal_closed_endpoint_ack_reclaims_budget_without_evicting_fa
     for _ in 0..512 {
         let (id, reply) = request(&outgoing, thread).await;
         let _request = wire.recv().await.ok_or("normal request missing")?;
+        let ledger = ledger(&outgoing)?;
+        let cells = ledger
+            .capture(ConnectionId(1), std::slice::from_ref(&id))
+            .map_err(|_| "original callback capture missing")?;
         outgoing
             .notify_client_response(
                 ConnectionId(1),
@@ -225,8 +229,8 @@ async fn repeated_normal_closed_endpoint_ack_reclaims_budget_without_evicting_fa
             .await
             .map_err(|_| "original normal callback lost")?
             .map_err(|_| "original response rejected")?;
-        ledger(&outgoing)?
-            .acknowledge(ConnectionId(1), &[id])
+        ledger
+            .acknowledge_captured(ConnectionId(1), &cells, &[id])
             .map_err(|_| "actual closed endpoint ACK failed")?;
     }
     if !ledger(&outgoing)?
@@ -432,7 +436,7 @@ async fn late_original_register_preserves_endpoint_without_closed_recipient_asso
         .install(requests.first().ok_or("actual pending snapshot absent")?)
         .map_err(|_| "accepted endpoint lost before live replay")?;
     let cells = ledger(&outgoing)?
-        .capture(ConnectionId(2), &[id.clone()])
+        .capture(ConnectionId(2), std::slice::from_ref(&id))
         .map_err(|_| "actual live association absent")?;
     if !matches!(cells[0].fact().outcome, Outcome::Pending {}) {
         return Err("late register inferred endpoint closure");

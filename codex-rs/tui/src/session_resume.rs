@@ -29,6 +29,7 @@ pub(crate) struct ResumeCwdContext<'path> {
     pub(crate) current_cwd: &'path Path,
     pub(crate) remembered_current_cwd: &'path Path,
     pub(crate) allow_remember_current: bool,
+    pub(crate) local_workspace: bool, // ALAB(accounts): probe only paths owned by the local workspace and execution environment.
     pub(crate) mode: Option<ResumeCwdMode>,
 }
 
@@ -112,10 +113,8 @@ pub(crate) async fn resolve_cwd_for_resume_or_fork(
             tui,
             config,
             action,
-            cwd_context.current_cwd,
             &history_cwd,
-            cwd_context.remembered_current_cwd,
-            cwd_context.allow_remember_current,
+            &cwd_context,
         )
         .await?;
         return Ok(match selection_outcome {
@@ -168,6 +167,7 @@ mod tests {
                     current_cwd: &current_cwd,
                     remembered_current_cwd: &current_cwd,
                     allow_remember_current: true,
+                    local_workspace: true, // ALAB(accounts): local fixture.
                     mode: Some(cwd_mode),
                 },
             )
@@ -197,6 +197,7 @@ mod tests {
                 current_cwd: &current_cwd,
                 remembered_current_cwd: &current_cwd,
                 allow_remember_current: true,
+                local_workspace: true, // ALAB(accounts): local fixture.
                 mode: None,
             },
         )
@@ -225,6 +226,7 @@ mod tests {
                 current_cwd: &current_cwd,
                 remembered_current_cwd: &current_cwd,
                 allow_remember_current: true,
+                local_workspace: true, // ALAB(accounts): local fixture.
                 mode: Some(ResumeCwdMode::Session),
             },
         )

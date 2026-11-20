@@ -5,19 +5,23 @@
 //! process-local forest receiver. Decoding retains the whole genuine E1 owner;
 //! neither decoding nor taking a section says that the UI has been installed.
 use crate::clipboard_copy::worker::alab_retained_clipboard::ClipboardData;
+use crate::owned_local_entered_readers::constructor::Messages;
 use crate::owned_local_ui_snapshot::UiSnapshot;
 use codex_alab_tui::frontend_control::EnteredRetainedFrontend;
 use codex_alab_tui::frontend_control::retained_service::EditorCheckpoint;
 use codex_alab_tui::upgrade_exec_custody::images::LocatorData;
 use codex_alab_tui::upgrade_exec_custody::images::SealedLocator;
+use codex_alab_tui::upgrade_frame;
 use codex_app_server_client::ClientConstructionCheckpoint;
 use codex_app_server_client::ClientConstructionOperation;
 use codex_app_server_client::InitialConstructionCheckpoint;
 use codex_app_server_client::InitialConstructionOperation;
+use codex_app_server_client::SavedResumeQuery;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::value::RawValue;
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 
@@ -111,8 +115,35 @@ pub(crate) enum SelectionData {
         displayed: ThreadId,
         #[serde(deserialize_with = "required_option")]
         initial: Option<InitialConstructionCheckpoint>,
-        later: Vec<ClientConstructionCheckpoint>,
+        later: Vec<Arc<ClientConstructionCheckpoint>>,
     },
+}
+
+/// Immutable data for one attempted opening whose original reply is missing.
+/// Both references originate from the same selected checkpoint.
+#[derive(Clone)]
+pub(crate) struct SavedResumeHandoff {
+    checkpoint: Arc<ClientConstructionCheckpoint>,
+    query: Arc<SavedResumeQuery>,
+}
+
+impl SavedResumeHandoff {
+    pub(crate) fn from_checkpoint(
+        checkpoint: &Arc<ClientConstructionCheckpoint>,
+    ) -> io::Result<Option<Self>> {
+        Ok(checkpoint.saved_resume_query()?.map(|query| Self {
+            checkpoint: Arc::clone(checkpoint),
+            query: Arc::new(query),
+        }))
+    }
+
+    pub(crate) fn checkpoint(&self) -> &Arc<ClientConstructionCheckpoint> {
+        &self.checkpoint
+    }
+
+    pub(crate) fn query(&self) -> &Arc<SavedResumeQuery> {
+        &self.query
+    }
 }
 
 impl SelectionData {
@@ -120,18 +151,35 @@ impl SelectionData {
         let initial = match self {
             Self::NoPrimary { initial } => initial,
             Self::Selected { initial, later, .. } => {
+                let mut openings = HashSet::new();
                 for checkpoint in later {
                     // The existing owner validates its own frozen DATA; it does
                     // not poll/reissue the saved original operation here.
-                    drop(ClientConstructionOperation::restore(checkpoint.clone())?);
+                    ClientConstructionOperation::validate_checkpoint(checkpoint)?;
+                    if let Some((opening, _)) = checkpoint.saved_opening()
+                        && !openings.insert(opening)
+                    {
+                        return Err(invalid("duplicate saved opening in retained selection"));
+                    }
                 }
                 initial
             }
         };
         if let Some(checkpoint) = initial {
-            drop(InitialConstructionOperation::restore(checkpoint.clone())?);
+            InitialConstructionOperation::validate_checkpoint(checkpoint)?;
         }
         Ok(())
+    }
+
+    fn saved_resume_queries(&self) -> io::Result<Vec<SavedResumeHandoff>> {
+        let Self::Selected { later, .. } = self else {
+            return Ok(Vec::new());
+        };
+        later
+            .iter()
+            .filter(|checkpoint| checkpoint.saved_opening().is_some())
+            .filter_map(|checkpoint| SavedResumeHandoff::from_checkpoint(checkpoint).transpose())
+            .collect()
     }
 }
 
@@ -387,11 +435,18 @@ fn decode(bytes: &[u8], service: &str) -> io::Result<Frame> {
     Ok(frame)
 }
 
+fn decode_with_pending_input(bytes: &[u8], service: &str) -> io::Result<(Frame, Messages)> {
+    let frame = decode(bytes, service)?;
+    let messages = Messages::from_ui(&frame.ui)?;
+    Ok((frame, messages))
+}
+
 /// Keeps the actual E1 owner even if native sections still need resource binding.
 /// No consuming getter, decoded/applied Boolean, or synthetic UI ACK is exposed.
 pub(crate) struct DecodedUiTransfer {
     entry: Arc<EnteredRetainedFrontend>,
     frame: Frame,
+    messages: Messages,
     // This locator is extracted from the SAME whole actual entry. Pure DATA
     // decoding above never constructs image-file custody or installation.
     images: SealedLocator,
@@ -428,10 +483,11 @@ impl std::error::Error for DecodeFailure {}
 
 impl DecodedUiTransfer {
     pub(crate) fn from_entered(entry: Arc<EnteredRetainedFrontend>) -> Result<Self, DecodeFailure> {
-        let frame = match decode(entry.input_data(), entry.service_data()) {
-            Ok(frame) => frame,
-            Err(error) => return Err(DecodeFailure { entry, error }),
-        };
+        let (frame, messages) =
+            match decode_with_pending_input(entry.input_data(), entry.service_data()) {
+                Ok(decoded) => decoded,
+                Err(error) => return Err(DecodeFailure { entry, error }),
+            };
         let images = match SealedLocator::from_entered(entry.clone()) {
             Ok(images) => images,
             Err(error) => return Err(DecodeFailure { entry, error }),
@@ -439,6 +495,7 @@ impl DecodedUiTransfer {
         Ok(Self {
             entry,
             frame,
+            messages,
             images,
         })
     }
@@ -456,6 +513,9 @@ impl DecodedUiTransfer {
     }
     pub(crate) fn selection_data(&self) -> &SelectionData {
         &self.frame.selection
+    }
+    pub(crate) fn saved_resume_queries(&self) -> io::Result<Vec<SavedResumeHandoff>> {
+        self.frame.selection.saved_resume_queries()
     }
     pub(crate) fn terminal_data(&self) -> &TerminalData {
         &self.frame.terminal
@@ -488,15 +548,8 @@ impl DecodedUiTransfer {
         )
     }
 
-    pub(crate) fn prepare_selected_messages(
-        &self,
-    ) -> io::Result<crate::chatwidget::alab_retained_transfer::PreparedMessages> {
-        let UiData::Selected { messages, .. } = &self.frame.ui else {
-            return Err(invalid(
-                "retained entry has no selected widget message graph",
-            ));
-        };
-        crate::chatwidget::alab_retained_transfer::PreparedMessages::decode(messages.body())
+    pub(crate) fn messages(&self) -> &Messages {
+        &self.messages
     }
 }
 
@@ -538,19 +591,15 @@ pub(crate) fn encode(service: &str, original: EncodeInputs) -> io::Result<Vec<u8
         image_custody,
         clipboard,
     };
-    let body = serde_json::to_vec(&frame).map_err(invalid)?;
-    let size = MAGIC
-        .len()
-        .checked_add(body.len())
-        .ok_or_else(|| invalid("retained UI size overflow"))?;
-    if size > MAX_BYTES {
-        return Err(invalid("retained UI exceeds Native E1 input limit"));
-    }
-    let mut bytes = Vec::with_capacity(size);
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&body);
-    // Encoding has the same schema/config/correlation checks as receiving.
-    drop(decode(&bytes, service)?);
+    let bytes = upgrade_frame::encode(
+        MAGIC,
+        &frame,
+        MAX_BYTES,
+        "retained UI exceeds Native E1 input limit",
+    )
+    .map_err(invalid)?;
+    drop(frame);
+    drop(decode_with_pending_input(&bytes, service)?);
     Ok(bytes)
 }
 

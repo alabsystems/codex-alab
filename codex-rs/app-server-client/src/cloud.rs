@@ -369,3 +369,6 @@ mod tests;
 #[cfg(unix)]
 #[path = "../../alab-core/glue/retained_backend_cloud_identity.rs"]
 mod alab_retained_backend_identity; // ALAB(retained-ui): observe original Cloud command resource without rebuilding a client.
+
+#[path = "../../alab-core/glue/upgrade_cloud_events.rs"]
+mod alab_upgrade_events; // ALAB(upgrade-events): include original queued-loss publication without filtering it.

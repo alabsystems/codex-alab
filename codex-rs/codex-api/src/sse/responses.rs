@@ -74,6 +74,7 @@ pub fn spawn_response_stream(
     {
         let _ = turn_state.set(header_value.to_string());
     }
+    let opening_advice = alab_capacity::opening_advice(&stream_response.headers); // ALAB(capacity): capture HTTP advice before the SSE body can consume its wait.
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
     tokio::spawn(async move {
         if let Some(model) = server_model {
@@ -96,6 +97,7 @@ pub fn spawn_response_stream(
             idle_timeout,
             telemetry,
             safety_buffering_treatment,
+            opening_advice, // ALAB(capacity): carry this stream's absolute deadline.
         )
         .await;
     });
@@ -470,8 +472,8 @@ pub fn process_responses_event(
             }
         }
         "response.failed" => {
-            return Err(ResponsesEventError::Api(parse_failed_response(
-                event.response,
+            return Err(ResponsesEventError::Api(alab_capacity::failed_response(
+                event.response, event.headers.as_ref(), // ALAB(capacity): use frame advice before falling back to the opening HTTP deadline.
             )));
         }
         "response.completed" | "response.incomplete" => {
@@ -533,6 +535,7 @@ pub fn process_responses_event(
                             token_usage: resp.usage.map(Into::into),
                             usage_metadata: resp.usage_metadata,
                             reasoning_removals,
+                            interrupted, // ALAB(shell-invocation): only the wire interruption survives this successful parse of response.incomplete.
                             end_turn: if interrupted {
                                 Some(false)
                             } else {
@@ -603,6 +606,7 @@ pub async fn process_sse(
         idle_timeout,
         telemetry,
         SafetyBufferingTreatment::default(),
+        None, // ALAB(capacity): a raw byte stream has no opening HTTP headers.
     )
     .await;
 }
@@ -613,8 +617,10 @@ async fn process_sse_with_treatment(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     safety_buffering_treatment: SafetyBufferingTreatment,
+    opening_advice: Option<codex_http_client::RetryAfter>, // ALAB(capacity): fallback for a streamed overload without its own advice.
 ) {
     let mut stream = stream.eventsource();
+    let mut retirement_prefix = alab_model_retirement::Prefix::new(); // ALAB(defaults): retain the original SSE prefix before unsupported events can disappear.
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
 
@@ -662,7 +668,9 @@ async fn process_sse_with_treatment(
 
         trace!("SSE event: {}", &sse.data);
 
-        let event: ResponsesStreamEvent = match serde_json::from_str(&sse.data) {
+        let parsed = serde_json::from_str::<ResponsesStreamEvent>(&sse.data);
+        let before_output = retirement_prefix.observe(parsed.as_ref().ok()); // ALAB(defaults): an unknown or malformed event cannot authorize a same-turn replay.
+        let event = match parsed {
             Ok(event) => event,
             Err(e) => {
                 debug!(
@@ -708,7 +716,8 @@ async fn process_sse_with_treatment(
             }
             Ok(None) => {}
             Err(error) => {
-                let error = error.into_api_error();
+                let error = alab_capacity::with_opening_advice(error.into_api_error(), opening_advice); // ALAB(capacity): honor the opening wait only for a recognized overload.
+                let error = alab_model_retirement::attach(error, before_output); // ALAB(defaults): qualify the exact rejected provider response.
                 if matches!(
                     error,
                     ApiError::FlexUnavailable
@@ -733,6 +742,7 @@ async fn process_sse_with_treatment(
 #[cfg(test)]
 #[path = "responses_error_tests.rs"]
 mod error_tests;
+#[cfg(test)] #[path = "../../../alab-core/glue/shell_exit_decoder_tests.rs"] mod alab_shell_exit_decoder_tests; // ALAB(shell-invocation): distinguish interrupted generations from successful follow-up requests.
 
 #[path = "../../../alab-core/glue/responses_capacity.rs"]
 mod alab_capacity; // ALAB(capacity): exact active overload classification and delivery stay in ALab's layer.
@@ -922,6 +932,7 @@ mod tests {
                 token_usage,
                 usage_metadata,
                 reasoning_removals: _,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn,
             }) => {
                 assert_eq!(response_id, "resp1");
@@ -1121,6 +1132,7 @@ mod tests {
                 token_usage,
                 usage_metadata,
                 reasoning_removals: _,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn,
             }) => {
                 assert_eq!(response_id, "resp1");
@@ -1718,6 +1730,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 reasoning_removals: None,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -1760,6 +1773,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 reasoning_removals: None,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -1797,6 +1811,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 reasoning_removals: None,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -1834,6 +1849,7 @@ mod tests {
                 token_usage: None,
                 usage_metadata: None,
                 reasoning_removals: None,
+                interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -2148,3 +2164,6 @@ mod tests {
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";
 }
+
+#[path = "../../../alab-core/glue/model_retirement_stream_prefix.rs"]
+pub(crate) mod alab_model_retirement; // ALAB(defaults): both serving transports attest the same pre-output model refusal.

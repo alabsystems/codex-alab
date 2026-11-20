@@ -89,7 +89,7 @@ impl OutgoingMessageSender {
         };
         live.publish_reason_if_current(
             || tokio::time::Instant::now().into_std(),
-            |reason| {
+            |reason, remaining| {
                 let info = match reason {
                     CapacityReason::ServerOverloaded => CodexErrorInfo::ServerOverloaded,
                     CapacityReason::PolicyCapacityUnavailable => {
@@ -101,7 +101,9 @@ impl OutgoingMessageSender {
                         error: TurnError {
                             message: reason.notice().into(),
                             codex_error_info: Some(info),
-                            additional_details: None,
+                            additional_details: Some(codex_alab_core::capacity::retry_timing(
+                                remaining,
+                            )),
                             misalignment: None,
                         },
                         will_retry: true,

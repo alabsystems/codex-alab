@@ -8,6 +8,38 @@ use codex_alab_release::Result;
 use std::path::PathBuf;
 
 #[cfg(unix)]
+mod outer;
+#[cfg(unix)]
+mod predecessor;
+#[cfg(unix)]
+mod stage_status;
+#[cfg(unix)]
+use codex_alab_release::space;
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+enum CompilerStage {
+    Product {
+        report: PathBuf,
+        inputs: codex_alab_release::product::Inputs,
+        upstream: codex_alab_release::product::Upstream,
+    },
+    Predecessor {
+        inputs: codex_alab_release::product::Inputs,
+        candidate: predecessor::Candidate,
+    },
+}
+
+#[cfg(unix)]
+impl CompilerStage {
+    fn inputs(&self) -> &codex_alab_release::product::Inputs {
+        match self {
+            Self::Product { inputs, .. } | Self::Predecessor { inputs, .. } => inputs,
+        }
+    }
+}
+
+#[cfg(unix)]
 #[derive(clap::Args)]
 struct ProtectedArgs {
     #[arg(long)]
@@ -23,6 +55,9 @@ struct ProtectedArgs {
 #[derive(Parser)]
 #[command(about = "Native codex-alab release stages")]
 struct Args {
+    #[cfg(unix)]
+    #[arg(long, hide = true)]
+    release_owner_fd: Option<i32>,
     #[command(subcommand)]
     command: Action,
 }
@@ -46,11 +81,32 @@ struct PublishArgs {
     build: u64,
 }
 
+#[cfg(unix)]
+#[derive(clap::Args)]
+struct CycleArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long)]
+    publisher: PathBuf,
+    #[arg(long)]
+    state: PathBuf,
+    #[arg(long)]
+    cargo_home: PathBuf,
+    #[arg(long)]
+    v8_cache: PathBuf,
+}
+
 #[derive(Subcommand)]
 enum Action {
     /// Build, assemble and publish one frozen regular release through native atpkg.
     #[cfg(unix)]
     Publish(PublishArgs),
+    /// Discover or resume the registered regular release on the publishing worker.
+    #[cfg(unix)]
+    Cycle(CycleArgs),
+    /// Run the released predecessor's target reader against an exact candidate.
+    #[cfg(unix)]
+    CheckPredecessor(predecessor::Args),
     /// Exercise the real macOS sandbox from a driver with no inherited sandbox.
     #[cfg(target_os = "macos")]
     VerifySandbox,
@@ -146,7 +202,7 @@ enum Action {
         #[arg(long)]
         nonce: String,
         #[arg(long)]
-        product_plan: Option<PathBuf>,
+        stage_plan: Option<PathBuf>,
         #[arg(last = true, required = true)]
         arguments: Vec<std::ffi::OsString>,
     },
@@ -169,9 +225,92 @@ enum Action {
 }
 
 fn main() -> Result<()> {
-    let release = match Args::parse().command {
+    let result = run();
+    #[cfg(unix)]
+    if let Err(error) = &result
+        && let Some(code) = stage_status::exit_code(error.as_ref())
+    {
+        eprintln!("{error}");
+        std::process::exit(code);
+    }
+    result
+}
+
+fn run() -> Result<()> {
+    let args = Args::parse();
+    #[cfg(unix)]
+    {
+        if matches!(
+            args.command,
+            Action::Build { .. }
+                | Action::Compile { .. }
+                | Action::Ripgrep { .. }
+                | Action::Publish(_)
+                | Action::Cycle(_)
+                | Action::CheckPredecessor(_)
+        ) {
+            return outer::run(args.release_owner_fd, || dispatch(args.command));
+        }
+        if args.release_owner_fd.is_some() {
+            return Err("unexpected release owner descriptor for this action".into());
+        }
+    }
+    dispatch(args.command)
+}
+
+fn dispatch(action: Action) -> Result<()> {
+    let release = match action {
         #[cfg(unix)]
-        Action::Publish(args) => return publish(args),
+        Action::Publish(args) => return publish(args, None),
+        #[cfg(unix)]
+        Action::Cycle(args) => {
+            return codex_alab_release::schedule::cycle(
+                &args.repo,
+                &args.publisher,
+                &args.state,
+                |intent| {
+                    build(
+                        args.repo.clone(),
+                        intent.to_owned(),
+                        args.publisher.clone(),
+                        args.state.clone(),
+                        args.cargo_home.clone(),
+                        args.v8_cache.clone(),
+                    )
+                },
+                |intent, product| {
+                    ripgrep(
+                        args.repo.clone(),
+                        intent.to_owned(),
+                        product.to_owned(),
+                        args.publisher.clone(),
+                        args.state.clone(),
+                        args.cargo_home.clone(),
+                    )
+                },
+                outer::check,
+                |intent, build, ready| {
+                    outer::check()?;
+                    publish(
+                        PublishArgs {
+                            repo: args.repo.clone(),
+                            publisher: args.publisher.clone(),
+                            state: args.state.clone(),
+                            cargo_home: args.cargo_home.clone(),
+                            v8_cache: args.v8_cache.clone(),
+                            intent,
+                            build,
+                        },
+                        Some(ready),
+                    )
+                },
+            );
+        }
+        #[cfg(unix)]
+        Action::CheckPredecessor(args) => {
+            println!("{}", serde_json::to_string(&predecessor::run(args)?)?);
+            return Ok(());
+        }
         #[cfg(target_os = "macos")]
         Action::VerifySandbox => {
             codex_alab_release::protected::verify_native_wrapper()?;
@@ -259,11 +398,17 @@ fn main() -> Result<()> {
         }
         #[cfg(unix)]
         Action::Compile {
-            roots,
+            mut roots,
             intent,
             publisher,
             arguments,
         } => {
+            space::public_compile(
+                &roots.repo,
+                &mut roots.cargo_home,
+                &mut roots.write,
+                &arguments,
+            )?;
             return compile(roots, intent, publisher, arguments, None).map(|_| ());
         }
         #[cfg(unix)]
@@ -273,7 +418,7 @@ fn main() -> Result<()> {
             expected_intent,
             receipt,
             nonce,
-            product_plan,
+            stage_plan,
             arguments,
         } => {
             return compile_worker(
@@ -283,7 +428,7 @@ fn main() -> Result<()> {
                 receipt,
                 nonce,
                 arguments,
-                product_plan,
+                stage_plan,
             );
         }
         Action::Prepare {
@@ -316,17 +461,14 @@ fn compile(
     intent: PathBuf,
     publisher: PathBuf,
     arguments: Vec<std::ffi::OsString>,
-    product: Option<codex_alab_release::product::Inputs>,
+    stage: Option<CompilerStage>,
 ) -> Result<Completion> {
     let release = load_intent(&intent, &roots.repo)?;
     let intent = std::fs::canonicalize(intent)?;
     if Release::prepare(&roots.repo, &release.source, &release.target)? != release {
         return Err("release source changed before compiler admission".into());
     }
-    std::fs::create_dir_all("/tmp/.ubd")?;
-    let control = tempfile::Builder::new()
-        .prefix("release-control.")
-        .tempdir_in("/tmp/.ubd")?;
+    let control = codex_alab_release::protected::short_scratch("release-control.")?;
     let control = std::fs::canonicalize(control.keep())?;
     let nonce = control
         .file_name()
@@ -336,11 +478,12 @@ fn compile(
     let receipt = control.join("completion.json");
     eprintln!("native compiler control: {}", control.display());
     let expected = Completion {
-        schema: 2,
+        schema: 3,
         intent: release.id()?,
         nonce: nonce.clone(),
         arguments: arguments_id(&arguments),
         product: None,
+        predecessor: None,
     };
     let mut command = std::process::Command::new(std::fs::canonicalize(publisher)?);
     command
@@ -361,11 +504,10 @@ fn compile(
         .arg(&receipt)
         .arg("--nonce")
         .arg(nonce);
-    let product_mode = product.is_some();
-    let plan_path = control.join("product.json");
-    if let Some(plan) = &product {
+    let plan_path = control.join("stage.json");
+    if let Some(plan) = &stage {
         codex_alab_release::save_record(&plan_path, &serde_json::to_vec(plan)?)?;
-        command.arg("--product-plan").arg(&plan_path);
+        command.arg("--stage-plan").arg(&plan_path);
     }
     for path in roots.read {
         command.arg("--read").arg(std::fs::canonicalize(path)?);
@@ -373,29 +515,36 @@ fn compile(
     for path in roots.write {
         command.arg("--write").arg(std::fs::canonicalize(path)?);
     }
-    let status = command.arg("--").args(arguments).status()?;
+    if matches!(stage, Some(CompilerStage::Predecessor { .. })) {
+        command.stdout(std::process::Stdio::from(std::io::stderr()));
+    }
+    let status = outer::publisher_status(command.arg("--").args(arguments))?;
     if load_intent(&intent, &roots.repo)? != release {
         return Err("release intent changed during its native compiler stage".into());
     }
-    if !status.success() {
-        return Err(format!("native compiler controller failed: {status}").into());
-    }
+    outer::check()?;
+    stage_status::require_success("native compiler controller", status)?;
     let bytes = codex_alab_release::record_bytes(&receipt)
         .map_err(|error| format!("native compiler produced no valid completion record: {error}"))?;
     let mut observed: Completion = serde_json::from_slice(&bytes)?;
     let product = observed.product.take();
-    if observed != expected || product.is_some() != product_mode {
+    let predecessor = observed.predecessor.take();
+    if observed != expected
+        || product.is_some() != matches!(stage, Some(CompilerStage::Product { .. }))
+        || predecessor.is_some() != matches!(stage, Some(CompilerStage::Predecessor { .. }))
+    {
         return Err("native compiler completion does not match the requested stage".into());
     }
     // The qualified native supervisor has now drained its controller group.
     // Reclaim only this parent's private control record, never a path supplied
     // by a child receipt. Worker scratch remains separately retained.
     std::fs::remove_file(&receipt)?;
-    if product_mode {
+    if stage.is_some() {
         std::fs::remove_file(&plan_path)?;
     }
     std::fs::remove_dir(&control)?;
     observed.product = product;
+    observed.predecessor = predecessor;
     Ok(observed)
 }
 
@@ -408,6 +557,7 @@ struct Completion {
     nonce: String,
     arguments: String,
     product: Option<codex_alab_release::product::Build>,
+    predecessor: Option<predecessor::Observation>,
 }
 
 #[cfg(unix)]
@@ -431,8 +581,9 @@ fn compile_worker(
     receipt: PathBuf,
     nonce: String,
     arguments: Vec<std::ffi::OsString>,
-    product_plan: Option<PathBuf>,
+    stage_plan: Option<PathBuf>,
 ) -> Result<()> {
+    let worker = codex_alab_release::protected::Worker::new()?;
     let release = load_intent(&intent, &roots.repo)?;
     if release.id()? != expected {
         return Err("the compiler stage received another release intent".into());
@@ -447,7 +598,7 @@ fn compile_worker(
     };
     let front = selected("ATPKG_PROJECT_FRONT")?;
     let targo = selected("ATPKG_PROJECT_TARGO")?;
-    let product: Option<codex_alab_release::product::Inputs> = product_plan
+    let stage: Option<CompilerStage> = stage_plan
         .as_ref()
         .map(|path| -> Result<_> {
             Ok(serde_json::from_slice(&codex_alab_release::record_bytes(
@@ -455,10 +606,28 @@ fn compile_worker(
             )?)?)
         })
         .transpose()?;
-    if let Some(plan) = &product {
+    let inputs = stage.as_ref().map(CompilerStage::inputs);
+    if let Some(plan) = inputs {
         plan.check(&roots.repo, &release)?;
-        if arguments != plan.arguments() {
-            return Err("canonical product compiler arguments changed".into());
+        let expected = match &stage {
+            Some(CompilerStage::Predecessor { candidate, .. }) => {
+                candidate.check()?;
+                roots.read.push(candidate.executable.clone());
+                predecessor::arguments(plan)
+            }
+            Some(CompilerStage::Product {
+                upstream, report, ..
+            }) => {
+                if upstream != &codex_alab_release::product::upstream(&roots.repo, &release)? {
+                    return Err("frozen upstream product identity changed".into());
+                }
+                codex_alab_release::product::Certification::check_fresh(&plan.target, report)?;
+                codex_alab_release::product::certified_arguments(&release.source, report)
+            }
+            None => return Err("missing compiler stage".into()),
+        };
+        if arguments != expected {
+            return Err("canonical compiler arguments changed".into());
         }
         roots.read.push(plan.source.clone());
         roots.read.push(plan.v8_archive.clone());
@@ -471,8 +640,7 @@ fn compile_worker(
             .ok_or("native completion has no control directory")?
             .to_path_buf(),
     );
-    let cwd = product
-        .as_ref()
+    let cwd = inputs
         .map(|plan| plan.source.join("codex-rs"))
         .unwrap_or_else(|| roots.repo.clone());
     let protected = codex_alab_release::protected::Protected::new(
@@ -482,37 +650,51 @@ fn compile_worker(
         &roots.write,
     )?;
     eprintln!("protected scratch: {}", protected.scratch_path().display());
-    let mut compiler_args = vec!["__build_admit".into(), targo.into_os_string()];
-    compiler_args.extend(arguments.clone());
-    let mut compiler = protected.command(front.as_os_str(), &compiler_args);
+    let mut compiler = if let Some(CompilerStage::Product { inputs, .. }) = &stage {
+        let driver = inputs.source.join("alab/certified-build.sh");
+        let mut command = worker.command(&protected, driver.as_os_str(), &arguments, true)?;
+        command.env("CARGO_TARGET_DIR", &inputs.target);
+        command
+    } else {
+        let mut compiler_args = vec!["__build_admit".into(), targo.into_os_string()];
+        compiler_args.extend(arguments.clone());
+        worker.command(&protected, front.as_os_str(), &compiler_args, false)?
+    };
     compiler
         .env("PCRE2_SYS_STATIC", "1")
         .env("STABLE_GIT_COMMIT", &release.source)
         .env("CODEX_ALAB_PRODUCT_VERSION", &release.version)
         .env("CODEX_ALAB_BUILD_VERSION", &release.client_version)
         .env("CODEX_ALAB_UPSTREAM_VERSION", &release.baseline);
-    if let Some(plan) = &product {
+    if let Some(plan) = inputs {
         compiler
             .env("RUSTY_V8_ARCHIVE", &plan.v8_archive)
             .env("RUSTY_V8_SRC_BINDING_PATH", &plan.v8_binding)
-            .env("CODEX_ALAB_UPSTREAM_COMMIT", &plan.upstream.commit)
             .env("CARGO_INCREMENTAL", "0");
     }
-    let status = compiler.status()?;
+    if let Some(CompilerStage::Product { upstream, .. }) = &stage {
+        compiler.env("CODEX_ALAB_UPSTREAM_COMMIT", &upstream.commit);
+    }
+    let test_binary = if let Some(CompilerStage::Predecessor { inputs, .. }) = &stage {
+        predecessor::compile_test(&worker, &mut compiler, inputs).map(Some)
+    } else {
+        let status = compiler.status()?;
+        stage_status::require_success("protected compiler command", status).map(|()| None)
+    };
     if load_intent(&intent, &roots.repo)? != release {
         return Err("compiler stage changed its release intent".into());
     }
-    if !status.success() {
-        return Err(format!("protected compiler command failed: {status}").into());
-    }
-    let build = if let Some(plan) = &product {
+    worker.check()?;
+    let test_binary = test_binary?;
+    let compiler = if let Some(plan) = inputs {
         plan.check(&roots.repo, &release)?;
         let trustc = selected("ATPKG_PROJECT_TRUSTC")?;
         let query = |args: &[std::ffi::OsString]| -> Result<String> {
-            let output = protected.command(trustc.as_os_str(), args).output()?;
-            if !output.status.success() {
-                return Err("could not observe selected compiler".into());
-            }
+            let output = worker
+                .disposable_command(&protected, trustc.as_os_str(), args)?
+                .output()?;
+            worker.check()?;
+            stage_status::require_success("selected compiler identity query", output.status)?;
             Ok(String::from_utf8(output.stdout)?)
         };
         let vv = query(&["-vV".into()])?;
@@ -530,28 +712,68 @@ fn compile_worker(
         if std::fs::canonicalize(sysroot.trim())? != execution {
             return Err("compiler sysroot differs from native selection".into());
         }
-        let compiler =
-            codex_alab_release::product::observe_compiler(&plan.target, &vv, sysroot.trim())?;
-        Some(codex_alab_release::product::Build {
-            intent: release.id()?,
-            source: release.source.clone(),
-            version: release.version.clone(),
-            target: plan.target.clone(),
-            compiler,
-            binaries: codex_alab_release::product::binaries(&plan.target)?,
-            upstream: plan.upstream.clone(),
-        })
+        Some(codex_alab_release::product::observe_compiler(
+            &plan.target,
+            &vv,
+            sysroot.trim(),
+        )?)
     } else {
         None
     };
-    let completion = Completion {
-        schema: 2,
+    let mut completion = Completion {
+        schema: 3,
         intent: release.id()?,
         nonce,
         arguments: arguments_id(&arguments),
-        product: build,
+        product: None,
+        predecessor: None,
     };
+    match (stage, compiler) {
+        (
+            Some(CompilerStage::Product {
+                inputs: plan,
+                upstream,
+                report,
+            }),
+            Some(compiler),
+        ) => {
+            if upstream != codex_alab_release::product::upstream(&roots.repo, &release)? {
+                return Err("upstream product identity changed during the build".into());
+            }
+            completion.product = Some(codex_alab_release::product::Build {
+                intent: release.id()?,
+                source: release.source.clone(),
+                version: release.version.clone(),
+                target: plan.target.clone(),
+                compiler,
+                certification: codex_alab_release::product::Certification::observe(
+                    &plan.target,
+                    &report,
+                )?,
+                binaries: codex_alab_release::product::binaries(&plan.target)?,
+                upstream,
+            });
+        }
+        (Some(CompilerStage::Predecessor { inputs, candidate }), Some(compiler)) => {
+            let binary = test_binary.ok_or("missing predecessor test binary")?;
+            // The test only needs its two executables, scratch and no mutable compiler outputs.
+            let empty_home = tempfile::tempdir_in(protected.scratch_path())?;
+            let runtime = codex_alab_release::protected::Protected::new(
+                &cwd,
+                empty_home.path(),
+                &[binary.clone(), candidate.executable.clone()],
+                &[],
+            )?;
+            completion.predecessor = Some(predecessor::observe(
+                &worker, &runtime, &release, &candidate, &binary, compiler,
+            )?);
+            inputs.check(&roots.repo, &release)?;
+        }
+        (None, None) => {}
+        _ => return Err("missing stage compiler observation".into()),
+    }
     use std::io::Write;
+    worker.check()?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -572,32 +794,34 @@ fn build(
     v8_cache: PathBuf,
 ) -> Result<PathBuf> {
     let release = load_intent(&intent, &repo)?;
+    space::product(&repo, &release, &state, &cargo_home, &v8_cache)?;
     if Release::prepare(&repo, &release.source, &release.target)? != release {
         return Err("product source changed before checkout".into());
     }
     let checkout = codex_alab_release::source::Checkout::prepare(&repo, &release, &state)?;
+    let upstream = codex_alab_release::product::fetch_upstream(&repo, &release)?;
     let v8 = codex_alab_release::v8::resolve(&repo, &release, &v8_cache)?;
-    let target = checkout.output()?;
-    let (archive_hash, binding_hash) = v8.hashes();
-    let plan = codex_alab_release::product::Inputs {
-        intent: release.id()?,
-        campaign: checkout.campaign.clone(),
-        source: checkout.root.clone(),
-        target: target.clone(),
-        v8_archive: v8.archive.clone(),
-        v8_binding: v8.binding.clone(),
-        v8_archive_sha256: archive_hash.to_owned(),
-        v8_binding_sha256: binding_hash.to_owned(),
-        upstream: codex_alab_release::product::upstream(&repo, &release)?,
-    };
-    let arguments = plan.arguments();
+    let plan = codex_alab_release::product::Inputs::new(&release, &checkout, &v8)?;
+    space::product(&repo, &release, &state, &cargo_home, &v8_cache)?;
+    let report = codex_alab_release::product::Certification::fresh(&plan.target)?;
+    let arguments = codex_alab_release::product::certified_arguments(&release.source, &report);
     let roots = ProtectedArgs {
         repo,
         cargo_home,
         read: vec![],
-        write: vec![target],
+        write: vec![plan.target.clone()],
     };
-    let completed = compile(roots, intent, publisher, arguments, Some(plan))?;
+    let completed = compile(
+        roots,
+        intent,
+        publisher,
+        arguments,
+        Some(CompilerStage::Product {
+            report,
+            inputs: plan,
+            upstream,
+        }),
+    )?;
     checkout.check(&release)?;
     v8.check()?;
     let record = completed
@@ -631,13 +855,14 @@ fn ripgrep(
     use codex_alab_release::source::Checkout;
     use sha2::Digest;
     let release = load_intent(&intent, &repo)?;
-    let checkout = Checkout::prepare(&repo, &release, &state)?;
-    let product: product::Build =
-        serde_json::from_slice(&codex_alab_release::record_bytes(&observation)?)?;
-    if product.target != checkout.output()? {
-        return Err("ripgrep needs this campaign's product observation".into());
-    }
-    product.check(&release)?;
+    space::ripgrep(&repo, &release, &state, &cargo_home)?;
+    let checkout = Checkout::reopen(&repo, &release, &state)?;
+    let product = product::Build::from_observation(
+        &codex_alab_release::record_bytes(&observation)?,
+        &repo,
+        &release,
+        &checkout,
+    )?;
     let version = codex_alab_release::assembly::ripgrep_version(&repo, &release)?;
     // Preserve failed attempts. Never reuse an unobserved executable or Cargo install's
     // already-installed shortcut as evidence that this operation compiled anything.
@@ -686,7 +911,7 @@ fn ripgrep(
     };
     checkout.check(&release)?;
     product.check(&release)?;
-    build.check(&repo, &release, &product.compiler)?;
+    build.check(&repo, &release, &product.compiler, &checkout.campaign)?;
     let bytes = serde_json::to_vec_pretty(&build)?;
     let id = format!("{:x}", sha2::Sha256::digest(&bytes));
     let path = checkout.campaign.join(format!("ripgrep-{id}.json"));
@@ -699,15 +924,29 @@ fn ripgrep(
 }
 
 #[cfg(unix)]
-fn publish(args: PublishArgs) -> Result<()> {
+fn publish(args: PublishArgs, ready: Option<&codex_alab_release::schedule::Ready>) -> Result<()> {
     let release = load_intent(&args.intent, &args.repo)?;
-    let campaign = codex_alab_release::workflow::Campaign::open(
+    let campaign = codex_alab_release::workflow::Campaign::open_with_source_admission(
         &args.repo,
         &release,
         &args.state,
         args.build,
         &args.publisher,
+        || {
+            space::product(
+                &args.repo,
+                &release,
+                &args.state,
+                &args.cargo_home,
+                &args.v8_cache,
+            )
+        },
     )?;
+    if let Some(ready) = ready {
+        ready.check()?;
+        campaign.retain_stage("product", &ready.product)?;
+        campaign.retain_stage("ripgrep", &ready.ripgrep)?;
+    }
     let product = match campaign.stage("product")? {
         Some(record) => record,
         None => {
@@ -723,6 +962,7 @@ fn publish(args: PublishArgs) -> Result<()> {
             record
         }
     };
+    outer::check()?;
     let rg = match campaign.stage("ripgrep")? {
         Some(record) => record,
         None => {
@@ -739,6 +979,7 @@ fn publish(args: PublishArgs) -> Result<()> {
         }
     };
     campaign.check()?;
+    outer::check()?;
     codex_alab_release::assembly::assemble(
         &args.repo,
         &release,
@@ -747,7 +988,42 @@ fn publish(args: PublishArgs) -> Result<()> {
         &args.state,
         &campaign.package(),
     )?;
-    campaign.publish(&args.repo, &release)?;
+    campaign.publish(
+        &args.repo,
+        &release,
+        || {
+            if ready.is_some() {
+                codex_alab_release::schedule::check_dispatch(
+                    &args.repo,
+                    &args.publisher,
+                    &release,
+                    args.build,
+                )?;
+            }
+            outer::check()
+        },
+        |previous, successor, executable| {
+            let observation = predecessor::run(predecessor::Args {
+                repo: args.repo.clone(),
+                publisher: args.publisher.clone(),
+                state: args.state.clone(),
+                cargo_home: args.cargo_home.clone(),
+                v8_cache: args.v8_cache.clone(),
+                source: previous.source.clone(),
+                target: release.target.clone(),
+                candidate: executable.to_owned(),
+                candidate_version: successor.version.clone(),
+                candidate_sha256: successor.executable_sha256.clone(),
+            })?;
+            if observation.predecessor_version != previous.version {
+                return Err(
+                    "the frozen predecessor source does not produce the signed product version"
+                        .into(),
+                );
+            }
+            Ok(())
+        },
+    )?;
     println!(
         "Native package publisher completed; installation and running-process adoption remain unverified."
     );

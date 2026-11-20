@@ -374,6 +374,7 @@ pub(crate) struct AttachmentMetadata {
 
 #[path = "../../alab-tui/glue/owned_local_session.rs"]
 mod alab_owned_local; // ALAB(owned-local): selected target semantics and controller tenure stay outside upstream session bodies.
+pub(crate) use alab_owned_local::SideCloseAck; // ALAB(side-boundary): carry the original close receipt through its UI callback.
 
 #[cfg(unix)]
 #[path = "../../alab-tui/glue/owned_local_configured_events.rs"]
@@ -385,6 +386,7 @@ pub(crate) struct AppServerSession {
     #[cfg(unix)]
     alab_retained_ui: Option<std::sync::Arc<alab_retained_ui::Pending>>, // ALAB(retained-frontier): accepted before first RPC poll.
     backend_id: crate::backend_id::BackendId,
+    pub(crate) daemon_login: Option<Arc<crate::daemon_login::ManagedLogin>>, // ALAB(accounts): only an implicitly admitted local backend pins its verified login.
     /// Owns events and the connection lifetime for live sessions. Request-only views share the
     /// request handle below and have no connection owner.
     connection_owner: Option<AppServerClient>,
@@ -397,6 +399,8 @@ pub(crate) struct AppServerSession {
     pub(crate) pending_side_skills_refresh: Option<Uuid>,
     history_pagination: HashMap<ThreadId, history::ThreadHistoryPagination>,
     pub(crate) attachment_subscribed: Option<bool>,
+    #[cfg(unix)] pub(crate) alab_saved_opening: Option<alab_construction::SavedOpening>, // ALAB(retained-ui): the actual chooser binds its opening to its original retained resume.
+    pub(crate) alab_saved_resume_unreadable: Option<bool>, // ALAB(retained-ui): only the provisional chooser view observes its original wire success separately from confirmed subscription.
     pub(crate) focused_conversation: Option<ThreadId>,
     pub(crate) attempted_revision: Option<String>,
     pub(crate) frozen_receipt: Option<(ThreadId, String)>,
@@ -615,6 +619,7 @@ impl AppServerSession {
     ) -> Self {
         Self {
             backend_id,
+            daemon_login: None, // ALAB(accounts): remote and unverified targets never acquire a local login.
             connection_owner,
             #[cfg(unix)]
             alab_configured_events: Default::default(), // ALAB(retained-ui): request-only views own no physical event queue.
@@ -626,6 +631,8 @@ impl AppServerSession {
             automatic_name_writes: HashMap::new(),
             pending_side_skills_refresh: None,
             attachment_subscribed: None,
+            #[cfg(unix)] alab_saved_opening: None, // ALAB(retained-ui): generic request views have no chooser-owned construction.
+            alab_saved_resume_unreadable: None, // ALAB(retained-ui): ordinary selection keeps its original fallback policy.
             history_pagination: HashMap::new(),
             focused_conversation: None,
             attempted_revision: None,
@@ -716,6 +723,7 @@ impl AppServerSession {
             self.thread_params_mode,
         );
         view.request_id_namespace = Some(Uuid::new_v4());
+        view.daemon_login = self.daemon_login.clone(); // ALAB(accounts): keep the same physical owner's expectation in this backend view.
         view.alab_original_work = self.alab_original_work.clone(); // ALAB(retained-ui): request views share the SAME original task domain.
         view.alab_model_jobs = self.alab_model_jobs.clone(); // ALAB(retained-ui): views preserve the SAME original job/resource lineage.
         #[cfg(unix)] { view.owned_local = self.owned_local.clone(); } // ALAB(owned-local): views retain the same real controller allocation.
@@ -781,6 +789,7 @@ impl AppServerSession {
             self.remote_cwd_override(),
             /*session_start_source*/ None,
         );
+        alab_fork_preferences::remote_start_preference(&mut thread_start_params, &config, self.thread_params_mode, &self.available_models); // ALAB(defaults): carry the remote client preference into delegated starts.
         let daybreak_launch_override = config
             .config_layer_stack
             .layers_high_to_low()
@@ -909,7 +918,7 @@ impl AppServerSession {
         alab_session_models::start(self); // ALAB(retained-ui): retain original task/late result before spawn; no repeated RPC on observer cancellation.
     }
 
-    fn request_model_list(&mut self) -> impl Future<Output = Result<Vec<ModelPreset>>> + use<> {
+    pub(crate) fn request_model_list(&mut self) -> impl Future<Output = Result<Vec<ModelPreset>>> + use<> { // ALAB(fleet-model): a settings request resolves against the current serving catalog.
         let mode = self.thread_params_mode;
         let handle = self.request_handle();
         let request_id = self.next_request_id();
@@ -1028,28 +1037,30 @@ impl AppServerSession {
             .and_then(|models| models.new_thread);
         let default_model = (self.thread_params_mode.settings_owner()
             == ThreadSettingsOwner::Client)
-            .then(|| config.model.clone())
+            .then(|| config.alab_display_model(&available_models, self.thread_params_mode == ThreadParamsMode::Embedded)) // ALAB(defaults): use the serving catalog for inherited startup preferences.
             .flatten()
-            .or_else(|| {
-                available_models
-                    .iter()
-                    .find(|model| model.is_default)
-                    .map(|model| model.model.clone())
-            })
-            .or_else(|| available_models.first().map(|model| model.model.clone()))
+            .or_else(|| Config::alab_advertised_default(&available_models).map(|model| model.model.clone())) // ALAB(defaults): an off-family row cannot stand in for a missing default.
             .or_else(|| match fallback {
-                EmptyCatalogFallback::Error => None,
+                // ALAB(defaults): an existing-thread bootstrap may need a provisional display model
+                // before its saved selection arrives. Fresh startup validates the authoritative config.
+                EmptyCatalogFallback::Error => available_models.first().map(|model| model.model.clone()),
                 EmptyCatalogFallback::ManagedNewThread => self
                     .managed_new_thread_defaults
                     .as_ref()
                     .and_then(|defaults| defaults.model.clone()),
             });
+        self.default_model.clone_from(&default_model);
+        let default_model = default_model.or_else(|| { // ALAB(defaults): an unmarked remote can supply its actual model at thread/start. Keep its display placeholder out of the settings cache.
+            (self.thread_params_mode == ThreadParamsMode::Remote).then(|| available_models.first().map(|model| model.model.clone())).flatten()
+        });
         if default_model.is_none() && self.thread_params_mode != ThreadParamsMode::Cloud {
+            if !available_models.is_empty() { // ALAB(defaults): a catalog can have rows and intentionally have no default.
+                color_eyre::eyre::bail!("The server did not advertise a default model. Set an explicit model with --model.");
+            }
             color_eyre::eyre::bail!(
                 "No models are available. Set `model` explicitly or check your model catalog configuration."
             );
         }
-        self.default_model.clone_from(&default_model);
         self.available_models = available_models.clone();
 
         let account = SessionAccount::from(account);
@@ -1157,6 +1168,7 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        alab_fork_preferences::remote_start_preference(&mut params, &session_config, self.thread_params_mode, &self.available_models); // ALAB(defaults): plain remote starts use upgrades from the server catalog.
         if self.thread_params_mode.settings_owner() == ThreadSettingsOwner::Client {
             params.model_provider = self
                 .model_provider_override
@@ -1215,6 +1227,7 @@ impl AppServerSession {
             )
         });
         let mut started = started_thread_from_start_response(
+            &self.request_handle, // ALAB(defaults): confirm an in-process creator from its actual transport.
             response,
             local_settings,
             config,
@@ -1342,7 +1355,7 @@ impl AppServerSession {
         if self.task_tools_available(parent) {
             view.remember_task_tool_thread(parent);
         }
-        async move {
+        crate::boxed_future!(async move { // ALAB(startup-stack): carry one pointer through the UI event loop and Tokio spawn.
             let mut storage = SideChatStorage::Temporary;
             if preferred_storage == SideChatStorage::Attached
                 && view.attached_side_chat_query(parent).await?.is_some()
@@ -1417,7 +1430,7 @@ impl AppServerSession {
                 storage,
                 legacy: view.history_support == ThreadHistorySupport::LegacyOnly,
             })
-        }
+        })
     }
 
     pub(crate) fn observe_sidebar_fork(&mut self, fork: &SidebarFork) {
@@ -1724,6 +1737,7 @@ impl AppServerSession {
             .await;
         let mut response: ThreadReadResponse = match response {
             Ok(response) => {
+                history_page::validate_thread_response("thread/read", thread_id, &response.thread.id)?; // ALAB(history): bind the reply to its request before saving a read revision or returning a target.
                 // Freeze the metadata revision observed before history hydration.
                 if !include_turns {
                     self.remember_read_state(thread_id, response.read_state);
@@ -1749,6 +1763,7 @@ impl AppServerSession {
             }
             Err(err) => return Err(err).wrap_err("thread/read failed during TUI session lookup"),
         };
+        history_page::validate_thread_response("thread/read", thread_id, &response.thread.id)?; // ALAB(history): a fallback metadata reply cannot start paging another conversation.
         self.hydrate_initial_thread_history(
             &mut response.thread,
             /*turn_cursor*/ None,
@@ -1910,7 +1925,7 @@ impl AppServerSession {
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         permissions_override: TurnPermissionsOverride,
         workspace_roots: &[AbsolutePathBuf],
-        model: String,
+        model: impl Into<Option<String>>, // ALAB(defaults): allow an ordinary turn to inherit the destination model.
         effort: Option<codex_protocol::openai_models::ReasoningEffort>,
         summary: Option<codex_protocol::config_types::ReasoningSummary>,
         service_tier: Option<Option<String>>,
@@ -1937,7 +1952,7 @@ impl AppServerSession {
             params.approvals_reviewer = approvals_reviewer;
             params.sandbox_policy = sandbox_policy;
             params.permissions = permissions;
-            params.model = Some(model);
+            params.model = model.into(); // ALAB(defaults): a sparse turn preserves a newer destination selection.
             params.service_tier = service_tier;
             params.effort = effort;
             params.summary = summary;
@@ -2157,9 +2172,21 @@ impl AppServerSession {
         thread_id: ThreadId,
     ) -> impl Future<Output = Result<()>> + use<> {
         let request_id = self.next_request_id();
+        let response = self.thread_unsubscribe_response(thread_id, request_id); // ALAB(retained-ui): ordinary callers keep the existing unit result and error context.
+        async move {
+            response.await.wrap_err("thread/unsubscribe failed in TUI")?;
+            Ok(())
+        }
+    }
+
+    fn thread_unsubscribe_response(
+        &self,
+        thread_id: ThreadId,
+        request_id: RequestId,
+    ) -> impl Future<Output = std::result::Result<ThreadUnsubscribeResponse, TypedRequestError>> + use<> { // ALAB(retained-ui): saved-chat cleanup keeps this exact original wire reply.
         let handle = self.request_handle();
         async move {
-            let _: ThreadUnsubscribeResponse = handle
+            handle
                 .request_typed(ClientRequest::ThreadUnsubscribe {
                     request_id,
                     params: ThreadUnsubscribeParams {
@@ -2167,8 +2194,6 @@ impl AppServerSession {
                     },
                 })
                 .await
-                .wrap_err("thread/unsubscribe failed in TUI")?;
-            Ok(())
         }
     }
 
@@ -2386,7 +2411,7 @@ pub(crate) async fn start_thread_with_request_handle(
                 bootstrap_request_error("thread/start failed during TUI bootstrap", err)
             })?;
     let mut started =
-        started_thread_from_start_response(response, local_settings, &config, thread_params_mode)
+        started_thread_from_start_response(&request_handle, response, local_settings, &config, thread_params_mode) // ALAB(defaults): keep the actual startup transport.
             .await?;
     started.task_tools_available = task_tools_available;
     Ok(started)
@@ -2742,7 +2767,7 @@ fn thread_start_params_with_reviewer(
         })
         .flatten();
     ThreadStartParams {
-        model: config.model.clone(),
+        model: config.alab_request_model(), // ALAB(defaults): keep stored preferences out of exact model overrides.
         model_provider: provider_selection::explicit_provider(config),
         service_tier: service_tier_override_from_config(config),
         cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
@@ -2818,7 +2843,7 @@ fn thread_resume_params_from_config(
         })
         .flatten();
     let mut config_overrides = config_request_overrides_from_config(&config, thread_params_mode);
-    if model_settings == ResumeModelSettings::RestoreFromThread
+    if (model_settings == ResumeModelSettings::RestoreFromThread || config.alab_inherited_reasoning_effort()) // ALAB(defaults): a global effort preference cannot replace a saved thread effort.
         && let Some(overrides) = config_overrides.as_mut()
     {
         overrides.remove("model_reasoning_effort");
@@ -2828,7 +2853,7 @@ fn thread_resume_params_from_config(
     }
     let (model, model_provider) = match model_settings {
         ResumeModelSettings::OverrideFromCurrentConfig => (
-            config.model.clone(),
+            config.alab_request_model(), // ALAB(defaults): effort-only launch flags leave the saved model eligible for migration.
             provider_selection::explicit_provider(&config),
         ),
         ResumeModelSettings::RestoreFromThread
@@ -2869,6 +2894,9 @@ fn thread_resume_params_from_config(
     params
 }
 
+#[path = "../../alab-core/glue/tui_fork_preferences.rs"] mod alab_fork_preferences; // ALAB(defaults): filter inherited fork settings before RPC serialization.
+use alab_fork_preferences::alab_saved_model_fork_overrides; // ALAB(defaults): preserve the fork source effort.
+
 fn thread_fork_params_from_config(
     config: Config,
     thread_id: ThreadId,
@@ -2887,7 +2915,7 @@ fn thread_fork_params_from_config(
         .flatten();
     ThreadForkParams {
         thread_id: thread_id.to_string(),
-        model: config.model.clone(),
+        model: config.alab_request_model(), // ALAB(defaults): keep stored preferences out of exact model overrides.
         model_provider: provider_selection::explicit_provider(&config),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
@@ -2896,7 +2924,7 @@ fn thread_fork_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox,
         permissions,
-        config: config_request_overrides_from_config(&config, thread_params_mode),
+        config: alab_saved_model_fork_overrides(&config, thread_params_mode), // ALAB(defaults): fork restores the parent effort unless the invocation specified one.
         base_instructions: config.base_instructions.clone().filter(|_| {
             !matches!(
                 config.base_instructions_provenance,
@@ -2927,13 +2955,14 @@ fn thread_cwd_from_config(
 }
 
 async fn started_thread_from_start_response(
+    request_handle: &AppServerRequestHandle, // ALAB(defaults): daemon locality alone cannot establish an identical build.
     response: ThreadStartResponse,
     local_settings: &LocalSettings,
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
     let blocks_direct_input = thread_blocks_direct_input(&response.thread);
-    let session = thread_session_state_from_thread_start_response(
+    let mut session = thread_session_state_from_thread_start_response(
         &response,
         local_settings,
         config,
@@ -2941,6 +2970,7 @@ async fn started_thread_from_start_response(
     )
     .await
     .map_err(color_eyre::eyre::Report::msg)?;
+    crate::chatwidget::alab_turn_model::observe_fresh(&mut session, &response.thread.source, request_handle, thread_params_mode); // ALAB(defaults): seed the preset only for a confirmed same-process creation.
     Ok(AppServerStartedThread {
         #[cfg(unix)] alab_construction: None, // ALAB(source-selection): ordinary data constructor owns no retained operation.
         session,
@@ -5478,3 +5508,6 @@ mod alab_retained_backend_state; // ALAB(retained-ui): preserve the same physica
 
 #[path = "../../alab-tui/glue/retained_session_work.rs"]
 pub(crate) mod alab_session_work; // ALAB(retained-ui): actual worker/descendant joins, never reconstructed jobs or Source permission.
+
+#[path = "../../alab-tui/glue/session_upgrade_events.rs"]
+mod alab_upgrade_events; // ALAB(upgrade-events): inspect this owning Session and its original configured FIFO.

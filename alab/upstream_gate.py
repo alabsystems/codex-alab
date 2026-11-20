@@ -16,7 +16,7 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from upstream_intake import catalog_feature_ids, git, snapshot, validate
+from upstream_intake import catalog_feature_ids, git, integrated_upstream, snapshot, validate
 
 CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
 
@@ -24,13 +24,9 @@ CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
 RECORD = re.compile(r'alab/upstream/[A-Za-z0-9][A-Za-z0-9._-]*-intake\.json')
 
 
-def admission(repo, base, source='HEAD', upstream='upstream/main'):
+def admission(repo, base, source='HEAD', upstream=None):
     source = git(repo, 'rev-parse', '--verify', '--end-of-options', source + '^{commit}')
-    upstream = git(repo, 'rev-parse', '--verify', '--end-of-options', upstream + '^{commit}')
-    frontiers = git(repo, 'merge-base', '--all', source, upstream).splitlines()
-    if len(frontiers) != 1:
-        raise ValueError('candidate has no unambiguous integrated upstream frontier')
-    expected = snapshot(repo, base, frontiers[0])
+    expected = snapshot(repo, base, integrated_upstream(repo, source, upstream))
     wanted = {entry['sha'] for entry in expected['commits']}
     result = {'schema': 1, 'kind': 'committed-upstream-review-admission',
               'base': expected['base'], 'source': source,
@@ -58,6 +54,10 @@ def admission(repo, base, source='HEAD', upstream='upstream/main'):
                 or any(not isinstance(entry, dict) for entry in record['commits'])):
             raise ValueError('invalid committed intake: ' + name)
         records[name] = record
+    # snapshot verified the complete parent chain from its merge base. Exact
+    # endpoints on the chain identify a complete immutable subrange.
+    positions = {expected['frontier']: 0}
+    positions.update((entry['sha'], i) for i, entry in enumerate(expected['commits'], 1))
     seen, reviewed, affected = set(), set(), set()
     for name, record in records.items():
         # Historical batches are not revalidated at every future sync. A batch
@@ -79,7 +79,13 @@ def admission(repo, base, source='HEAD', upstream='upstream/main'):
             # The replacement still has to pass its own immutable-source and
             # decision checks. Supersession cannot fill a missing review.
             continue
-        actual = snapshot(repo, record['base'], record['target'])
+        first = positions.get(record['base'])
+        last = positions.get(record['target'])
+        if first is not None and last is not None and first <= last:
+            actual = {**expected, 'base': record['base'], 'frontier': record['base'],
+                      'target': record['target'], 'commits': expected['commits'][first:last]}
+        else:
+            actual = snapshot(repo, record['base'], record['target'])
         fields = ('schema', 'base', 'target', 'frontier')
         immutable = lambda batch: [{key: entry.get(key) for key in ('sha', 'subject', 'paths')}
                                    for entry in batch['commits']]
@@ -116,7 +122,7 @@ def _arguments():
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--base', required=True)
     parser.add_argument('--source', default='HEAD')
-    parser.add_argument('--upstream', default='upstream/main')
+    parser.add_argument('--upstream')
     args = parser.parse_args()
     return args
 

@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [features]
+named-exec-probe = ["dep:codex-exec"]
 native-source-proof = ["codex-alab-aterm/native-source-proof"]
 
 [[test]]
@@ -19,6 +20,17 @@ harness = false
 test = false
 bench = false
 required-features = ["native-source-proof"]
+
+[[test]]
+name = "named-exec-probe"
+path = "tests/exec_quota.rs"
+harness = false
+test = false
+bench = false
+required-features = ["named-exec-probe"]
+
+[dependencies]
+codex-exec = { workspace = true, optional = true }
 
 [dev-dependencies]
 codex-alab-aterm = { path = "../alab-aterm" }

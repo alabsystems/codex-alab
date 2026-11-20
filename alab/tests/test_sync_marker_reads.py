@@ -26,9 +26,10 @@ class MarkerReadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sync-marker-read-") as temporary:
             root = Path(temporary)
             (root / "state-msg").write_text("fixture sync\n")
+            (root / "merge-head").write_text(ref_output)
             actions = root / "actions"
             definitions = '\n'.join(function(name) for name in (
-                "new_markers", "shared_new_markers", "worktree_clean", "worktree_fully_staged", "write_stop", "finish"))
+                "new_markers", "shared_new_markers", "worktree_clean", "worktree_fully_staged", "write_stop", "check_current_main", "finish"))
             script = ('set -euo pipefail\n. ' + shlex.quote(str(ROOT / "alab/lib.sh")) + '\n'
                       + definitions + r'''
 wt=candidate
@@ -49,7 +50,12 @@ stop() { exit "$1"; }
 in_wt() {
   while [[ "$1" == -c ]]; do shift 2; done
   case "$1" in
-    rev-parse) printf '%s' "${REF_OUTPUT}"; return "${REF_RC}" ;;
+    rev-parse)
+      if [[ "$*" == 'rev-parse --path-format=absolute --git-path MERGE_HEAD' ]]; then
+        printf '%s/merge-head\n' "${SCRATCH}"
+      else
+        printf '%s' "${REF_OUTPUT}"; return "${REF_RC}"
+      fi ;;
     status) record status ;;
     merge-base) record ancestry; return 0 ;;
     diff)
@@ -71,7 +77,7 @@ sort() {
   [[ "${FAILED_PROCESSOR}" != sort ]] || return 128
   command sort "$@"
 }
-finish
+finish --observed-merge
 ''')
             env = dict(os.environ, SCRATCH=str(root), ACTIONS=str(actions), MERGING=str(int(merging)),
                        LEFT_RC=str(left), RIGHT_RC=str(right), LEFT_PATCH=left_patch, RIGHT_PATCH=right_patch,

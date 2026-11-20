@@ -23,6 +23,8 @@ PYTHON_ENTRY = "#!/bin/sh\n'''exec' " + shlex.quote(sys.executable) + ' -I "$0" 
 
 
 class CertifiedDispatchTests(unittest.TestCase):
+    package_inputs = ROOT
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="alab-certified-")
         self.addCleanup(self.temp.cleanup)
@@ -35,7 +37,7 @@ class CertifiedDispatchTests(unittest.TestCase):
                      "pristine_state.py", "qualification.py", "upstream_intake.py",
                      "source_content.py", "cli_status.py", "file_hash.py"):
             shutil.copy2(ROOT / "alab" / name, self.repo / "alab" / name)
-        self.env = dict(HOME=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+        self.env = dict(HOME=str(self.root), TMPDIR=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
                         GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
                         GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
@@ -83,6 +85,86 @@ raise SystemExit(status)
             ["/usr/bin/git", "-C", str(self.repo), "worktree", "remove", "--force", str(path)],
             env=self.env, capture_output=True, text=True, timeout=20))
 
+    @unittest.skipUnless(Path("/usr/bin/sandbox-exec").is_file(), "requires macOS containment")
+    def test_package_controller_inputs_are_readable_but_readonly_outside_target(self):
+        # The target may carry an older policy. Packaging must keep the current
+        # controller's policy without admitting the whole controller checkout.
+        (self.repo / "alab/proof-policy.toml").write_text("# older target policy\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "older target policy")
+        source = self.git("rev-parse", "HEAD")
+        output = self.root / "output"
+        output.mkdir()
+        compiler = self.root / "compiler"
+        compiler.mkdir()
+        calls = output / "calls.json"
+        controller = self.package_inputs / "alab"
+        self.front.write_text(PYTHON_ENTRY + f'''import errno,json,os,sys,tomllib
+from pathlib import Path
+controller = Path({str(controller)!r})
+try:
+    (controller / "package.sh").read_bytes()
+except PermissionError:
+    pass
+else:
+    raise AssertionError("unneeded controller file became readable")
+for name in ("certified-build.sh", "lib.sh", "proof-policy.toml", "project-targo.sh"):
+    try:
+        fd = os.open(controller / name, os.O_WRONLY)
+    except OSError as error:
+        assert error.errno in (errno.EPERM, errno.EACCES), error
+    else:
+        os.close(fd)
+        raise AssertionError("controller input became writable: " + name)
+args = sys.argv[1:]
+assert args[:4] == ["__build_admit", "/usr/bin/true", "trust", "build"], args
+policy = Path(args[args.index("--config") + 1])
+assert policy == controller / "proof-policy.toml", policy
+flags = tomllib.loads(policy.read_text())["target"]["cfg(all())"]["rustflags"]
+assert "-Ztrust-policy=certify" in flags
+assert "-Ztrust-verify-include-dependencies=yes" in flags
+assert "--certify" in args and "--unverified" not in args
+Path({str(calls)!r}).write_text(json.dumps(args))
+report = Path(args[args.index("--report-dir") + 1])
+report.mkdir()
+(report / "report.json").write_text('{{"fixture":"not proof"}}')
+''')
+        body = r'''set -euo pipefail
+. "$5/alab/package.sh"
+repo_root="$1"
+compiler_root="$2"
+cargo="$1/alab/project-targo.sh"
+# Resource brokerage and Cargo cache seeding are outside this fixture; the
+# production containment profile and certified dispatcher are exercised intact.
+alab_verified_contained() { alab_contained "$@"; }
+alab_cargo_home_ready() { mkdir -p "$1"; }
+package_verified_contained "$3" -- "$1/alab/certified-build.sh" "$3/report" \
+  "$4" --release --locked -p codex-cli --bin codex
+'''
+        def run(script):
+            return subprocess.run(
+                ["/bin/bash", "-c", script, "package-proof-fixture", str(self.package_inputs),
+                 str(compiler), str(output), source, str(ROOT)], cwd=self.repo / "codex-rs",
+                env=dict(self.env, ALAB_PYTHON=sys.executable,
+                         ALAB_CARGO_HOME=str(self.root / "cargo-cache"), ALAB_CONTAIN="1"),
+                capture_output=True, text=True, timeout=30,
+            )
+
+        prior_admission = r'''package_verified_contained() {
+  alab_verified_contained --read "$ATPKG_PROJECT_FRONT" --read "$compiler_root" --read "$cargo" "$@"
+}
+'''
+        missing = run(body.replace('package_verified_contained "$3" --',
+                                   prior_admission + 'package_verified_contained "$3" --'))
+        self.assertNotEqual(missing.returncode, 0, missing.stdout + missing.stderr)
+        self.assertIn("certified-build.sh", missing.stderr)
+        self.assertFalse(calls.exists(), "missing admission reached the dispatcher")
+        self.assertFalse((output / "report").exists())
+        done = run(body)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(calls.is_file(), "the live dispatcher never reached its stand-in")
+        self.assertTrue((output / "report/report.json").is_file())
+
     def test_live_compile_uses_certify_and_transitive_application_scope(self):
         done = self.build()
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -104,6 +186,9 @@ raise SystemExit(status)
         vendor = self.repo / "alab/vendor/fixture"
         vendor.mkdir(parents=True)
         (vendor / "ALAB-SOURCE.json").write_text("{}\n")
+        product = self.repo / "alab/vendor/product-behavior"
+        product.mkdir()
+        (product / "ALAB-SOURCE.json").write_text(json.dumps({"pristine_override": False}))
         done = self.build("--pristine-upstream", cwd=pristine / "codex-rs")
         self.assertEqual(done.returncode, 0, done.stderr)
         args = json.loads(self.calls.read_text())
@@ -112,6 +197,20 @@ raise SystemExit(status)
         configs = [args[index + 1] for index, word in enumerate(args) if word == "--config"]
         self.assertEqual(configs, [str(self.repo / "alab/proof-policy.toml"),
                                    f'paths = ["{vendor}"]'])
+
+    def test_pristine_mode_refuses_invalid_vendor_metadata_before_compiler(self):
+        base = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "alab-pristine"))
+        pristine = Path(str(base) + "-" + self.source)
+        self.worktree(pristine)
+        vendor = self.repo / "alab/vendor/fixture"
+        vendor.mkdir(parents=True)
+        for payload in ("", "{}{}", '{"pristine_override": "false"}', "[]"):
+            with self.subTest(payload=payload):
+                (vendor / "ALAB-SOURCE.json").write_text(payload)
+                done = self.build("--pristine-upstream", cwd=pristine / "codex-rs")
+                self.assertNotEqual(done.returncode, 0, done.stderr)
+                self.assertIn("cannot derive its vendor configuration", done.stderr)
+                self.assertFalse(self.calls.exists())
 
     def test_pristine_mode_refuses_dirty_or_unrelated_worktrees_before_compiler(self):
         base = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "alab-pristine"))

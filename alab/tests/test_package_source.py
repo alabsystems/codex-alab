@@ -29,9 +29,9 @@ TARGET = "aarch64-apple-darwin"
 
 class PackageSourceTests(unittest.TestCase):
     def setUp(self):
-        parent = os.environ.get("ALAB_SOURCE_FIXTURE_ROOT")
-        self.root = Path(tempfile.mkdtemp(prefix="package-source-", dir=parent)).resolve()
-        print(f"retained package source fixture: {self.root}", file=sys.stderr)
+        self.fixture_parent = os.environ.get("ALAB_SOURCE_FIXTURE_ROOT")
+        self.root = Path(tempfile.mkdtemp(prefix="package-source-", dir=self.fixture_parent)).resolve()
+        print(f"package source fixture: {self.root}", file=sys.stderr)
         self.cache = self.root / "private cache"
         self.cache.mkdir(mode=0o700)
         self.repo = self.root / "repo"
@@ -1603,15 +1603,16 @@ else:
         self.assertEqual((initialized / "input").read_bytes(), b"owner child during stamping\n")
 
     def test_current_source_stamp_inputs_and_real_assembly_return_clean(self):
+        created_root = self.root.lstat()
         actual = self.root / "actual-source"
         subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(actual)],
                        check=True, timeout=60)
         self.git("config", "user.name", "Source fixture", repo=actual)
         self.git("config", "user.email", "fixture@example.invalid", repo=actual)
         current = self.git("rev-parse", "HEAD", repo=ROOT)
-        self.git("checkout", "--quiet", "--detach", current, repo=actual)
-        # The target is the actual committed source; the new optimization is in
-        # its controller only, exactly like packaging historical target commits.
+        # The driver reads Git objects and runs these three helpers. The managed
+        # worktrees below check out the full target commit for packaging.
+        self.git("checkout", current, "--", "alab/retention.py", repo=actual)
         shutil.copyfile(ROOT / "alab/package_source.py", actual / "alab/package_source.py")
         shutil.copyfile(ROOT / "alab/source_content.py", actual / "alab/source_content.py")
         original_repo = self.repo
@@ -1656,6 +1657,8 @@ printf '%s\n' "$wt"
         (self.root / "assembly.stderr").write_text(done.stderr)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         source = Path(done.stdout.splitlines()[-1])
+        self.assertFalse((actual / "codex-rs").exists())
+        self.assertTrue((source / "codex-rs/Cargo.toml").is_file())
         self.assertFalse(self.git("status", "--porcelain=v1", "--untracked-files=all", "--ignored", repo=source))
         self.assertFalse(list(source.rglob("__pycache__")))
         self.assertEqual((staged / "bin/codex-exec-server").read_bytes(),
@@ -1671,11 +1674,19 @@ printf '%s\n' "$wt"
         owner = manifest.read_bytes() + b"\n# owner's later manifest work\n"
         manifest.write_bytes(owner)
         next_session.finish()
-        fresh, result = self.acquire(self.session(), current)
+        final_session = self.session()
+        fresh, result = self.acquire(final_session, current)
         self.assertFalse(result["reused"])
         self.assertNotEqual(fresh, source)
         self.assertEqual(manifest.read_bytes(), owner)
+        self.returned(final_session, fresh, current)
+        final_session.finish()
+        self.assertEqual(SOURCE["read"](self.receipt(fresh))["phase"], "ready")
         self.repo = original_repo
+        # Failures and explicitly located evidence keep both checkouts for inspection.
+        if self.fixture_parent is None:
+            self.assertTrue(os.path.samestat(created_root, self.root.lstat()), "fixture root was replaced")
+            shutil.rmtree(self.root)
 
 
 if __name__ == "__main__":

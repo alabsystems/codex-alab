@@ -9,7 +9,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -31,8 +30,6 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
-import tempfile
-from types import SimpleNamespace
 
 path, case, witness_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 def load(name):
@@ -54,12 +51,12 @@ def operation(*arguments, **keywords):
     witness['operation_called'] = True
     if case == 'notes':
         github = load('github')
-        class OwnedDirectory(tempfile.TemporaryDirectory):
+        class OwnedDirectory(github._ScratchDirectory):
             def cleanup(self):
                 super().cleanup()
                 witness['owned_removed'].append(not Path(self.name).exists())
                 raise OSError('owned cleanup fault')
-        github.tempfile = SimpleNamespace(**{**vars(tempfile), 'TemporaryDirectory': OwnedDirectory})
+        github._ScratchDirectory = OwnedDirectory
         with github.temporary_directory(prefix='owned-promote-cli-'):
             raise primary
     if primary is not None:
@@ -199,15 +196,14 @@ class PromoteCliTests(unittest.TestCase):
             with self.subTest(primary=type(primary).__name__):
                 removed = []
 
-                class OwnedDirectory(tempfile.TemporaryDirectory):
+                class OwnedDirectory(GITHUB._ScratchDirectory):
                     def cleanup(self):
                         super().cleanup()
                         removed.append(not Path(self.name).exists())
                         raise OSError('owned cleanup fault')
 
                 def operation(*_arguments):
-                    proxy = SimpleNamespace(**{**vars(tempfile), 'TemporaryDirectory': OwnedDirectory})
-                    with patch.object(GITHUB, 'tempfile', proxy):
+                    with patch.object(GITHUB, '_ScratchDirectory', OwnedDirectory):
                         with GITHUB.temporary_directory(prefix='owned-promote-cli-'):
                             raise primary
 

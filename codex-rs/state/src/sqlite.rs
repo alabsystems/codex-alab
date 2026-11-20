@@ -36,6 +36,7 @@ mod busy_retry;
 mod connection;
 mod nfs;
 mod validation;
+#[path = "../../alab-core/glue/diagnostic_wal.rs"] pub(crate) mod alab_diagnostic_wal; // ALAB(diagnostic-storage): bound reusable diagnostic WAL space on each writer.
 
 pub use busy_retry::SqlitePoolWriteExt;
 pub(crate) use busy_retry::SqliteWriteQueryExt;
@@ -497,7 +498,7 @@ impl SqliteConfig {
             .log_statements(LevelFilter::Off);
         // Each failed attempt closes its pool before initialization is retried.
         let connect = || async {
-            connect_once(&options, journal_mode_policy)
+            connect_once(&options, journal_mode_policy, self.is_diagnostic_database(path)) // ALAB(diagnostic-storage): other databases retain their own journal budgets.
                 .await
                 .map_err(anyhow::Error::from)
         };

@@ -52,7 +52,7 @@ def _publish_local(transport, identity, after, expected):
     return output
 
 
-def publish(repo, remote, expected, *, client=None):
+def publish(repo, remote, expected, *, client=None, admit_transfer=None):
     repo = Path(repo).resolve()
     if not GITHUB.OID.fullmatch(expected) or expected == GITHUB.ZERO:
         raise GITHUB.Refused('publication requires the existing main commit as a full object ID')
@@ -67,14 +67,19 @@ def publish(repo, remote, expected, *, client=None):
     # then transfers only missing objects, rather than mirroring every remote ref.
     with GITHUB.temporary_directory(prefix='alab-publish-', suffix='.noindex') as scratch:
         transport = Path(scratch) / 'transport.git'
+        # The candidate's entire reachable history goes into this empty store.
+        monitor = GITHUB.admit_transfer_monitor(admit_transfer, transport, None)
         GITHUB.git(scratch, 'init', '--bare', '--quiet', str(transport), failure_stage='publication-init')
+        if monitor is not None:
+            monitor()
         GITHUB.git(transport, 'fetch', '--no-tags', '--no-write-fetch-head',
                    '--recurse-submodules=no', str(repo), after + ':refs/alab/candidate',
-                   failure_stage='publication-candidate-fetch')
+                   failure_stage='publication-candidate-fetch', fetch_check=monitor)
         if not is_ancestor(transport, expected, after):
             raise GITHUB.Refused('canonical candidate does not fast-forward expected main')
+        fetch_options = {'client': client, 'admit_transfer': admit_transfer}
         GITHUB.fetch(transport, identity,
-                     ['refs/heads/main:refs/remotes/origin/main'], client=client)
+                     ['refs/heads/main:refs/remotes/origin/main'], **fetch_options)
         current = GITHUB.git(transport, 'rev-parse', '--verify',
                              'refs/remotes/origin/main').decode().strip()
         if current != expected:
@@ -96,7 +101,7 @@ def publish(repo, remote, expected, *, client=None):
                 raise
             # A typed lease conflict alone is insufficient. Fetch fresh authoritative
             # main through the existing admitted helper and prove a forward advance.
-            GITHUB.fetch(transport, identity, ['refs/heads/main:refs/remotes/origin/main'], client=client)
+            GITHUB.fetch(transport, identity, ['refs/heads/main:refs/remotes/origin/main'], **fetch_options)
             observed = GITHUB.git(transport, 'rev-parse', 'refs/remotes/origin/main').decode().strip()
             if observed != expected and is_ancestor(transport, expected, observed):
                 raise Advanced('main advanced during publication') from failure
@@ -110,7 +115,8 @@ def main():
     parser.add_argument('remote')
     args = parser.parse_args()
     try:
-        output = publish(args.repo, args.remote, args.expected)
+        output = publish(args.repo, args.remote, args.expected,
+                         admit_transfer=GITHUB.admit_release_transfer if os.name == 'posix' else None)
         sys.stdout.buffer.write(output)
     except SystemExit as error:
         if not GITHUB.successful_exit(error):
@@ -121,9 +127,10 @@ def main():
         return GITHUB.report_failure('', error,
                                      stdout_line='!\tHEAD:refs/heads/main\t[rejected] (fetch first)')
     except (GITHUB.Refused, OSError, subprocess.TimeoutExpired) as error:
-        return GITHUB.report_failure('ALab publication refused: ', error)
+        return GITHUB.report_transfer_failure('ALab publication refused: ', error)
     return 0
 
 
 if __name__ == '__main__':
+    GITHUB.restore_cli_sigchld()
     sys.exit(main())

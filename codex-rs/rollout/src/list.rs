@@ -1434,6 +1434,9 @@ async fn find_thread_path_by_id_str_in_subdir(
     Ok(found.or(unverified_db_path))
 }
 
+#[path = "../../alab-core/glue/resume_index_repair.rs"] // ALAB(accounts): discover unindexed local user sessions before normal indexed paging.
+pub mod alab_resume_index;
+
 async fn find_thread_path_by_id_from_filenames(
     root: &Path,
     id_str: &str,
@@ -1471,18 +1474,36 @@ async fn visit_rollout_filenames<T>(
     root: &Path,
     excluded_path: Option<&Path>,
     matches: impl Fn(&RolloutFileName) -> bool,
+    visitor: impl FnMut(RolloutFileName, PathBuf) -> ControlFlow<T>,
+) -> io::Result<Option<T>> {
+    visit_rollout_filenames_with_policy(root, excluded_path, |_, _| false, matches, visitor).await // ALAB(accounts): explicit lookups keep their strict traversal.
+}
+
+async fn visit_rollout_filenames_with_policy<T>(
+    root: &Path,
+    excluded_path: Option<&Path>,
+    skip_error: impl Fn(&Path, &io::Error) -> bool,
+    matches: impl Fn(&RolloutFileName) -> bool,
     mut visitor: impl FnMut(RolloutFileName, PathBuf) -> ControlFlow<T>,
 ) -> io::Result<Option<T>> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut read_dir = match tokio::fs::read_dir(dir.as_path()).await {
             Ok(read_dir) => read_dir,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) if err.kind() == io::ErrorKind::NotFound || skip_error(&dir, &err) => continue,
             Err(err) => return Err(err),
         };
-        while let Some(entry) = read_dir.next_entry().await? {
+        while let Some(entry) = match read_dir.next_entry().await {
+            Ok(entry) => entry,
+            Err(err) if skip_error(&dir, &err) => None,
+            Err(err) => return Err(err),
+        } {
             let path = entry.path();
-            let file_type = entry.file_type().await?;
+            let file_type = match entry.file_type().await {
+                Ok(file_type) => file_type,
+                Err(err) if skip_error(&path, &err) => continue,
+                Err(err) => return Err(err),
+            };
             if file_type.is_dir() {
                 stack.push(path);
                 continue;

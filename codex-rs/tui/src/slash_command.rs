@@ -116,7 +116,7 @@ impl SlashCommand {
             SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Tui => "choose the TUI mode for the next launch",
-            SlashCommand::Alab => "ALab controls: on, off, cruise, land, account, tasks or help", // ALAB(interface): discover account details and the presentation switch
+            SlashCommand::Alab => codex_alab_tui::interface::slash_description(), // ALAB(interface): show the live edition action and keyboard controls.
             SlashCommand::Accounts => "inspect subscription accounts and cached usage", // ALAB(accounts): an async native pool view.
             SlashCommand::Tasks => "view this session's checklist, agents and background terminals", // ALAB(tasks): local work stays visible without a shared daemon
             SlashCommand::Stash => "restore this conversation's stashed prompt", // ALAB(stash): structured draft recovery; runtime help resolves shortcut availability

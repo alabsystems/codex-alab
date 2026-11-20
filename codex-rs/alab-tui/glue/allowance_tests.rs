@@ -5,7 +5,6 @@ use super::*;
 use crate::chatwidget::StatusAccountDisplay;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use crate::clock_format::ClockFormat;
-use codex_app_server_protocol::RateLimitResetCredit;
 use serde_json::json;
 
 const NOW: i64 = 1_800_000_000;
@@ -518,6 +517,78 @@ fn existing_polls_refresh_expiry_details_without_count_only_reads_renewing_them(
         "opening account details explicitly refreshes expiry data"
     );
     assert!(!state.request_details(NOW + STALE_SECONDS + 5));
+}
+
+#[test]
+fn a_fresh_zero_count_keeps_periodic_reads_light_until_the_inventory_changes() {
+    let empty = RateLimitResetCreditsSummary {
+        available_count: 0,
+        credits: None,
+    };
+    let mut state = State::default();
+    assert!(state.request_details(NOW));
+    state.remember_resets(Some(&empty), NOW);
+    for now in [NOW + STALE_SECONDS, NOW + 2 * STALE_SECONDS] {
+        assert!(!state.request_details(now));
+        state.remember_resets(Some(&empty), now);
+    }
+    let now = NOW + 2 * STALE_SECONDS;
+    state.inspector_requested_details = true;
+    assert!(state.request_details(now));
+    assert!(!state.request_details(now + 1));
+    state.remember_resets(
+        Some(&RateLimitResetCreditsSummary {
+            available_count: 1,
+            credits: None,
+        }),
+        now + 2,
+    );
+    assert!(state.request_details(now + 2));
+    assert!(!state.request_details(now + 3));
+
+    for check in [NOW - 1, NOW + STALE_SECONDS + 1] {
+        let mut state = State::default();
+        state.remember_resets(Some(&empty), NOW);
+        assert!(state.request_details(check));
+    }
+}
+
+#[test]
+fn ignored_expiry_rows_do_not_schedule_a_redraw_or_invalidate_a_count_only_read() {
+    let mut state = State::default();
+    for count in [0, 1, 2] {
+        let details = RateLimitResetCreditsSummary {
+            available_count: count,
+            credits: Some(vec![
+                credit("first", Some(NOW + 3600)),
+                credit("first", Some(NOW + 10)),
+                credit("second", Some(NOW + 7200)),
+                credit("extra", Some(NOW + 20)),
+            ]),
+        };
+        state.remember_resets(Some(&details), NOW);
+        assert_eq!(state.next_reset_change(NOW), Some(NOW + STALE_SECONDS + 1));
+        state.remember_resets(
+            Some(&RateLimitResetCreditsSummary {
+                credits: None,
+                ..details
+            }),
+            NOW + 21,
+        );
+        let view = state
+            .resets_at(NOW + 21, ClockFormat::TwentyFourHour)
+            .unwrap();
+        assert!(view.details_known);
+        assert_eq!(view.available_count, count as usize);
+        assert_eq!(view.expiring_count, count as usize);
+        assert!(!state.request_details(NOW + 21));
+        let expected = if count == 0 {
+            NOW + 21 + STALE_SECONDS + 1
+        } else {
+            NOW + STALE_SECONDS + 1
+        };
+        assert_eq!(state.next_reset_change(NOW + 21), Some(expected));
+    }
 }
 
 #[test]

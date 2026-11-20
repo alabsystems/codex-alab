@@ -862,6 +862,7 @@ async fn run_websocket_response_stream(
     let mut interrupt_request = interrupt.clone().fuse();
     let mut interruption = None;
     let mut response_id = None;
+    let mut retirement_prefix = crate::sse::responses::alab_model_retirement::Prefix::new(); // ALAB(defaults): observe only frames on this original response.create.
     let mut received_text = false;
     let mut awaiting_interrupt_ack = false;
     loop {
@@ -913,6 +914,7 @@ async fn run_websocket_response_stream(
             Message::Text(text) => {
                 received_text = true;
                 let event = serde_json::from_str::<ResponsesStreamEvent>(&text);
+                let before_output = retirement_prefix.observe(event.as_ref().ok()); // ALAB(defaults): include frames the ordinary decoder may ignore.
                 let kind = event.as_ref().ok().map(ResponsesStreamEvent::kind);
                 if let Some(t) = telemetry.as_ref() {
                     t.on_ws_text_event(&text, kind, poll_duration);
@@ -1024,7 +1026,7 @@ async fn run_websocket_response_stream(
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        return Err(error.into_api_error());
+                        return Err(crate::sse::responses::alab_model_retirement::attach(error.into_api_error(), before_output)); // ALAB(defaults): bind the refusal to its original wire prefix.
                     }
                 }
                 if completion.is_some() {

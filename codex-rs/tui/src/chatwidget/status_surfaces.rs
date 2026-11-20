@@ -799,7 +799,7 @@ impl ChatWidget {
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
                 self.status_line_limit_display(Some(window), &label)
             }
-            StatusLineItem::CodexVersion => Some(cli_version().to_string()), // ALAB(version): running executable identity
+            StatusLineItem::CodexVersion => Some(codex_alab_tui::interface::status_surface_version(cli_version())), // ALAB(version): show both running releases in Enhanced status and title items.
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),

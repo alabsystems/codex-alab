@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "base": "a4495dd5c9b99c528a73bba1a5d39d4048834db0",
+  "target": "86d0e458e3cf6c8e8bd07d93fe7e35d565110c27",
+  "frontier": "a4495dd5c9b99c528a73bba1a5d39d4048834db0",
+  "commits": [
+    {
+      "sha": "86d0e458e3cf6c8e8bd07d93fe7e35d565110c27",
+      "subject": "Prevent duplicate initial context when injection races the first turn (#62206)",
+      "paths": [
+        "codex-rs/core/src/session/inject.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/tests/suite/scenarios_preparation.rs"
+      ],
+      "classes": ["fix"],
+      "features": ["exec-handoff"],
+      "decision": "adopt",
+      "reason": "Use upstream's per-session publication permit so concurrent injection and the first turn persist a single initial context. The fork can continue to track which queue or durable writer received each injected item.",
+      "evidence": [
+        "Reviewed all five changed paths against a4495dd5c9. Binary diff SHA-256 b5e484fbda7099d97430c8ee6de16ae45508b0d55a2e0237ea17b9fd03125cb8.",
+        "Both callers render outside the permit. The winner publishes the initial prefix and checkpoints under the permit. A losing turn renders its delta against the installed baseline, while a losing injection delivers its own items. The production and test session constructors all allocate one permit.",
+        "The local integration merged all five files cleanly. The retained-side hooks still annotate the original incoming items and record their actual active-queue or canonical-history route after context preparation."
+      ],
+      "revisit": "Exercise both preparation orders in first_turn_and_raw_injection_publish_one_initial_prefix. Verify one copy of the initial instructions and injection in the follow-up, one durable full snapshot, and recovery of retained side-conversation history."
+    }
+  ]
+}

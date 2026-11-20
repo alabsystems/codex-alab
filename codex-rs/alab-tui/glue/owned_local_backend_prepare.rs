@@ -345,7 +345,6 @@ async fn prepare_inner(
         let environment_manager = Arc::new(environment.build(Some(runtime_paths), target.environment_http_client_factory(&config, &network))
             .map_err(std::io::Error::other)?);
         current(&incoming)?;
-        remove_legacy_tui_log_file(config.codex_home.as_path());
         otel = match catch_unwind(AssertUnwindSafe(|| codex_app_server_client::build_otel_provider(&config,
             codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")), None, true))) {
             Ok(Ok(provider)) => provider,

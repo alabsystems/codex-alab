@@ -3,14 +3,20 @@
 
 //! Positive usage from a failed turn must survive a later manual turn and stop.
 use super::upgrade_handoff_tests::Harness;
+use super::upgrade_handoff_tests::NATIVE_HANG;
 use super::upgrade_handoff_tests::native_test;
+use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
+use codex_alab_core::session::RecoveryWall;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use sqlx::Connection;
+use std::future::Future;
+use std::sync::Condvar;
+use std::task::Poll;
 
 async fn start_person(h: &Harness, text: &str) -> String {
     match h
@@ -38,6 +44,199 @@ async fn ended(h: &Harness) {
     while h.test.codex.has_active_turn().await {
         tokio::task::yield_now().await;
     }
+}
+
+struct RecoveryFlushGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl RecoveryFlushGate {
+    fn release(&self) {
+        *lock(&self.0.0) = true;
+        self.0.1.notify_all();
+    }
+}
+
+impl Drop for RecoveryFlushGate {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+async fn fail_recovery_flush(start_successor: bool) {
+    const SUCCESSOR: &str = "My next native turn supersedes the usage wall.";
+    const RESPONSE_DELAY: Duration = Duration::from_secs(120);
+    let h = Harness::new().await;
+    let evaluation = h.rt.hold_eval_when_free().await;
+    for (key, value) in [
+        ("upgrade", "false"),
+        ("limit_wait", "true"),
+        ("resume_limits", "true"),
+        ("probe_api", "false"),
+    ] {
+        h.fake.set_policy_key(key, value);
+    }
+    wait_for_supervisor(|| {
+        h.autopilot.sup.policy().is_some_and(|policy| {
+            !policy.upgrade && policy.limit_wait && policy.resume_limits && !policy.probe_api
+        })
+    })
+    .await;
+    let reset_epoch = now_ms() / 1000 + 24 * 3600;
+    let requests = responses::mount_response_handler(&h._server, move |request| {
+        if request.body_contains_text(SUCCESSOR) {
+            return wiremock::ResponseTemplate::new(200).set_delay(RESPONSE_DELAY);
+        }
+        wiremock::ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "the original turn reached its usage limit",
+                "resets_at": reset_epoch,
+                "plan_type": "pro"
+            }
+        }))
+    })
+    .await;
+
+    let evaluations = h.rt.evaluations();
+    let original = start_person(&h, "Start the task that reaches the usage limit.").await;
+    ended(&h).await;
+    wait_for_supervisor(|| h.rt.evaluations() > evaluations).await;
+    let before = h.rt.state();
+    assert_eq!(before.point_turn_id.as_deref(), Some(original.as_str()));
+    assert!(matches!(
+        before.point.as_ref().and_then(|point| point.wall.as_ref()),
+        Some(Wall::Usage { reset_at: Some(at), .. }) if *at > clock() + WRITE_THROUGH_RETRY
+    ));
+    let policy = h.autopilot.sup.policy().expect("proven policy");
+    let decision = decide::decide(&before, &policy, &h.autopilot.timing, clock(), h.rt.jitter);
+    assert!(matches!(decision.act, Act::ResumeLimit { .. }));
+    assert!(decision.not_before.is_some_and(|at| at > clock()));
+    assert_eq!(requests.requests().len(), 1);
+
+    // Reject just the old turn's real recovery flush. Other record boundaries
+    // use the fixture's ordinary successful no-record witness.
+    let gate = RecoveryFlushGate(Arc::new((Mutex::new(false), Condvar::new())));
+    let waiting = Arc::clone(&gate.0);
+    let shared = h.shared;
+    let old_turn = original.clone();
+    let (entered, recorded) = tokio::sync::oneshot::channel();
+    let (failed, confirmed_failure) = tokio::sync::oneshot::channel();
+    let pending = Mutex::new(Some((entered, failed)));
+    assert!(shared.set_flush(Box::new(move || {
+        let target = shared.recovery().is_some_and(|recovery| {
+            recovery.turn_id == old_turn && matches!(recovery.wall, RecoveryWall::Usage { .. })
+        });
+        let selected = target.then(|| lock(&pending).take()).flatten();
+        let Some((entered, failed)) = selected else {
+            return true;
+        };
+        entered.send(()).expect("observe the old recovery flush");
+        let (released, changed) = &*waiting;
+        let (ready, _) = changed
+            .wait_timeout_while(lock(released), Duration::from_secs(60), |ready| !*ready)
+            .expect("recovery flush gate lock");
+        assert!(*ready, "the old recovery flush must be released");
+        failed.send(()).expect("observe the definitive failure");
+        false
+    })));
+    h.autopilot.set_recovery_write_budget(RESPONSE_DELAY);
+    drop(evaluation);
+    recorded.await.expect("persist the original provider wait");
+    let original_recovery = h.shared.recovery().expect("the published recovery");
+    assert_eq!(original_recovery.turn_id, original);
+
+    let mut next = Box::pin(h.rt.hold_eval_when_free());
+    std::future::poll_fn(|cx| {
+        assert!(next.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+    let successor = if start_successor {
+        let successor = start_person(&h, SUCCESSOR).await;
+        assert_ne!(successor, original);
+        // The successor starts its request only after Core has awaited the
+        // real start hook, including recovery removal and timer cancellation.
+        wait_for_supervisor(|| requests.requests().len() >= 2).await;
+        assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+        assert!(h.test.codex.has_active_turn().await);
+        assert!(h.shared.turn_running_on(h.rt.key()));
+        assert!(h.shared.recovery().is_none());
+        Some(successor)
+    } else {
+        None
+    };
+    assert!(!h.rt.timer_pending());
+    assert!(lock(&h.rt.fired).is_none());
+    let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+    let earliest = clock() + WRITE_THROUGH_RETRY;
+    gate.release();
+    confirmed_failure
+        .await
+        .expect("the selected flush returned false");
+    let next = next.await;
+    let latest = clock() + WRITE_THROUGH_RETRY;
+    assert!(
+        h.autopilot
+            .sup
+            .journal()
+            .iter()
+            .any(|note| { note.contains("could not persist the provider recovery wait") })
+    );
+    assert!(h.rt.owed_timer().is_none());
+    assert!(lock(&h.rt.fired).is_none());
+    assert!(h.shared.owed_act().is_none());
+    assert!(h.fake.acts().is_empty());
+
+    if let Some(successor) = successor {
+        assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before);
+        assert!(!h.rt.timer_pending());
+        assert!(h.shared.recovery().is_none());
+        assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+        assert_eq!(
+            h.rt.state().native_origin,
+            Some(codex_alab_core::session::NativeOrigin {
+                turn_id: successor,
+                phase: codex_alab_core::session::NativePhase::Running,
+            })
+        );
+        assert!(h.shared.turn_running_on(h.rt.key()));
+        assert_eq!(requests.requests().len(), 2);
+    } else {
+        assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+        let due =
+            h.rt.timer_due()
+                .expect("current recovery gets its own delayed retry");
+        assert!((earliest..=latest).contains(&due));
+        assert_eq!(h.rt.state().point_at(), before.point_at());
+        assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+        assert_eq!(h.shared.recovery(), Some(original_recovery));
+        assert_eq!(requests.requests().len(), 1);
+    }
+    Autopilot::cancel_timer(&h.rt).await;
+    drop(next);
+    h.test
+        .codex
+        .shutdown_and_wait()
+        .await
+        .expect("native Core shutdown");
+}
+
+#[test]
+fn a_failed_recovery_write_cannot_rearm_after_a_newer_native_turn() {
+    native_test(|| async {
+        tokio::time::timeout(NATIVE_HANG, fail_recovery_flush(true))
+            .await
+            .expect("obsolete recovery flush hang detector");
+    });
+}
+
+#[test]
+fn a_failed_recovery_write_rechecks_its_current_point() {
+    native_test(|| async {
+        tokio::time::timeout(NATIVE_HANG, fail_recovery_flush(false))
+            .await
+            .expect("current recovery flush hang detector");
+    });
 }
 
 async fn fail_first_usage(h: &Harness, tokens: i64) {

@@ -84,6 +84,26 @@ fn close_checkpoint_cannot_claim_observation_without_an_original_reply_or_frozen
 }
 
 #[test]
+fn restored_side_close_requires_a_typed_success_status_in_its_cached_reply() -> TestResult {
+    let owner = SideViewCloseOperation::new(view())?;
+    owner.freeze(&wire()?)?;
+    for status in [
+        json!({}),
+        json!({"status": null}),
+        json!({"status": "unknownStatus"}),
+    ] {
+        let mut saved = serde_json::to_value(owner.checkpoint())?;
+        saved["result"] = json!({"kind":"success","value":status});
+        for observed in [false, true] {
+            saved["observed"] = json!(observed);
+            let checkpoint = serde_json::from_value(saved.clone())?;
+            assert!(SideViewCloseOperation::restore(checkpoint).is_err());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn closed_cleanup_observation_and_error_data_discriminator_reject_foreign_or_ambiguous_shapes()
 -> TestResult {
     let actual = SideViewCloseOperation::new(view())?;

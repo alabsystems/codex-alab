@@ -12,7 +12,7 @@ Checks, each on both binaries:
             subcommands, its flags (long and short, whether each takes a value, and its
             possible values) and its positional arguments as written. Every difference is
             attributed from the source: an item pristine upstream has at the commit
-            codex-alab last merged (its merge-base with upstream/main) is upstream's move
+            recorded for the fork source (the official tag on a release leaf) is upstream's move
             since the vendor's version; ALab's own crates and its marked clap command
             declarations establish its additions; anything else fails. A short flag, a
             value or an argument the vendor has and
@@ -25,8 +25,8 @@ Checks, each on both binaries:
   app-server `codex app-server --listen stdio://` (the Python SDK's argv) answers initialize,
             and `app-server generate-json-schema --experimental` (what the Python SDK is
             generated from) names the vendor's definitions, properties and enum values; a
-            difference is upstream's when upstream's committed schema at the merge-base has
-            it.
+            difference is compared at its file and owner against the vendor tag, upstream merge
+            base and ALab source exports. ALab additions require a declared payload or hook.
   config    the effective config (`config/read` over the app-server), outside aterm and
             with TERM_PROGRAM=aterm: codex-alab with no config.toml reads what the vendor
             reads with ALab's packaged defaults (alab-core/defaults.toml, and
@@ -34,10 +34,13 @@ Checks, each on both binaries:
             its config.toml, but for upstream's own moves since the vendor's release tag.
             ALab's own keys (named `alab_*`, such as `tui.alab_progress`) are no field of
             upstream's typed config: config/read shows them in neither build.
+            When the package declares a reasoning effort, an ephemeral thread started
+            without a model or effort override must return that effort.
             Each ALab feature default flips back through config.toml, `-c features.<f>=true`
             and `--enable <f>`.
   mcp       an MCP server a config.toml declares is what `codex mcp list --json` lists.
-  home      the files exec leaves in CODEX_HOME, by shape, are the same set; `codex login
+  home      compare files left in CODEX_HOME by shape, and upstream-added bundled skills
+            by exact path and bytes against both source revisions. `codex login
             --with-api-key` (file store) writes auth.json, and `login status` reads it.
 
 usage: dropin.py [--alab <codex-alab package dir>] [--vendor <vendor package dir>] [--keep]
@@ -48,18 +51,23 @@ builds nothing.
 """
 
 import argparse
+from contextlib import ExitStack
+from functools import lru_cache
 import json
 import os
+from pathlib import Path
 import re
 import select
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from native import Mock, serve  # noqa: E402  (the mock Responses server native.py uses)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from upstream_intake import integrated_upstream  # noqa: E402
+from dropin_schema import archive_items, schema_items  # noqa: E402
+from native import Mock, register_directory_cleanup, serve  # noqa: E402
 
 REPO = subprocess.run(
     ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--show-toplevel"],
@@ -94,7 +102,7 @@ def newest_vendor():
 class Bin:
     def __init__(self, label, pkg, scratch):
         self.label, self.pkg = label, pkg
-        manifest = json.load(open(os.path.join(pkg, "codex-package.json")))
+        manifest = json.loads(Path(pkg, "codex-package.json").read_bytes())
         self.entry = manifest["entrypoint"]
         self.version = manifest["version"]
         self.exe = os.path.join(pkg, self.entry)
@@ -220,11 +228,24 @@ def help_tree(b):
 
 
 def upstream_base(source):
-    """The upstream commit codex-alab's `source` merged last, or None when this clone has no
-    upstream/main (alab/setup.sh adds it) or the two share no history."""
-    r = subprocess.run(["git", "-C", REPO, "merge-base", source, "refs/remotes/upstream/main"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    """Resolve the package source against its committed release tag or upstream/main."""
+    try:
+        return integrated_upstream(REPO, source)
+    except subprocess.CalledProcessError:
+        return None
+
+
+def checked_upstream_base(source, manifest):
+    base = upstream_base(source)
+    stamped = manifest.get("upstream")
+    if stamped is not None:
+        commit = stamped.get("commit") if isinstance(stamped, dict) else None
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("invalid upstream commit in alab-build.json")
+        if base != commit:
+            raise ValueError(f"package records upstream {commit}, but the source resolves to "
+                             f"{base or 'unavailable'}; fetch the official upstream refs and verify the package source")
+    return base
 
 
 def grep(commit, patterns, paths):
@@ -312,7 +333,8 @@ def clap_subcommands(text):
             continue
         body = rest[:end.start()]
         variants = list(re.finditer(
-            r"(?m)^(?P<indent>[ \t]+)(?P<variant>\w+)[ \t]*[,({][^\n]*", body))
+            r"(?m)^(?P<indent>[ \t]+)(?:#\[cfg\([^\]\n]*\)\][ \t]*)*"
+            r"(?P<variant>\w+)[ \t]*[,({][^\n]*", body))
         depth = min((len(v["indent"]) for v in variants), default=0)
         previous = 0
         for variant in variants:
@@ -402,9 +424,8 @@ def attribute(side, thing, base, source, vendor_version, paths=UPSTREAM, subcomm
     return "UNEXPLAINED: upstream still has it, codex-alab does not", False
 
 
-def help_check(alab, vendor, source):
+def help_check(alab, vendor, source, base):
     ta, tv = help_tree(alab), help_tree(vendor)
-    base = upstream_base(source)
     out, ok = [], base is not None
     if base is None:
         out.append(("codex", "(upstream/main)", "FAIL",
@@ -472,7 +493,7 @@ def help_check(alab, vendor, source):
             if set(an) == set(vn) and all(an[k] == vn[k] for k in an) and aa != va:
                 mismatch(where, "(arguments)", "order %s in codex-alab, %s in vendor" % (aa, va))
     counted = sum(1 for p in ta if ta[p][0] != "ERROR")
-    return ok, out, counted, base
+    return ok, out, counted
 
 
 # ---------------------------------------------------------------- exec, app-server, config
@@ -488,7 +509,7 @@ def mock_config(port, extra=""):
 def exec_check(b, port):
     home = b.fresh_home()
     os.makedirs(home)
-    open(os.path.join(home, "config.toml"), "w").write(mock_config(port))
+    Path(home, "config.toml").write_text(mock_config(port))
     work = os.path.join(b.root, "work")
     os.makedirs(work, exist_ok=True)
     try:
@@ -555,64 +576,156 @@ def shape_check(alab, vendor, events, base, source):
 
 # ---------------------------------------------------------------- app-server schema
 
-def schema_items(directory):
-    """Every definition, property and enum value in a generated schema bundle, by file."""
-    out = set()
-
-    def walk(rel, node, where):
-        if isinstance(node, dict):
-            for key, inner in node.items():
-                if key in ("definitions", "$defs", "properties") and isinstance(inner, dict):
-                    for name, sub in inner.items():
-                        out.add("%s %s" % (rel, ".".join(where + [name])))
-                        walk(rel, sub, where + [name])
-                elif key == "enum" and isinstance(inner, list):
-                    for value in inner:
-                        if isinstance(value, str):
-                            out.add("%s %s=%s" % (rel, ".".join(where), value))
-                elif isinstance(inner, (dict, list)):
-                    walk(rel, inner, where)
-        elif isinstance(node, list):
-            for inner in node:
-                walk(rel, inner, where)
-
-    for d, _, files in os.walk(directory):
-        for f in files:
-            if f.endswith(".json"):
-                path = os.path.join(d, f)
-                walk(os.path.relpath(path, directory), json.load(open(path)), [])
-    return out
-
-
 SCHEMA_SOURCE = ["codex-rs/app-server-protocol"]
 
 
+def alab_notification_addition(item, base, source):
+    """Attribute a generated ServerNotification method to its marked protocol declaration."""
+    schema, sep, method = item.partition("=")
+    if not base or not sep or not method.startswith("alab/") or schema not in (
+        "ServerNotification.json method",
+        "codex_app_server_protocol.schemas.json ServerNotification.method",
+        "codex_app_server_protocol.v2.schemas.json ServerNotification.method",
+    ):
+        return False
+    # Any upstream mention precludes attributing the wire name to ALab here,
+    # including an upstream declaration with a different layout or payload.
+    upstream = subprocess.run(["git", "-C", REPO, "grep", "-q", "-F", f'"{method}"',
+                               base, "--", *SCHEMA_SOURCE], capture_output=True)
+    if upstream.returncode != 1:
+        return False
+    protocol = "codex-rs/app-server-protocol/src/protocol/common.rs"
+    read = subprocess.run(["git", "-C", REPO, "show", f"{source}:{protocol}"],
+                          capture_output=True, text=True)
+    if read.returncode:
+        return False
+    code = rust_declarations(read.stdout)
+    bodies = list(re.finditer(r"^server_notification_definitions!\s*\{\n(?P<body>.*?)^\}",
+                              code, re.MULTILINE | re.DOTALL))
+    if len(bodies) != 1:
+        return False
+    body = bodies[0]
+    raw_lines = read.stdout[body.start("body"):body.end("body")].splitlines()
+    declarations = []
+    for masked, raw in zip(body["body"].splitlines(), raw_lines):
+        # Masking removes literals and block comments but preserves real line comments.
+        row = re.fullmatch(r"\s*\w+\s*=>\s*\(\s*v2::\w+\s*\)\s*,\s*(?://(.*))?", masked)
+        if row and re.match(r'\s*\w+\s*=>\s*"' + re.escape(method) + r'"\s*\(', raw):
+            declarations.append(bool(re.match(r"\s*ALAB\([\w-]+\):", row[1] or "")))
+    return declarations == [True]
+
+
+@lru_cache(maxsize=256)
+def schema_declarations(repo, revision, owner, paths):
+    """Read the Rust struct/enum declarations that can own the exported schema name."""
+    files = subprocess.run(["git", "-C", repo, "grep", "-l", "-F", "-e", f"struct {owner}",
+                            "-e", f"enum {owner}", revision, "--", *paths],
+                           capture_output=True, text=True)
+    declarations = []
+    for entry in files.stdout.splitlines():
+        if not entry.endswith(".rs"):
+            continue
+        source = subprocess.run(["git", "-C", repo, "show", entry], capture_output=True, text=True)
+        if source.returncode:
+            continue
+        code = rust_declarations(source.stdout)
+        for decl in re.finditer(r"(?m)^(?P<indent>[ \t]*)(?:pub(?:\([^)]*\))?\s+)?"
+                                r"(?:struct|enum)\s+" + re.escape(owner) + r"\s*\{", code):
+            tail = code[decl.end():]
+            end = re.search(r"(?m)^" + re.escape(decl["indent"]) + "}", tail)
+            if end:
+                declarations.append(tail[:end.start()])
+    return tuple(declarations)
+
+
+def fork_schema_reason(item, base, source):
+    """A fork-only export needs the declared payload in ALab or a marked protocol extension."""
+    file, path = item.split(" ", 1)
+    name, _, value = path.partition("=")
+    if value.startswith("alab/"):
+        if alab_notification_addition(item, base, source):
+            return "ALab: added by a marked server notification declaration"
+        return None
+    parts = name.split(".")
+    if file == "codex_app_server_protocol.schemas.json" and parts[0] == "v2":
+        parts = parts[1:]
+    if not parts:
+        return None
+    # Definitions in a bundle name their owner. Standalone payload fields inherit the file's type.
+    if parts[0][:1].isupper():
+        owner, members = parts[0], parts[1:]
+    else:
+        owner, members = os.path.basename(file).removesuffix(".json"), parts
+    if not re.fullmatch(r"[A-Z][A-Za-z0-9_]*", owner):
+        return None
+    upstream = schema_declarations(REPO, base, owner, tuple(SCHEMA_SOURCE))
+    if not upstream and len(schema_declarations(REPO, source, owner, tuple(ALAB))) == 1:
+        return f"ALab: committed export of ALab's {owner} payload"
+    member = value or (members[-1] if members else "")
+    if not upstream or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", member):
+        return None
+    rust_member = member[:1].upper() + member[1:] if value else snake(member)
+    # Require the exact new field or enum variant in the existing owner's body and a real
+    # adjacent ALAB line comment. Handler arms, another type's fields and prose cannot match.
+    declaration = (r"[ \t]*" + re.escape(rust_member) + r"[ \t]*,"
+                   if value else r"[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?" + re.escape(rust_member) + r"[ \t]*:[^\n]*?,")
+    marker = r"//[ \t]*ALAB\([\w-]+\):"
+    if any(re.search("^" + declaration, body, re.MULTILINE) for body in upstream):
+        return None
+    marked = r"^(?:[ \t]*" + marker + r"[^\n]*\n" + declaration + "|" + declaration + r"[ \t]*" + marker + ")"
+    bodies = schema_declarations(REPO, source, owner, tuple(SCHEMA_SOURCE))
+    if len(bodies) == 1 and re.search(marked, bodies[0], re.MULTILINE):
+        return f"ALab: marked {owner} extension in the committed export"
+    return None
+
+
 def schema_check(alab, vendor, base, source):
-    """`codex app-server generate-json-schema --experimental`: the protocol the Python SDK is
-    generated from. A difference is upstream's when upstream's protocol crate at the
-    merge-base names it (its committed schema, or the Rust field an experimental one is
-    generated from)."""
-    items = {}
-    for b in (alab, vendor):
-        out = os.path.join(b.root, "schema")
-        r = b.run(["app-server", "generate-json-schema", "--experimental", "--out", out])
-        if r.returncode != 0 or not os.path.isdir(out):
-            return False, [("app-server schema", "--out", "FAIL", "%s: exit %d %s" % (
-                b.label, r.returncode, r.stderr.strip()[-200:]))], 0
-        items[b.label] = schema_items(out)
-    if not items["alab"] or not items["vendor"]:
-        # An empty bundle compares equal to another empty bundle: never a pass.
-        return False, [("app-server schema", "(empty)", "FAIL", "no definitions read")], 0
-    a, v = items["alab"], items["vendor"]
-    rows, ok = [], base is not None
-    for side, only in (("codex-alab", sorted(a - v)), ("vendor", sorted(v - a))):
-        for item in only:
-            name = item.split(" ", 1)[1]
-            name = name.split("=", 1)[1] if "=" in name else name.split(".")[-1]
-            verdict, good = attribute(side, name, base, source, vendor.version, SCHEMA_SOURCE)
-            ok &= good
-            rows.append(("app-server schema", item, "only in " + side, verdict))
-    return ok, rows, len(a & v)
+    """Compare emitted schema items at their exact file and member paths to all three git archives."""
+    actual = {}
+    for binary in (alab, vendor):
+        out = os.path.join(binary.root, "schema")
+        result = binary.run(["app-server", "generate-json-schema", "--experimental", "--out", out])
+        if result.returncode != 0 or not os.path.isdir(out):
+            return False, [("app-server schema", "--out", "FAIL", f"{binary.label}: exit "
+                            f"{result.returncode} {result.stderr.strip()[-200:]}")], 0
+        try:
+            actual[binary.label] = schema_items(out)
+        except (ValueError, OSError) as error:
+            return False, [("app-server schema", "(invalid export)", "FAIL", str(error))], 0
+        if not actual[binary.label]:
+            return False, [("app-server schema", "(empty)", "FAIL", "no definitions read")], 0
+    a, v = actual["alab"], actual["vendor"]
+    same = len(a & v)
+    try:
+        pristine = archive_items(REPO, base)
+        candidate = archive_items(REPO, source)
+        release = archive_items(REPO, f"refs/upstream-tags/rust-v{vendor.version}")
+    except (ValueError, OSError) as error:
+        return False, [("app-server schema", "(source export)", "FAIL", str(error))], same
+
+    rows = []
+    for label, emitted, committed in (("codex-alab", a, candidate), ("vendor", v, release)):
+        for direction, items in (("missing from binary", committed - emitted),
+                                 ("missing from source", emitted - committed)):
+            for item in sorted(items):
+                rows.append(("app-server schema", item, direction, f"UNEXPLAINED: {label} differs "
+                             "from its exact committed experimental export"))
+    ok = not rows
+    for side, only in (("codex-alab", a - v), ("vendor", v - a)):
+        for item in sorted(only):
+            reason = None
+            if side == "codex-alab" and item in candidate and item not in release:
+                if item in pristine:
+                    reason = f"upstream: present in the {base[:9]} export, absent in vendor {vendor.version}"
+                else:
+                    reason = fork_schema_reason(item, base, source)
+            elif side == "vendor" and item in release and item not in pristine and item not in candidate:
+                reason = f"upstream: present in vendor {vendor.version} export, absent at {base[:9]}"
+            if not reason:
+                ok = False
+                reason = "UNEXPLAINED: the committed exports and declarations do not establish this difference"
+            rows.append(("app-server schema", item, "only in " + side, reason))
+    return ok, rows, same
 
 
 # What the vendor writes into a fresh CODEX_HOME during one exec that codex-alab does not,
@@ -650,6 +763,31 @@ def as_vendor_names(paths):
     return renamed, sorted(clashes)
 
 
+def new_bundled_skills(home, tag, base, source):
+    """Attribute files added to the upstream embedded skill tree only at their installed bytes."""
+    assets = "codex-rs/skills/src/assets/samples/"
+    if not base or not source:
+        return set(), []
+    delta = subprocess.run(["git", "-C", REPO, "diff", "--no-renames", "--diff-filter=A",
+                            "--name-only", "-z", tag, base, "--", assets], capture_output=True)
+    if delta.returncode:
+        return set(), []  # No attribution. Any observed extra still fails the layout check.
+    confirmed, unconfirmed = set(), []
+    root = Path(home).resolve() / "skills/.alab-system"
+    for name in filter(None, os.fsdecode(delta.stdout).split("\0")):
+        relative = name.removeprefix(assets)
+        observed = "skills/.system/" + relative
+        path = root / relative
+        blobs = [subprocess.run(["git", "-C", REPO, "show", f"{rev}:{name}"], capture_output=True)
+                 for rev in (base, source)]
+        if (all(blob.returncode == 0 for blob in blobs) and path.resolve() == path and path.is_file()
+                and blobs[0].stdout == blobs[1].stdout == path.read_bytes()):
+            confirmed.add(observed)
+        else:
+            unconfirmed.append(observed)
+    return confirmed, unconfirmed
+
+
 def shapes(home):
     """The files under CODEX_HOME, digits and ids folded so two runs compare by shape. A
     SQLite -wal/-shm pair is the database's own transient state (present while a process
@@ -660,6 +798,9 @@ def shapes(home):
             if f.endswith(("-wal", "-shm")):
                 continue
             rel = os.path.relpath(os.path.join(d, f), home)
+            if rel.startswith("skills/"):
+                out.add(rel)  # Embedded asset names are literal, even when they contain digits.
+                continue
             rel = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<id>", rel)
             if rel.startswith(("tmp/", ".tmp/")):
                 # A scratch dir's random suffix (mkdtemp's, tempfile's): `git-keiNSZ`.
@@ -672,15 +813,18 @@ def app_server(b, requests, codex_home=None, extra_env=None):
     """`codex app-server --listen stdio://` (the Python SDK's argv): initialize, then each
     request in turn. Returns {id: reply} for the requests answered within 30 s each."""
     home = codex_home or b.fresh_home()
-    p = subprocess.Popen([b.exe, "app-server", "--listen", "stdio://"],
-                         env={**b.env(home), **(extra_env or {})},
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                         text=True, cwd=b.root)
     init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"clientInfo": {"name": "dropin", "title": "dropin", "version": "0"},
                        "capabilities": {"experimentalApi": True}}}
     replies = {}
-    try:
+    with ExitStack() as cleanup:
+        p = cleanup.enter_context(subprocess.Popen(
+            [b.exe, "app-server", "--listen", "stdio://"],
+            env={**b.env(home), **(extra_env or {})},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, cwd=b.root,
+        ))
+        cleanup.callback(p.kill)
         for n, (method, params) in enumerate([("initialize", None)] + list(requests), start=1):
             msg = init if method == "initialize" else {"jsonrpc": "2.0", "id": n, "method": method,
                                                        "params": params}
@@ -705,9 +849,6 @@ def app_server(b, requests, codex_home=None, extra_env=None):
                     replies[n] = reply
             if n not in replies:
                 return replies
-    finally:
-        p.kill()
-        p.wait()
     return replies
 
 
@@ -744,16 +885,64 @@ def effective_config(b, extra_env=None, config=None):
     home = b.fresh_home()
     os.makedirs(home)
     if config:
-        open(os.path.join(home, "config.toml"), "w").write(config)
+        Path(home, "config.toml").write_text(config)
     reply = app_server(b, [("config/read", {})], codex_home=home, extra_env=extra_env).get(2) or {}
     config = (reply.get("result") or {}).get("config")
     return flatten(config) if isinstance(config, dict) else None
+
+
+def fresh_thread_effort_check(b, expected):
+    replies = app_server(b, [("thread/start", {"cwd": b.root, "ephemeral": True})],
+                         extra_env={"OPENAI_BASE_URL": "http://127.0.0.1:1/backend-api/codex"})
+    result = (replies.get(2) or {}).get("result") or {}
+    actual = result.get("reasoningEffort")
+    return actual == expected, f"thread/start returned {actual!r}; source defaults declare {expected!r}"
 
 
 def own_key(key):
     """ALab's own config key (`[tui] alab_progress`): its name starts with `alab_`, a prefix
     upstream's config never uses, so an upstream rename can never land on it."""
     return key.rsplit(".", 1)[-1].startswith("alab_")
+
+
+@lru_cache(maxsize=12)
+def registry_defaults(repo, commit):
+    """Read literal boolean defaults in unconditional entries of upstream's FEATURES array."""
+    result = subprocess.run(["git", "-C", repo, "show", f"{commit}:codex-rs/features/src/lib.rs"],
+                            capture_output=True, text=True)
+    if result.returncode:
+        return {}
+    source = result.stdout
+    code = re.sub(r"//[^\n]*", lambda match: " " * len(match[0]), rust_declarations(source))
+    tables = list(re.finditer(r"^pub const FEATURES: &\[FeatureSpec\] = &\[\n(.*?)^\];", code, re.M | re.S))
+    if len(tables) != 1:
+        return {}
+    table, = tables
+    defaults = {}
+    for spec in re.finditer(r"(?m)^(?P<attrs>(?:    #\[[^\n]*\]\n)*)    FeatureSpec \{\n"
+                            r"(?P<body>.*?)^    \},", table[1], re.S):
+        body = spec["body"]
+        key = re.search(r"^        key: ( +),$", body, re.M)
+        if not key:
+            continue
+        offset = table.start(1) + spec.start("body")
+        literal = source[offset + key.start(1):offset + key.end(1)]
+        if not re.fullmatch(r'"[a-z0-9_]+"', literal):
+            continue
+        name = literal[1:-1]
+        ident = re.findall(r"^        id: Feature::(\w+),$", body, re.M)
+        value = re.findall(r"^        default_enabled: (true|false),$", body, re.M)
+        plain = len(ident) == len(value) == 1 and not spec["attrs"] and "#[" not in body
+        defaults[name] = (ident[0], value[0] == "true") if plain and name not in defaults else None
+    return defaults
+
+
+def upstream_feature_flip(key, previous, current, tag, base, source):
+    if not key.startswith("features.") or type(previous) is not bool or type(current) is not bool or previous == current:
+        return False
+    old, new, fork = (registry_defaults(REPO, rev).get(key.removeprefix("features."))
+                      for rev in (tag, base, source))
+    return bool(old and new and new == fork and old[0] == new[0] and old[1] == previous and new[1] == current)
 
 
 def config_check(alab, vendor, source, base, in_aterm):
@@ -806,6 +995,10 @@ def config_check(alab, vendor, source, base, in_aterm):
         if then is not None and now is not None and then.get(key) != now.get(key) \
                 and now.get(key) == a.get(key):
             verdict = "upstream: its config/defaults.toml moved since vendor %s" % vendor.version
+        elif (tagged and base and key not in ours and key not in (then or {}) and key not in (now or {})
+              and upstream_feature_flip(key, v.get(key), a.get(key), tag, base, source)):
+            verdict = (f"upstream: the feature registry default changed from {json.dumps(v[key])} "
+                       f"in vendor {vendor.version} to {json.dumps(a[key])} at {base[:9]}")
         elif v.get(key) is None and named(base, key.split(".")[-1], UPSTREAM):
             verdict = "upstream: a key added since vendor %s (in upstream %s)" % (
                 vendor.version, base[:9])
@@ -843,7 +1036,7 @@ def feature(b, name, config=None, args=()):
     home = b.fresh_home()
     os.makedirs(home)
     if config:
-        open(os.path.join(home, "config.toml"), "w").write(config)
+        Path(home, "config.toml").write_text(config)
     r = b.run(list(args) + ["features", "list"], codex_home=home)
     for line in r.stdout.splitlines():
         cols = line.split()
@@ -856,7 +1049,7 @@ def mcp_check(b):
     """An MCP server a config.toml declares is listed as declared (`codex mcp list --json`)."""
     home = b.fresh_home()
     os.makedirs(home)
-    open(os.path.join(home, "config.toml"), "w").write(
+    Path(home, "config.toml").write_text(
         '[mcp_servers.dropin]\ncommand = "/usr/bin/true"\nargs = ["--stdio"]\n')
     r = b.run(["mcp", "list", "--json"], codex_home=home)
     try:
@@ -870,7 +1063,7 @@ def mcp_check(b):
 def login_check(b):
     home = b.fresh_home()
     os.makedirs(home)
-    open(os.path.join(home, "config.toml"), "w").write('cli_auth_credentials_store = "file"\n')
+    Path(home, "config.toml").write_text('cli_auth_credentials_store = "file"\n')
     r = b.run(["login", "--with-api-key"], codex_home=home, stdin="dropin-placeholder\n")
     s = b.run(["login", "status"], codex_home=home)
     files = sorted(os.listdir(home))
@@ -891,8 +1084,21 @@ def main():
         sys.exit(f"dropin: {alab_pkg} carries no alab-build.json: not a codex-alab package")
     if os.path.exists(os.path.join(vendor_pkg, "alab-build.json")):
         sys.exit(f"dropin: {vendor_pkg} carries alab-build.json: not the vendor's codex")
-    source = json.load(open(os.path.join(alab_pkg, "alab-build.json")))["source"]
-    scratch = tempfile.mkdtemp(prefix="alab-dropin-")
+    with open(os.path.join(alab_pkg, "alab-build.json")) as f:
+        manifest = json.load(f)
+    source = manifest["source"]
+    try:
+        base = checked_upstream_base(source, manifest)
+    except ValueError as error:
+        sys.exit(f"dropin: {error}")
+    with ExitStack() as cleanup:
+        scratch = tempfile.mkdtemp(prefix="alab-dropin-")
+        if not args.keep:
+            register_directory_cleanup(cleanup, scratch)
+        return compare_packages(alab_pkg, vendor_pkg, source, base, scratch)
+
+
+def compare_packages(alab_pkg, vendor_pkg, source, base, scratch):
     alab, vendor = Bin("alab", alab_pkg, scratch), Bin("vendor", vendor_pkg, scratch)
     print("codex-alab:", alab.exe, alab.version, "source", source[:9])
     print("vendor:    ", vendor.exe, vendor.version)
@@ -910,34 +1116,39 @@ def main():
                b.entry == "bin/codex" and os.path.basename(b.exe) == "codex" and v == "codex-cli " + b.version,
                "entrypoint %s, --version '%s'" % (b.entry, v))
 
-    good, diffs, counted, base = help_check(alab, vendor, source)
+    good, diffs, counted = help_check(alab, vendor, source, base)
     record("help tree", good, "%d help pages; %d differences, attributed below (upstream base %s)"
            % (counted, len(diffs), base and base[:9]))
 
-    mock = Mock()
-    server = serve(mock)
-    port = server.server_address[1]
     homes, events = {}, {}
-    for b in (alab, vendor):
-        good, detail, homes[b.label], events[b.label] = exec_check(b, port)
-        record("exec --experimental-json (%s)" % b.label, good, detail)
+    with serve(Mock()) as server:
+        try:
+            for b in (alab, vendor):
+                good, detail, homes[b.label], events[b.label] = exec_check(b, server.server_address[1])
+                record("exec --experimental-json (%s)" % b.label, good, detail)
+        finally:
+            server.shutdown()
     (sa, clashes), sv = as_vendor_names(shapes(homes["alab"])), shapes(homes["vendor"])
-    extra = sorted(sa - sv)
+    confirmed, unconfirmed = new_bundled_skills(homes["alab"], f"refs/upstream-tags/rust-v{vendor.version}",
+                                               base, source)
+    vendor_clashes = sorted(confirmed & sv)
+    extra = sorted(sa - sv - confirmed)
     missing = {}
     for path in sorted(sv - sa):
         why = next((w for pat, w in INTENDED_ABSENT if re.match(pat, path)), None)
         missing.setdefault(why, []).append(path)
     unexplained = missing.pop(None, [])
-    record("CODEX_HOME after exec", not extra and not unexplained and not clashes,
-           "%d paths in both (%s; codex-alab's own names read as the vendor's: %s); codex-alab"
-           " writes nothing the vendor does not%s%s" % (
+    record("CODEX_HOME after exec", not any((extra, unexplained, clashes, unconfirmed, vendor_clashes)),
+           "%d paths in both (%s; codex-alab's own names read as the vendor's: %s)%s%s" % (
                len(sa & sv), ", ".join(sorted(p for p in sa & sv if "/" not in p or p.startswith("sessions/"))[:8]),
                ", ".join("%s for %s" % pair for pair in OWN_NAMES),
                "".join("; not written, as ALab intends (%d): %s" % (len(v), w) for w, v in missing.items()),
-               ("; ONLY codex-alab: %s" % extra if extra else "")
+               ("; upstream-added bundled skill files at %s: %s" % (base[:9], sorted(confirmed)) if confirmed else "")
+               + ("; missing or changed upstream skill files: %s" % unconfirmed if unconfirmed else "")
+               + ("; vendor wrote skill files absent at its tag: %s" % vendor_clashes if vendor_clashes else "")
+               + ("; ONLY codex-alab: %s" % extra if extra else "")
                + ("; UNEXPLAINED vendor-only: %s" % unexplained if unexplained else "")
                + ("; codex-alab wrote into codex-old's own: %s" % clashes if clashes else "")))
-    server.shutdown()
     good, rows, same = shape_check(alab, vendor, events, base, source)
     diffs += rows
     record("exec event fields", good, "%d key paths in both; %d differences, attributed below"
@@ -957,6 +1168,10 @@ def main():
         record("effective config (%s)" % ("TERM_PROGRAM=aterm" if in_aterm else "no aterm"), good,
                "%d ALab defaults, each in effect and each read by the vendor as a plain config.toml "
                "value; %d other differences, attributed below" % (same, len(rows)))
+    packaged = toml_at(source, "codex-rs/alab-core/defaults.toml") or {}
+    if "model_reasoning_effort" in packaged:
+        good, detail = fresh_thread_effort_check(alab, packaged["model_reasoning_effort"])
+        record("fresh thread reasoning effort", good, detail)
     good, detail = override_check(alab, source)
     record("ALab defaults overridable", good, detail)
 
@@ -976,8 +1191,6 @@ def main():
         print("\ndifferences (codex-alab vs vendor %s):" % vendor.version)
         for where, item, side, verdict in diffs:
             print("  %-28s %-26s %-17s %s" % (where, item, side, verdict))
-    if not args.keep:
-        shutil.rmtree(scratch, ignore_errors=True)
     print("\ndropin: %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

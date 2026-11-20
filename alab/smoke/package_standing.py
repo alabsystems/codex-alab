@@ -3,25 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Say what a codex package's own alab-build.json is worth to a smoke run.
 
-A package's record is its own statement: this module reads it and verifies no signature
-(that is atpkg's, for a package it installed). What it can tell apart, from fields and
-not from a sentence, is the record a certified packager writes and every other one:
+A package's record names the evidence the smoke reader can report. Signature verification
+belongs to atpkg. Qualifying records name an exact source commit, target, version, ripgrep,
+packager and an admitted Trust compiler whose identity matches its recorded inputs.
 
-- A certified package always names an exact source commit, a version, a target, its
-  packager, the ripgrep it carries, and the compiler it was built with: Trust, admitted
-  (`compiler.admitted` is true), with the compiler binaries' hash and an `id` that is
-  the hash of the three. What shows that its build was certified depends on who wrote it:
-  codex-release's native layout, which wrote the signed releases, names itself as the
-  packager and records the hashes of its build observations; alab/package.sh names its
-  own commit as the packager and records `compiler.verification`, the live certified
-  build of that source with dependencies included (alab/proof_build.py). package.sh
-  wrote `compiler.admitted: true` before its builds were certified, and built those
-  packages on the unverified lane: a package.sh record without `verification` is one of
-  them and does not qualify. Such a record, with no trial marker, qualifies a run.
-- A trial package (trial_package.py) is assembled from an unverified development build.
-  Its record carries a `trial` object and `compiler: {admitted: false, lane:
-  "unverified"}`. It never qualifies a run: a single case run with it is trial evidence.
-- Any other record (unknown, incomplete or malformed) does not qualify either.
+The native layout records SHA-256 digests of the product and ripgrep build observations.
+Its release commands use the unverified lane. alab/package.sh records a certified build
+in compiler.verification, including dependencies, the source commit, the report digest
+and matching digests for built and packaged executables. The reader checks that record
+whenever present. Older package.sh records lack it and are ineligible for smoke qualification.
+A trial marker, trial version or incomplete or malformed required field also rules a package out.
 
 Stands alone (no sibling imports).
 """
@@ -36,9 +27,6 @@ UNVERIFIED_LANE = "unverified"
 CERTIFIED_LANE = "certify"
 # The packager codex-release's native layout names (codex-rs/alab-release/src/assembly.rs).
 NATIVE_PACKAGER = "codex-release/native-layout-v1"
-QUALIFIES = ("its record names an exact source, an admitted Trust compiler and its "
-             "packager's evidence of a certified build, and carries no trial marker; the "
-             "record was read, and no signature was verified")
 
 
 def text(value):
@@ -50,12 +38,12 @@ def hashed(value):
 
 
 def compiler_refusal(compiler, source):
-    """Why a record's `compiler` is not the one a certified packager writes, or None."""
+    """Why the compiler record fails the smoke eligibility checks, or None."""
     if not isinstance(compiler, dict):
         return "its record names no compiler"
     if compiler.get("admitted") is not True:
         return "its compiler was not admitted (compiler.admitted is not true)"
-    # No certified packager writes a lane here; package.sh names it under `verification`.
+    # Neither packager writes a lane here; package.sh names it under `verification`.
     if "lane" in compiler and compiler["lane"] != CERTIFIED_LANE:
         return f"its compiler lane is {compiler['lane']!r}, not {CERTIFIED_LANE!r}"
     said, sysroot, binaries = (compiler.get(name) for name in ("rustc_vV", "sysroot",
@@ -93,7 +81,7 @@ def compiler_refusal(compiler, source):
 
 
 def packager_refusal(build):
-    """Why a record lacks what its packager always writes of a certified build, or None."""
+    """Why a record lacks its packager's required evidence, or None."""
     packager = build["packager"]
     if packager == NATIVE_PACKAGER:
         for name in ("build_observation_sha256", "ripgrep_build_observation_sha256"):
@@ -126,7 +114,7 @@ def not_qualifying(build):
         json.dumps(build, ensure_ascii=False).encode()
     except (UnicodeEncodeError, TypeError, ValueError, RecursionError):
         # JSON can carry half of a surrogate pair, which no packager writes and no hash takes.
-        return "its record holds text that is not Unicode: no certified packager wrote it"
+        return "its record holds text that is not Unicode"
     version, source = build.get("version"), build.get("source")
     if not text(version):
         return "its record names no version"
@@ -139,7 +127,7 @@ def not_qualifying(build):
         return refusal
     for name in ("target", "packager", "ripgrep", "ripgrep_features"):
         if not text(build.get(name)):
-            return f"its record names no {name}: no certified packager wrote it"
+            return f"its record names no {name}"
     return packager_refusal(build)
 
 
@@ -147,5 +135,15 @@ def summary(build):
     """What a smoke's report keeps of a package's standing: never raises."""
     refusal = not_qualifying(build)
     trial = build.get("trial") if isinstance(build, dict) else None
-    return {"qualifies": refusal is None, "why": QUALIFIES if refusal is None else refusal,
-            "trial": trial}
+    if refusal is not None:
+        return {"qualifies": False, "why": refusal, "trial": trial}
+    evidence = ["The package record names an exact source commit and an admitted Trust compiler."]
+    if build["packager"] == NATIVE_PACKAGER:
+        evidence.append("The native layout records SHA-256 digests of the product and ripgrep "
+                        "build observations.")
+    if "verification" in build["compiler"]:
+        evidence.append("compiler.verification records a certified build of that source including "
+                        "dependencies, the report SHA-256, and matching built and packaged SHA-256 "
+                        "digests for the recorded executables.")
+    evidence.append("The smoke reader leaves signature verification to atpkg.")
+    return {"qualifies": True, "why": " ".join(evidence), "trial": trial}

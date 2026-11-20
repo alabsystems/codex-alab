@@ -16,12 +16,15 @@ pub trait ModelCatalogFactory: Send + Sync {
         api_key_model_discovery_default: bool,
     ) -> SharedModelsManager;
 
+    fn alab_openai_catalog_settings(&self) -> Option<ModelCatalogSettings> { None } // ALAB(defaults): external hosts keep their catalog construction policy.
+
     /// Publish a live discovery setting to existing and future catalogs.
     /// Sources that do not perform API-key discovery may ignore it.
     fn set_api_key_model_discovery_enabled(&self, _enabled: bool) {}
 }
 
 impl ModelCatalogFactory for ModelCatalogSettings {
+    fn alab_openai_catalog_settings(&self) -> Option<ModelCatalogSettings> { Some(self.clone()) } // ALAB(defaults): carry the registry identity into native discovery.
     fn build(
         &self,
         provider: SharedModelProvider,

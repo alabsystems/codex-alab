@@ -74,6 +74,7 @@ use tracing::warn;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
+#[path = "../../alab-tui/glue/resume_logins.rs"] mod alab_resume_logins; // ALAB(accounts): local resume can include work created under another login.
 mod archive;
 mod catalog;
 mod layout;
@@ -188,6 +189,7 @@ impl SessionPickerAction {
 
 #[derive(Clone)]
 struct PageLoadRequest {
+    login_scope: alab_resume_logins::LoginScope, // ALAB(accounts): retain the requested scope with each async page.
     cursor: Option<PageCursor>,
     request_token: usize,
     listing_token: usize,
@@ -278,6 +280,7 @@ enum SessionStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolbarControl {
     Filter,
+    Logins, // ALAB(accounts): login scope uses the ordinary toolbar navigation.
     Status,
     Sort,
 }
@@ -288,17 +291,21 @@ enum ToolbarValueDirection {
 }
 
 impl ToolbarControl {
-    fn previous(self, action: SessionPickerAction) -> Self {
+    fn previous(self, action: SessionPickerAction, login_scope: alab_resume_logins::LoginScope) -> Self { // ALAB(accounts): skip login scope where unavailable.
         match self {
             Self::Filter => Self::Sort,
+            Self::Status if login_scope.available() => Self::Logins, // ALAB(accounts): an eligible picker can move back to login scope.
+            Self::Logins => Self::Filter, // ALAB(accounts): return to the workspace filter.
             Self::Status => Self::Filter,
             Self::Sort if matches!(action, SessionPickerAction::Resume) => Self::Status,
             Self::Sort => Self::Filter,
         }
     }
 
-    fn next(self, action: SessionPickerAction) -> Self {
+    fn next(self, action: SessionPickerAction, login_scope: alab_resume_logins::LoginScope) -> Self { // ALAB(accounts): use the same controls for every toolbar field.
         match self {
+            Self::Filter if login_scope.available() => Self::Logins, // ALAB(accounts): expose the local login filter after the workspace filter.
+            Self::Logins => Self::Status, // ALAB(accounts): retain the order of existing controls.
             Self::Filter if matches!(action, SessionPickerAction::Resume) => Self::Status,
             Self::Filter | Self::Status => Self::Sort,
             Self::Sort => Self::Filter,
@@ -474,6 +481,8 @@ struct SessionPickerViewPersistence {
 }
 
 struct SessionPickerRunOptions {
+    selected_cwd_readers: Vec<AppServerSession>, // ALAB(accounts): read the selected local cwd before its picker connection closes.
+    login_scope: alab_resume_logins::LoginScope, // ALAB(accounts): expose login scope only for eligible local resume pickers.
     backend_id: crate::backend_id::BackendId,
     use_theme_colors: bool,
     copy_on_select: bool,
@@ -629,7 +638,10 @@ async fn run_resume_picker_with_launch_context(
     let local_filter_cwd = local_picker_cwd_filter(&cwd_filter, uses_remote_filesystem);
     let provider_filter = ProviderFilter::All;
     let runtime_keymap = picker_runtime_keymap(local_settings)?;
+    let (login_scope, show_all) = alab_resume_logins::LoginScope::for_resume(launch_context, &app_servers, show_all); // ALAB(accounts): open all local history and retain the cwd anchor for narrowing.
     let options = SessionPickerRunOptions {
+        selected_cwd_readers: alab_resume_logins::cwd_readers(login_scope, &app_servers), // ALAB(accounts): retain only eligible backend request views.
+        login_scope,
         backend_id: app_server.session.backend_id(),
         use_theme_colors: local_settings.tui.status_line_use_colors,
         copy_on_select: local_settings.copy_on_select(&codex_terminal_detection::terminal_info()),
@@ -684,6 +696,8 @@ pub async fn run_fork_picker_with_app_server(
     let provider_filter = picker_provider_filter(config, &app_server).await?;
     let runtime_keymap = picker_runtime_keymap(local_settings)?;
     let options = SessionPickerRunOptions {
+        selected_cwd_readers: Vec::new(), // ALAB(accounts): fork retains its own selection semantics.
+        login_scope: alab_resume_logins::LoginScope::Unavailable, // ALAB(accounts): fork keeps its original discovery policy.
         backend_id: app_server.backend_id(),
         use_theme_colors: local_settings.tui.status_line_use_colors,
         copy_on_select: local_settings.copy_on_select(&codex_terminal_detection::terminal_info()),
@@ -740,7 +754,7 @@ async fn run_session_picker_with_loader(
 
 async fn run_session_picker_event_loop(
     tui: &mut Tui,
-    options: SessionPickerRunOptions,
+    mut options: SessionPickerRunOptions,
     picker_loader: PickerLoader,
     bg_rx: mpsc::UnboundedReceiver<BackgroundEvent>,
 ) -> Result<SessionSelection> {
@@ -760,6 +774,7 @@ async fn run_session_picker_event_loop(
         options.local_filter_cwd.clone(),
         options.action,
     );
+    state.login_scope = options.login_scope; // ALAB(accounts): start each picker with its own login scope.
     state.filter_mode =
         SessionFilterMode::from_show_all(options.show_all, options.filter_cwd.as_deref());
     state.filter_cwd = options.filter_cwd;
@@ -813,7 +828,7 @@ async fn run_session_picker_event_loop(
                             continue;
                         }
                         if let Some(sel) = state.handle_key(key).await? {
-                            return Ok(sel);
+                            return Ok(crate::boxed_future!(alab_resume_logins::refresh_selected_cwd(&mut options.selected_cwd_readers, &state, sel)).await); // ALAB(accounts): re-read the exact selected thread after Enter.
                         }
                     }
                     TuiEvent::Paste(pasted) => {
@@ -932,6 +947,7 @@ fn spawn_app_server_page_loaders(
 }
 
 fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
+    let local_logins = alab_resume_logins::eligible_backend(&backend); // ALAB(accounts): each source owns its discovery policy.
     let AppServerPickerBackend {
         uses_remote_filesystem,
         session: app_server,
@@ -943,10 +959,12 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
     let backend_id = app_server.backend_id();
     let (bg_tx, events) = mpsc::unbounded_channel();
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+    let (listing_tx, mut latest_listing) = tokio::sync::watch::channel(0); // ALAB(accounts): cancel superseded local discovery.
 
     let task = tokio::spawn(async move {
         let mut app_server = app_server;
         let mut page_cwd_filter = PageCwdFilter::default();
+        let mut last_index_check = None; // ALAB(accounts): reconcile once before paging each all-local listing.
         while let Some(request) = request_rx.recv().await {
             match request {
                 PickerLoadRequest::Page(request) => {
@@ -974,7 +992,11 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
                         matches!(request.mode, PageLoadMode::StateDbOnly),
                     );
                     let page = tokio::select! {
-                        page = load_app_server_page(&mut app_server, params) => page,
+                        _ = latest_listing.wait_for(|token| *token != request.listing_token), if local_logins && request.login_scope == alab_resume_logins::LoginScope::AllLocal => continue, // ALAB(accounts): abandon disk discovery when filters change.
+                        page = async {
+                            request.login_scope.repair_initial_page(&params, local_logins, config.as_ref(), request.listing_token, &mut last_index_check).await; // ALAB(accounts): repair before the first indexed cursor is issued.
+                            load_app_server_page(&mut app_server, request.login_scope.apply(params, local_logins)).await
+                        } => page,
                         _ = bg_tx.closed() => continue,
                     };
                     let _ = bg_tx.send(BackgroundEvent::Page {
@@ -1086,6 +1108,7 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
     sources::Source {
         backend_id,
         loader: Arc::new(move |request: PickerLoadRequest| {
+            if let PickerLoadRequest::Page(page) = &request && page.cursor.is_none() { listing_tx.send_replace(page.listing_token); } // ALAB(accounts): retire the prior listing generation.
             let _ = request_tx.send(request);
         }),
         events,
@@ -1122,6 +1145,7 @@ impl Drop for AltScreenGuard<'_> {
 }
 
 struct PickerState {
+    login_scope: alab_resume_logins::LoginScope, // ALAB(accounts): login visibility belongs to this picker instance.
     backend_id: crate::backend_id::BackendId,
     clock_format: ClockFormat,
     use_theme_colors: bool,
@@ -1337,6 +1361,7 @@ impl PickerState {
         action: SessionPickerAction,
     ) -> Self {
         Self {
+            login_scope: alab_resume_logins::LoginScope::Unavailable, // ALAB(accounts): upstream discovery is the initial policy.
             backend_id,
             clock_format: ClockFormat::system(),
             use_theme_colors: true,
@@ -1833,6 +1858,7 @@ impl PickerState {
             listing_token: self.listing_token,
             search_token,
             mode,
+            login_scope: self.login_scope, // ALAB(accounts): pin this page to its selected login scope.
             filter_mode: self.filter_mode,
             cwd_filter: self.active_cwd_filter(),
             status: self.status,
@@ -1899,6 +1925,7 @@ impl PickerState {
                         listing_token: self.listing_token,
                         search_token,
                         mode: PageLoadMode::StoreDefault,
+                        login_scope: self.login_scope, // ALAB(accounts): pin the scan fallback to the selected scope.
                         filter_mode: self.filter_mode,
                         cwd_filter: self.active_cwd_filter(),
                         status: self.status,
@@ -2299,6 +2326,7 @@ impl PickerState {
             listing_token: self.listing_token,
             search_token,
             mode,
+            login_scope: self.login_scope, // ALAB(accounts): pin this page to its selected login scope.
             filter_mode: self.filter_mode,
             cwd_filter: self.active_cwd_filter(),
             status: self.status,
@@ -2368,11 +2396,11 @@ impl PickerState {
     }
 
     fn focus_previous_toolbar_control(&mut self) {
-        self.toolbar_focus = self.toolbar_focus.previous(self.action);
+        self.toolbar_focus = self.toolbar_focus.previous(self.action, self.login_scope); // ALAB(accounts): focus visible controls only.
     }
 
     fn focus_next_toolbar_control(&mut self) {
-        self.toolbar_focus = self.toolbar_focus.next(self.action);
+        self.toolbar_focus = self.toolbar_focus.next(self.action, self.login_scope); // ALAB(accounts): focus visible controls only.
     }
 
     fn change_focused_toolbar_value(&mut self, direction: ToolbarValueDirection) {
@@ -2380,6 +2408,7 @@ impl PickerState {
             ToolbarControl::Sort => self.toggle_sort_key(),
             ToolbarControl::Filter => self.change_filter_mode(direction),
             ToolbarControl::Status => self.toggle_status(),
+            ToolbarControl::Logins => self.toggle_login_scope(), // ALAB(accounts): re-list when the selected login scope changes.
         }
     }
 
@@ -2660,6 +2689,7 @@ fn toolbar_for_width(state: &PickerState, width: u16) -> Line<'static> {
     let spans = match state.toolbar_focus {
         ToolbarControl::Filter => filter_control_spans(state, /*compact*/ true),
         ToolbarControl::Sort => sort_control_spans(state, /*compact*/ true),
+        ToolbarControl::Logins => state.login_control(true), // ALAB(accounts): narrow terminals retain the focused control.
         ToolbarControl::Status => vec![
             "Status:".set_style(secondary_text_style()),
             toolbar_value(
@@ -2684,6 +2714,7 @@ fn toolbar_line(state: &PickerState, compact: bool) -> Line<'static> {
     };
     spans.extend(filter_control_spans(state, compact));
     spans.push(separator.set_style(secondary_text_style()));
+    state.append_login_control(&mut spans, compact, separator); // ALAB(accounts): display the available local login scope.
     if matches!(state.action, SessionPickerAction::Resume) {
         let status_focused = state.toolbar_focus == ToolbarControl::Status;
         if compact {
@@ -3237,6 +3268,7 @@ fn render_list(frame: &mut crate::custom_terminal::Frame, area: Rect, state: &Pi
     if rows.is_empty() {
         let message = render_empty_state_line(state);
         frame.render_widget_ref(&message, area);
+        state.render_empty_login_hint(frame, area); // ALAB(accounts): show how to widen an empty local resume picker.
         return;
     }
 
@@ -4780,7 +4812,7 @@ mod tests {
             thread_name: Some(String::from("feat(tui): add raw scrollback mode")),
             created_at: parse_timestamp_str("2026-05-02T14:31:08Z"),
             updated_at: parse_timestamp_str("2026-05-02T14:48:19Z"),
-            cwd: Some(PathBuf::from("/Users/felipe.coury/code/codex")),
+            cwd: Some(PathBuf::from("/repos/example.user/code/codex")),
             git_branch: Some(String::from("codex/raw-scrollback-mode")),
         };
 
@@ -6344,7 +6376,7 @@ session_picker_view = "dense"
             created_at: parse_timestamp_str("2026-04-28T16:30:00Z"),
             updated_at: parse_timestamp_str("2026-04-28T17:45:00Z"),
             cwd: Some(PathBuf::from(
-                "/Users/felipe.coury/code/codex.fcoury-session-picker/codex-rs",
+                "/repos/example.user/code/codex.fcoury-session-picker/codex-rs",
             )),
             git_branch: Some(String::from("fcoury/session-picker")),
         }
@@ -6396,7 +6428,7 @@ session_picker_view = "dense"
             render_dense_row_snapshot(
                 /*show_all*/ false,
                 Some(PathBuf::from(
-                    "/Users/felipe.coury/code/codex.fcoury-session-picker/codex-rs"
+                    "/repos/example.user/code/codex.fcoury-session-picker/codex-rs"
                 )),
                 /*width*/ 100,
             )
@@ -6534,7 +6566,7 @@ session_picker_view = "dense"
             ProviderFilter::MatchDefault(String::from("openai")),
             /*show_all*/ false,
             Some(PathBuf::from(
-                "/Users/felipe.coury/code/codex.fcoury-session-picker/codex-rs",
+                "/repos/example.user/code/codex.fcoury-session-picker/codex-rs",
             )),
             SessionPickerAction::Resume,
         );

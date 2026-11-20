@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise exact endpoint selection and connection-owned build lifetime."""
 
+import ctypes
 import importlib.util
 import hashlib
 import json
@@ -23,7 +24,20 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("alab_trust_memory", ROOT / "alab/trust_memory.py")
 MEMORY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MEMORY)
-FIXTURE_EXECUTABLE = Path(sys.executable).resolve()
+def fixture_executable():
+    # Apple's developer-tools Python launcher and the live fixture process can
+    # be different executables. The test server runs in this process.
+    if sys.platform == "darwin":
+        path = ctypes.create_string_buffer(4096)
+        proc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        length = proc.proc_pidpath(os.getpid(), path, len(path))
+        if not 0 < length < len(path):
+            raise OSError("cannot identify the fixture server")
+        return Path(os.fsdecode(path.value)).resolve(strict=True)
+    return Path(sys.executable).resolve(strict=True)
+
+
+FIXTURE_EXECUTABLE = fixture_executable()
 IDENTITY = {"version": "trustd.identity.v1", "protocol": "trustd.status.v1", "release": "fixture",
             "commit": "a" * 40, "executable_sha256": hashlib.sha256(FIXTURE_EXECUTABLE.read_bytes()).hexdigest()}
 
@@ -168,6 +182,25 @@ class MemoryAuthorityTests(unittest.TestCase):
             self.assertEqual(MEMORY.run(command), 17)
         self.assertTrue(daemon.released.wait(2))
 
+    def test_native_owner_keeps_the_authenticated_lease_until_settlement(self):
+        daemon = Daemon(self.root)
+        lease = MEMORY.lease_at(daemon.path, IDENTITY, FIXTURE_EXECUTABLE)
+
+        def settle(command, environment):
+            self.assertEqual(environment["ALAB_TRUSTD_SOCKET"], str(daemon.path))
+            self.assertFalse(os.get_inheritable(lease.fileno()))
+            code = subprocess.call(command, env=environment, close_fds=False)
+            # Its command has exited. Settlement still owns the authenticated
+            # host lease until the native owner returns its actual verdict.
+            self.assertFalse(daemon.released.is_set())
+            self.assertTrue(daemon.held.is_file())
+            return code
+
+        with patch.dict(os.environ, {"ATPKG_PROJECT_EXECUTION": str(self.root)}), \
+                patch.object(MEMORY, "prepare", return_value=(daemon.path, lease)):
+            self.assertEqual(MEMORY.run(["/bin/sh", "-c", "exit 75"], supervise=settle), 75)
+        self.assertTrue(daemon.released.wait(2))
+
     def test_memory_domain_overrides_are_refused_before_selecting_or_spawning(self):
         for name in ("TRUSTD_DISABLE", "TRUSTD_RUNTIME_DIR", "TRUST_MEMORY_JOBSERVER", "TRUST_MEMORY_JOBSERVER_SOCK"):
             with self.subTest(name=name), patch.dict(os.environ, {name: ""}), \
@@ -211,7 +244,7 @@ class MemoryAuthorityTests(unittest.TestCase):
         def spawn(*args, **kwargs):
             self.assertEqual(args[0], [str(FIXTURE_EXECUTABLE)])
             self.assertEqual(kwargs["env"], {})
-            self.assertEqual(kwargs["process_group"], 0)
+            self.assertIs(kwargs["start_new_session"], True)
             kwargs["stderr"].write(b"another trustd owns the endpoint\n")
             kwargs["stderr"].flush()
             threading.Thread(target=winner, daemon=True).start()

@@ -21,6 +21,7 @@ async fn automatic_marketplace_upgrade_failure_shows_warning() -> Result<()> {
         vec!["init"],
         vec!["add", "."],
         vec!["commit", "-m", "initial marketplace"],
+        vec!["update-server-info"], // ALAB(test): publish the fixture refs for loopback HTTP cloning.
     ] {
         let output = std::process::Command::new("git")
             .args(["-c", "commit.gpgSign=false"])
@@ -38,6 +39,8 @@ async fn automatic_marketplace_upgrade_failure_shows_warning() -> Result<()> {
         );
     }
     // Both checkouts succeed, but their names do not match the configured marketplaces.
+    let repository = crate::alab_plugin_fixture::serve_git(source.path()).await; // ALAB(test): restrict startup to the actual fixture Git URL.
+    let repository_url = format!("{}/repo.git", repository.uri());
     let marketplace_names = ["team", "work"];
     for marketplace_name in marketplace_names {
         record_user_marketplace(
@@ -45,7 +48,7 @@ async fn automatic_marketplace_upgrade_failure_shows_warning() -> Result<()> {
             marketplace_name,
             &MarketplaceConfigUpdate {
                 source_type: "git",
-                source: &source.path().display().to_string(),
+                source: &repository_url, // ALAB(test): both upgrades use the allowlisted loopback repository.
                 ref_name: None,
                 sparse_paths: &[],
             },
@@ -64,7 +67,7 @@ async fn automatic_marketplace_upgrade_failure_shows_warning() -> Result<()> {
     app.local_settings.tui.show_tooltips = false;
     while events.try_recv().is_ok() {}
 
-    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let mut server = Box::pin(crate::alab_plugin_fixture::start_server(&app.config, Some(&repository))).await?; // ALAB(test): exercise real configured upgrades without fetching any public source.
     let mut warnings_received = 0;
     while warnings_received < marketplace_names.len() {
         let event = server.next_event().await.expect("app-server notification");

@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "base": "a0a30c40e8dbcc44af52e2df64dcce64368d4422",
+  "target": "15c5444e87e334d40262d07adb8e383c1e5172fc",
+  "frontier": "a0a30c40e8dbcc44af52e2df64dcce64368d4422",
+  "commits": [
+    {
+      "sha": "ffa05c8bfb7572f1b4139e775324bfd284f1cbe5",
+      "subject": "Prewarm executor capability discovery during remote startup (#62674)",
+      "paths": [
+        "codex-rs/core/src/environment_selection.rs",
+        "codex-rs/core/src/environment_selection_snapshot_tests.rs",
+        "codex-rs/core/src/mcp_openai_file.rs",
+        "codex-rs/core/src/session/executor_discovery.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/shell_snapshot_tests.rs",
+        "codex-rs/core/tests/suite/executor_discovery_v2.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__v2_discovery_readiness.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__v2_discovery_readiness_permanent_failure.snap"
+      ],
+      "classes": [
+        "background",
+        "feature"
+      ],
+      "features": [
+        "product-policy",
+        "skill-discovery"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry the startup optimization behind the existing default-off executor_capability_discovery_v2 setting. A supported remote attachment can populate the thread cache before its first step. The five-second budget limits the discovery attempt for each attachment. An expensive or unavailable inventory must leave environment startup usable.",
+      "evidence": [
+        "ffa05c8bfb:codex-rs/features/src/lib.rs (ExecutorCapabilityDiscoveryV2 remains under development and defaults to false). The ALab defaults files do not enable it.",
+        "ffa05c8bfb:codex-rs/core/src/session/session.rs and environment_selection.rs (the feature gates creation of the shared discovery object, only remote attachments prewarm, and capacity accounts for the selected environments).",
+        "ffa05c8bfb:codex-rs/core/src/session/executor_discovery.rs (prewarm checks executor support, uses the selected cwd and sandbox, and bounds the cache load with DISCOVERY_PREWARM_TIMEOUT). Step discovery retains its own sandbox selection and inventory publication.",
+        "ffa05c8bfb:codex-rs/core/tests/suite/executor_discovery_v2.rs (v2_prewarm_retains_all_selected_environments_until_the_first_step and v2_prewarm_timeout_does_not_block_session_configured cover reuse and a silent executor). These network-dependent cases require execution with loopback available.",
+        "On macOS arm64, pristine upstream 15c5444e87 passed all three native Core tests for retaining multiple selected environments, timing out a silent executor before session configuration, and applying a refresh on the next step. Loopback was exercised inside the protected runner. The three tests finished in 5.51 seconds. Exact libtest log SHA-256 95f55d03c250f12a9fb64e9c7b0b0c7d186a9c6e1ba868b512e3c6142d857162."
+      ],
+      "revisit": "Reassess a future default change with cold-start latency and duplicate-discovery measurements across local, remote, and mixed selections."
+    },
+    {
+      "sha": "15c5444e87e334d40262d07adb8e383c1e5172fc",
+      "subject": "Force executor capability rescans after V2 cache invalidation (#62675)",
+      "paths": [
+        "codex-rs/core/src/session/executor_discovery.rs",
+        "codex-rs/core/tests/suite/executor_discovery_v2.rs",
+        "codex-rs/exec-server-protocol/src/capabilities.rs",
+        "codex-rs/exec-server-protocol/src/capabilities_tests.rs",
+        "codex-rs/exec-server/src/capability_discovery_v2_cache.rs",
+        "codex-rs/exec-server/src/client_refresh_tests.rs",
+        "codex-rs/exec-server/src/discoverV2/capability_manager.rs",
+        "codex-rs/exec-server/src/discoverV2/tests/capability_discoveries_tests.rs",
+        "codex-rs/exec-server/src/discoverV2/tests/capability_manager_tests.rs",
+        "codex-rs/exec-server/src/discoverV2/tests/capability_watchers_tests.rs",
+        "codex-rs/exec-server/src/environment/discovery_v2_tests.rs",
+        "codex-rs/exec-server/src/server/handler.rs",
+        "codex-rs/exec-server/tests/capabilities_v2.rs",
+        "codex-rs/exec-server/tests/initialize.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Propagate invalidation to the executor even when its filesystem watcher has yet to report the change. A forced request must read fresh inventory or return its error. Ordinary requests can reuse the replacement. Older V2 executors lack the forced-rescan behavior, so mixed-version freshness requires separate verification.",
+      "evidence": [
+        "15c5444e87:codex-rs/exec-server-protocol/src/capabilities.rs and capabilities_tests.rs (missing forceReload defaults to false, false is omitted on output, and true is explicit on the wire).",
+        "15c5444e87:codex-rs/exec-server/src/capability_discovery_v2_cache.rs (the key retains environment identity, executor session, cwd and sandbox. Invalidation marks existing entries dirty. The next matching lookup replaces its cell and sets forceReload, while readers already holding the previous cell can finish).",
+        "15c5444e87:codex-rs/exec-server/src/server/handler.rs and discoverV2/capability_manager.rs (the server forwards the flag, checks it on both sides of the reload permit, and propagates forced scan failure instead of returning a stale location snapshot).",
+        "15c5444e87:codex-rs/exec-server/src/discoverV2/tests/capability_manager_tests.rs (forced_discovery_reads_new_skills_before_the_watcher_runs adds a real skill, observes the prior response, forces a reload and checks ordinary reuse of the new response).",
+        "On pristine upstream 15c5444e87, the protocol round-trip, forced rescan before watcher delivery, and per-sandbox cache isolation all passed under source-selected Trust 15698. The protocol and manager commands both exited zero. The three exact results were checked against their native logs, SHA-256 ec9ec9734536af99286633f8c79313fb8afd2865e1df21be1950319ed842f9b7 and fe6297ad966c647c7608e1f407e08c953f2f07dce5571cfde03e4753b1d97f5d."
+      ],
+      "revisit": ""
+    }
+  ]
+}

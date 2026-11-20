@@ -56,7 +56,7 @@ impl Operation {
             // stored after the actual worker completes.
             let _original_book = book;
             let result = original.await;
-            let terminal = result.as_ref().map(|()| ()).map_err(io::Error::kind);
+            let terminal = result.as_ref().copied().map_err(io::Error::kind);
             {
                 let mut progress = actual
                     .progress

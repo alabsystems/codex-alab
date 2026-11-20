@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -56,7 +57,10 @@ class CapacityProcessTests(unittest.TestCase):
 
     @staticmethod
     def is_executing(pid):
-        result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "stat="],
+        ps_executable = shutil.which("ps")
+        if ps_executable is None:
+            raise RuntimeError("process inspection requires ps on PATH")
+        result = subprocess.run([ps_executable, "-p", str(pid), "-o", "stat="],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, timeout=5)
         if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():

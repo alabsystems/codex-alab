@@ -758,7 +758,11 @@ pub struct Tui {
 struct PendingHistoryLines {
     lines: Vec<HyperlinkLine>,
     wrap_policy: HistoryLineWrapPolicy,
+    #[cfg(any(windows, test))] launch_art: Vec<alab_inline_launch::PendingLaunchArt>, // ALAB(banner): only buffered launch rows can acquire the delayed Windows palette.
 }
+
+#[cfg(any(windows, test))]
+#[path = "../../alab-tui/glue/inline_launch.rs"] pub(crate) mod alab_inline_launch; // ALAB(banner): resolve the launch palette within the normal history writer.
 
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
 where
@@ -1186,7 +1190,7 @@ impl Tui {
             last.lines.extend(lines);
         } else {
             self.pending_history_lines
-                .push(PendingHistoryLines { lines, wrap_policy });
+                .push(PendingHistoryLines { lines, wrap_policy, #[cfg(any(windows, test))] launch_art: Vec::new() }); // ALAB(banner): ordinary batches carry fixed lines.
         }
         self.frame_requester().schedule_frame();
     }
@@ -1281,6 +1285,7 @@ impl Tui {
         // stay queued, and the caller reports the I/O error.
         while !pending_history_lines.is_empty() {
             let batch = pending_history_lines.remove(/*index*/ 0);
+            #[cfg(any(windows, test))] let batch = batch.with_launch_palette(); // ALAB(banner): paint the pending art immediately before the original write.
             let mode = scrollback.history_insertion_mode(batch.wrap_policy);
             crate::insert_history::insert_history_hyperlink_lines_with_mode_and_wrap_policy(
                 terminal,

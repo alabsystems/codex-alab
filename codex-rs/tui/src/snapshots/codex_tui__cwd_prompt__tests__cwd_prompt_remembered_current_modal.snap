@@ -7,9 +7,9 @@ expression: rendered
   Session = latest cwd recorded in the resumed session
   Current = your current working directory
 
-› 1. Use session directory (/Users/example/session)
-  2. Use current directory (/Users/example/current)
+› 1. Use session directory (/repos/example/session)
+  2. Use current directory (/repos/example/current)
   3. Always use session directory
-  4. Always use current directory (/Users/example/launched)
+  4. Always use current directory (/repos/example/launched)
 
   enter continue · esc use session · ⌃c quit

@@ -9,17 +9,19 @@ use crate::tools::context::AbortedToolOutput;
 use crate::tools::registry::AnyToolResult;
 use codex_alab_core::quota::ExecQuotaMember;
 use codex_alab_core::quota::HeadlessExec;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::ResponseItem;
 use tokio_util::sync::CancellationToken;
 
 struct Transferring;
 
 #[cfg(test)]
-#[path = "exec_test_process.rs"]
-mod test_process;
+use crate::alab_test_process as test_process;
 
 pub(crate) fn mark(turn: &TurnContext) {
     if codex_alab_core::active()
@@ -43,6 +45,26 @@ pub(crate) fn attribute_abort(turn: &TurnContext, mut response: AnyToolResult) -
         response.result = Box::new(AbortedToolOutput {
             message: message(turn).into(),
         });
+    }
+    response
+}
+
+pub(crate) fn before_dispatch(
+    turn: &TurnContext,
+    mut response: ResponseItemEnvelope,
+) -> ResponseItemEnvelope {
+    if turn.extension_data.get::<Transferring>().is_some() {
+        match &mut response.item {
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                output.body = FunctionCallOutputBody::Text(
+                    "Tool call did not run. Cancelled before dispatch for account handoff.".into(),
+                );
+            }
+            // The Responses input schema carries a status and tool definitions, with no text field.
+            ResponseItem::ToolSearchOutput { status, .. } => *status = "incomplete".into(),
+            _ => {}
+        }
     }
     response
 }
@@ -78,8 +100,77 @@ pub(crate) async fn wait<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::step_context::StepContext;
+    use crate::stream_events_utils::HandleOutputCtx;
+    use crate::stream_events_utils::handle_output_item_done;
+    use crate::tools::parallel::ToolCallRuntime;
     use crate::tools::registry::CoreToolRuntime;
     use codex_protocol::protocol::EventMsg;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn queued_tool_results_keep_dispatch_boundary_and_handoff_reason() {
+        if !test_process::child(concat!(
+            module_path!(),
+            "::queued_tool_results_keep_dispatch_boundary_and_handoff_reason"
+        )) {
+            return;
+        }
+        codex_alab_core::activate();
+        for handoff in [false, true] {
+            let (session, turn, _events) =
+                crate::session::tests::make_session_and_context_with_rx().await;
+            turn.extension_data.insert(HeadlessExec);
+            let step = StepContext::for_test(Arc::clone(&turn));
+            let mut ctx = HandleOutputCtx {
+                tool_runtime: ToolCallRuntime::new(
+                    Arc::clone(&session),
+                    Arc::clone(&step),
+                    Default::default(),
+                ),
+                sess: session,
+                step_context: step,
+                turn_store: Arc::new(codex_extension_api::ExtensionData::new(turn.sub_id.clone())),
+                defer_tool_dispatch: true,
+                cancellation_token: CancellationToken::new(),
+            };
+            let mut queued = Vec::new();
+            for call in [
+                json!({"type":"function_call", "call_id":"f", "name":"exec_command", "arguments":"{}"}),
+                json!({"type":"custom_tool_call", "call_id":"c", "name":"apply_patch", "input":"patch"}),
+                json!({"type":"tool_search_call", "call_id":"s", "execution":"client", "arguments":{"query":"files"}}),
+            ] {
+                let item = serde_json::from_value(call).unwrap();
+                let result = handle_output_item_done(&mut ctx, item, None, None)
+                    .await
+                    .unwrap();
+                queued.push(result.tool_future.expect("tool should be queued"));
+            }
+            if handoff {
+                mark(&turn);
+            }
+            ctx.cancellation_token.cancel();
+            let mut wire = Vec::new();
+            for future in queued {
+                wire.push(serde_json::to_value(future.await.unwrap().item).unwrap());
+            }
+            let reason = if handoff {
+                "Tool call did not run. Cancelled before dispatch for account handoff."
+            } else {
+                "aborted before dispatch"
+            };
+            let status = if handoff { "incomplete" } else { "completed" };
+            assert_eq!(
+                wire,
+                [
+                    json!({"type":"function_call_output", "call_id":"f", "output":reason}),
+                    json!({"type":"custom_tool_call_output", "call_id":"c", "output":reason}),
+                    json!({"type":"tool_search_output", "call_id":"s", "execution":"client", "status":status, "tools":[]}),
+                ]
+            );
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_wait_closes_once_with_the_transfer_reason() {

@@ -16,23 +16,8 @@ use crate::decide::Wall;
 use crate::extension::classify;
 
 #[test]
-fn a_cyber_policy_refusal_has_its_own_bounded_independent_work_wall() {
-    assert_eq!(
-        classify(
-            &CodexErrorInfo::CyberPolicy,
-            &CodexErrorDetails::Stream("provider refusal".into()),
-            true,
-        ),
-        Some(Wall::Policy)
-    );
-}
-
-#[test]
-fn other_usage_policy_refusals_use_the_same_bounded_independent_work_wall() {
-    for error in [
-        CodexErrorInfo::BioPolicy,
-        CodexErrorInfo::MisalignmentPolicyViolation,
-    ] {
+fn cyber_and_bio_policy_refusals_have_a_bounded_independent_work_wall() {
+    for error in [CodexErrorInfo::CyberPolicy, CodexErrorInfo::BioPolicy] {
         assert_eq!(
             classify(
                 &error,
@@ -43,7 +28,15 @@ fn other_usage_policy_refusals_use_the_same_bounded_independent_work_wall() {
             "{error:?}"
         );
     }
-    for error in [CodexErrorInfo::InvalidPrompt, CodexErrorInfo::BadRequest] {
+}
+
+#[test]
+fn misalignment_findings_and_invalid_requests_stop_automatic_work() {
+    for error in [
+        CodexErrorInfo::MisalignmentPolicyViolation,
+        CodexErrorInfo::InvalidPrompt,
+        CodexErrorInfo::BadRequest,
+    ] {
         assert!(
             matches!(
                 classify(
@@ -53,7 +46,7 @@ fn other_usage_policy_refusals_use_the_same_bounded_independent_work_wall() {
                 ),
                 Some(Wall::Fatal { .. })
             ),
-            "{error:?} must not retry an invalid request"
+            "{error:?} must stop automatic work"
         );
     }
 }

@@ -30,3 +30,5 @@ pub fn client_version_to_whole() -> String {
         .unwrap_or(version)
         .to_owned()
 }
+
+#[path = "../../alab-core/glue/sol_family.rs"] pub mod sol_family; // ALAB(defaults): rank eligible stable Sol releases from this account catalog.

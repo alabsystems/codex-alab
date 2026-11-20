@@ -47,7 +47,7 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         #[cfg(windows)]
         tty: false,
     });
-    let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?);
+    let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None, /*shell_log*/ None).await?);
     let (session, turn, rx_event) = make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(
         session,
@@ -349,7 +349,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         ),
         (
             CommandExecutionStatus::Failed,
-            Some(-1),
+            Some(0),
             Some("LATE_DENIAL")
         )
     );
@@ -420,3 +420,5 @@ async fn streaming_output_bounds_invalid_bytes() {
         ]
     );
 }
+
+include!("../../../alab-core/glue/unified_process_completion_tests.rs"); // ALAB(shell-output): exercise actual background termination, timeout and negative exit observations.

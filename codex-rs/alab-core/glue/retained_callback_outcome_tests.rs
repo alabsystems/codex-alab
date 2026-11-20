@@ -52,7 +52,7 @@ async fn captured_source_cells_survive_disconnect_and_actual_late_completion() {
     let ledger = outgoing.alab_callback_outcomes.as_ref().unwrap();
     // This exercises the lower Source cells, not the public capture admission
     // which separately requires a genuine physical A/current Native origin.
-    let cells = ledger.capture(ConnectionId(1), &[id.clone()]).unwrap();
+    let cells = ledger.capture(ConnectionId(1), std::slice::from_ref(&id)).unwrap();
     let mut changes = cells[0].changed.subscribe();
     outgoing.connection_closed(ConnectionId(1)).await;
     assert!(matches!(cells[0].fact().outcome, Outcome::Pending {}));
@@ -100,7 +100,7 @@ async fn unmarked_real_callback_destruction_stays_unknown_and_cannot_be_acknowle
     let thread = ThreadId::new();
     let (id, receiver) = request(&outgoing, thread).await;
     let ledger = outgoing.alab_callback_outcomes.as_ref().unwrap();
-    let cells = ledger.capture(ConnectionId(1), &[id.clone()]).unwrap();
+    let cells = ledger.capture(ConnectionId(1), std::slice::from_ref(&id)).unwrap();
     let entry = outgoing
         .request_id_to_callback
         .lock()
@@ -110,7 +110,7 @@ async fn unmarked_real_callback_destruction_stays_unknown_and_cannot_be_acknowle
     drop(entry); // Actual sender/Endpoint guard destruction, without a terminal hook.
     assert!(receiver.await.is_err());
     assert!(matches!(cells[0].fact().outcome, Outcome::Unknown {}));
-    assert!(ledger.acknowledge(ConnectionId(1), &[id]).is_err());
+    assert!(ledger.acknowledge_captured(ConnectionId(1), &cells, &[id]).is_err());
 }
 
 #[tokio::test]
@@ -119,11 +119,12 @@ async fn semantic_ack_requires_actual_closed_cells_and_preserves_existing_captur
     let thread = ThreadId::new();
     let (id, receiver) = request(&outgoing, thread).await;
     let ledger = outgoing.alab_callback_outcomes.as_ref().unwrap();
-    let cells = ledger.capture(ConnectionId(1), &[id.clone()]).unwrap();
-    assert!(ledger.acknowledge(ConnectionId(1), &[id.clone()]).is_err());
+    let ids = std::slice::from_ref(&id);
+    let cells = ledger.capture(ConnectionId(1), ids).unwrap();
+    assert!(ledger.acknowledge_captured(ConnectionId(1), &cells, ids).is_err());
     assert!(outgoing.cancel_request(&id).await);
     assert!(receiver.await.is_err());
-    ledger.acknowledge(ConnectionId(1), &[id.clone()]).unwrap();
+    ledger.acknowledge_captured(ConnectionId(1), &cells, ids).unwrap();
     assert!(ledger.capture(ConnectionId(1), &[id]).is_err());
     assert!(matches!(cells[0].fact().outcome, Outcome::Cancelled {}));
 }
@@ -137,7 +138,7 @@ async fn source_cut_waits_for_actual_removed_endpoint_owner_to_finish_or_drop() 
         .alab_callback_outcomes
         .as_ref()
         .unwrap()
-        .capture(ConnectionId(1), &[id.clone()])
+        .capture(ConnectionId(1), std::slice::from_ref(&id))
         .unwrap();
     let entry = outgoing
         .request_id_to_callback
@@ -205,11 +206,11 @@ async fn captured_closed_cells_can_ack_after_gap_without_inventing_a_c2_bucket()
     let thread = ThreadId::new();
     let (id, receiver) = request(&outgoing, thread).await;
     let ledger = outgoing.alab_callback_outcomes.as_ref().unwrap();
-    let cells = ledger.capture(ConnectionId(1), &[id.clone()]).unwrap();
+    let cells = ledger.capture(ConnectionId(1), std::slice::from_ref(&id)).unwrap();
     outgoing.connection_closed(ConnectionId(1)).await;
     assert!(
         ledger
-            .acknowledge_captured(ConnectionId(2), &cells, &[id.clone()])
+            .acknowledge_captured(ConnectionId(2), &cells, std::slice::from_ref(&id))
             .is_err()
     );
     assert!(outgoing.cancel_request(&id).await);
@@ -217,7 +218,7 @@ async fn captured_closed_cells_can_ack_after_gap_without_inventing_a_c2_bucket()
     // Lower Source cells only; public ACK separately requires the NEW genuine
     // RequestContext/A/current Native observation, which is not fabricated here.
     ledger
-        .acknowledge_captured(ConnectionId(2), &cells, &[id.clone()])
+        .acknowledge_captured(ConnectionId(2), &cells, std::slice::from_ref(&id))
         .unwrap();
     assert!(
         !ledger
@@ -250,11 +251,11 @@ async fn captured_ack_does_not_remove_a_different_actual_cell_from_recipient_sta
     let thread = ThreadId::new();
     let (first, first_receiver) = request(&outgoing, thread).await;
     let ledger = outgoing.alab_callback_outcomes.as_ref().unwrap();
-    let old = ledger.capture(ConnectionId(1), &[first.clone()]).unwrap();
+    let old = ledger.capture(ConnectionId(1), std::slice::from_ref(&first)).unwrap();
     assert!(outgoing.cancel_request(&first).await);
     assert!(first_receiver.await.is_err());
     let (second, second_receiver) = request(&outgoing, thread).await;
-    let new = ledger.capture(ConnectionId(1), &[second.clone()]).unwrap();
+    let new = ledger.capture(ConnectionId(1), std::slice::from_ref(&second)).unwrap();
     // Negative identity seam: associate a DIFFERENT genuinely registered cell
     // under the old selector to exercise Arc equality independently of IDs.
     // No reply/capture Native admission or authoritative endpoint is fabricated.
@@ -267,7 +268,7 @@ async fn captured_ack_does_not_remove_a_different_actual_cell_from_recipient_sta
         .or_default()
         .insert(first.clone(), new[0].clone());
     ledger
-        .acknowledge_captured(ConnectionId(2), &old, &[first.clone()])
+        .acknowledge_captured(ConnectionId(2), &old, std::slice::from_ref(&first))
         .unwrap();
     let retained = ledger
         .state

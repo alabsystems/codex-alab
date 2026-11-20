@@ -15,6 +15,10 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
+
+#[path = "retained_saved_chat_release.rs"]
+pub(crate) mod saved_chat;
+
 fn invalid(message: impl std::fmt::Display) -> io::Error {
     io::Error::other(message.to_string())
 }
@@ -42,6 +46,9 @@ struct State {
 #[derive(Clone)]
 pub(crate) struct Book(Arc<State>);
 impl Book {
+    pub(crate) fn belongs_to_connection(&self, session: &super::AppServerSession) -> bool {
+        Arc::ptr_eq(&self.0, &session.alab_original_work.0)
+    }
     pub(crate) fn new() -> Self {
         let (changes, _) = tokio::sync::watch::channel(());
         Self(Arc::new(State {
@@ -68,7 +75,7 @@ impl Book {
         original: F,
         parent: Option<&Arc<Parent>>,
         native_original: bool,
-    ) -> std::result::Result<(), Refused<F>> {
+    ) -> std::result::Result<Arc<Job>, Refused<F>> {
         let runtime = match tokio::runtime::Handle::try_current() {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -116,27 +123,30 @@ impl Book {
         drop(state);
         drop(retired);
         self.0.changes.send_replace(());
-        Ok(())
+        Ok(job)
     }
     pub(crate) fn spawn_original<F: Future<Output = ()> + Send + 'static>(
         &self,
         original: F,
     ) -> std::result::Result<(), Refused<F>> {
-        self.start(original, None, false)
+        self.start(original, None, false).map(|_| ())
     }
     /// This is the actual original Session caller's existing scheduling path,
     /// including cleanup after a read completes. Closing a local capture cut
     /// does not synthesize an ordinary failed model/title result. Every such
     /// native task remains owned and is included in actual shutdown joins.
-    fn spawn_native_original<F: Future<Output = ()> + Send + 'static>(&self, original: F) {
-        if let Err(refused) = self.start(original, None, true) {
+    fn spawn_native_original<F: Future<Output = ()> + Send + 'static>(
+        &self,
+        original: F,
+    ) -> Arc<Job> {
+        self.start(original, None, true).unwrap_or_else(|refused| {
             // Original tokio::spawn also panics without an actual runtime.
             // No native future/RPC has been polled on this definite refusal.
             panic!(
                 "original Session worker has no Tokio runtime: {}",
                 refused.error
             );
-        }
+        })
     }
     pub(crate) fn close(&self) {
         let mut state = self
@@ -221,7 +231,9 @@ pub(crate) fn spawn_original_descendant<F: Future<Output = ()> + Send + 'static>
     original: F,
 ) -> std::result::Result<(), Refused<F>> {
     match PARENT.try_with(Arc::clone) {
-        Ok(parent) => Book(parent.book.clone()).start(original, Some(&parent), false),
+        Ok(parent) => Book(parent.book.clone())
+            .start(original, Some(&parent), false)
+            .map(|_| ()),
         Err(_) => match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 let _ordinary = runtime.spawn(original);
@@ -444,6 +456,10 @@ fn fetch_picker(
 mod tests;
 
 impl super::AppServerSession {
+    pub(crate) fn alab_physical_work_owner(&self) -> Book {
+        self.alab_original_work.clone()
+    }
+
     pub(crate) fn alab_spawn_original_work(
         &self,
         original: impl Future<Output = ()> + Send + 'static,

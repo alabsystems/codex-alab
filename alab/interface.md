@@ -25,41 +25,67 @@ opening message, reads the thread's history and acts again at its last turn end,
 with the NEEDS YOU lines it leaves standing (`alab/CONTRACT.md` §5, person's own
 exchange).
 
-In Enhanced, Cruise, Land and Off buttons select the session's Autopilot through
-aterm's existing owner-only mode control. Cruise continues work; Land finishes
-and lands it; Off disables automatic continuation while retaining the enhanced
-interface. The active highlight follows the shared Autopilot policy.
-Left of the buttons the line wears aterm's Autopilot face: `∞` (cruise),
-`∞ ⤓18:00` (cruise, landing at 18:00 local time), `⤓ land`, `✓ landed`,
-`⤓ quiet` (a point left to a person) or `○ off`, in aterm's tones and readable on
-its ground. Clicking it does what clicking aterm's chip does (land, land now, off,
-cruise). Where one of aterm's Settings switches holds the harness off (the
-harness itself, or watching codex-alab sessions), or aterm runs no harness host,
-the face is `⊘ off` with no buttons, and clicking it says why, and that only
-aterm's Settings ▸ Harness turns it on. A right-click or control-click on the face
-or a button opens Codex's native Autopilot picker, as `/alab menu` does from the
-keyboard. It offers Cruise, Land, Off, timed Cruise presets, a custom deadline
-editor, and cancellation of a scheduled landing. From 54 to 60 columns only the glyph
-shows, and narrower still none. (Amended 2026-10-29 after the parity sweep, gap
-12, and its review: `⊘ off`.) These controls are distinct from the Vanilla/Enhanced choice. At narrow
-widths use `/alab cruise [until=HH:MM|+DURATION]`, `/alab land`,
-`/alab autopilot-off` and `/alab autopilot`.
+In Enhanced, the composer has a three-way Autopilot switch. Click **Cruise** to
+continue working, **Land** to finish and land the current work, or **Off** to wait
+for the next message. Each segment updates the session through aterm's owner-only
+mode control. The filled segment shows the mode reported by aterm. Square
+brackets also mark it in plain text. Land stays selected when the status
+changes from `⤓ land` to `✓ landed`. On light
+16-color terminals all three labels use the configured text and background colors,
+with the selected segment shown in reverse video.
+
+Beside the switch, aterm's status glyph shows Cruise (`∞`), a scheduled landing
+(`∞ ⤓18:00`, local time), Land (`⤓ land`), a completed landing (`✓ landed`), a
+point left to a person (`⤓ quiet`), or Off (`○ off`). Click the status to cycle
+modes. At the scheduled time, Cruise switches to Land and the agent finishes
+the current work. Clicking a scheduled landing switches to Land immediately.
+When aterm's harness or its switch for codex-alab sessions is disabled, or when
+aterm has no harness host, the composer shows `⊘ off`. Click it for the corresponding Settings location.
+
+Right-click or control-click a segment or status glyph to open the Autopilot
+picker. When the terminal reports pointer motion, the choice under the pointer
+is underlined. The arrow stays on the keyboard selection. Click a mode or timer
+preset to select it. You can also open the picker
+with `/alab menu` and choose a row with the keyboard. Choose **Cruise until…** to enter
+a local 24-hour time such as `18:00`, or a duration from one minute to 24 hours
+such as `+1h30m`. If the entry is invalid, the editor shows the accepted format
+and keeps the cursor in place. A queued mode selection still takes effect.
+Choosing **Cruise** clears a scheduled landing.
+
+The composer reserves space for the release pair, then fits the three mode names.
+As space runs short it removes their padding and shortens the separate ALab
+button to `[on]`, then uses the space before the release and beside the button.
+For `0.12 on Codex 0.169.1`, all three names fit at 48 columns.
+At 61 columns the switch also shows the scheduled landing time or full Land
+status. The targets regain their padding at 67 columns and the full
+`[ALab on]` label returns at 72. With a pending update, the time and
+`↑ update` fit together from 70 columns.
+At 43–47 columns, the short edition button leaves room for the full status,
+including a scheduled landing such as `∞ ⤓18:00`. In smaller panes the glyph
+remains available when it fits. Right-click the status or use
+`/alab menu` from the keyboard. The ALab button selects the
+Vanilla or Enhanced interface.
 
 The ALab interface builds on Codex's native terminal UI.
-The existing rainbow composer overline identifies the codex-alab build (codex-alab's own
-version, `0.1.0` on: alab/README.md, Decision 8) and its OpenAI Codex source version
-separately, with an on/off button on the right. Clicking the product/version text
-opens the native build details and update report. A known pending update adds
-`↑ update` when it fits; the mode controls keep their space at narrow widths.
-The spectrum continues through the labels, with readable colors on light and dark
-backgrounds, so long build labels cannot hide it. Contrast is measured against the
-actual composer fill, including any rounding to the terminal's color palette.
+The rainbow composer overline shows the running ALab release and its Codex
+baseline, for example `0.11 on Codex 0.169`. A nonzero patch stays visible. Clicking the
+label opens the exact build identities and update report. A pending update adds
+`↑ update` when space permits. The colors adapt to the composer's background and
+the terminal palette. In 16-color mode, the release, update hint and edition
+button use the terminal's configured text color. The rule keeps its rainbow.
 The compact footer leads with one account unit: the account email, subscription
 plan, weekly usage bar with its reset time and available reset credits, and, where
 there is room, the five-hour allowance. Its parts are joined by `/`, and a `│` sets
 the unit apart from the workspace fields (activity, mode, branch, model, context),
-which keep `·` between them. Wider terminals also show the usage trend and estimated
-consumption at reset. Routine Working, Thinking, Ready and Default / Full access
+which keep `·` between them. The full account unit is clickable through its last
+painted cell, including for Arabic and halfwidth Japanese text. The usage trend and
+estimated consumption at reset appear when they fit beside the full email, plan
+and available five-hour allowance. On light terminals the account, quota and
+workspace text use contrast-adjusted colors in RGB and 256-color mode, or the
+configured foreground in 16-color and monochrome modes.
+When the email username is too long for its share of the row, the footer keeps
+its beginning and end so a numbered alias stays visible.
+The account and weekly reading retain their bold emphasis. Routine Working, Thinking, Ready and Default / Full access
 labels are omitted; permissions and task state retain their native behavior.
 
 While the displayed conversation has an active goal, a separate `Goal:` row
@@ -72,7 +98,7 @@ agent works and between goal turns, including in Plan mode.
 An example of the information hierarchy, with illustrative values:
 
 ```text
-── codex-alab · based on Codex <source> ── ✓ landed ─[Cruise]─[Land]─[Off]───[ALab on] ──
+   0.11 on Codex 0.169 ───────────── ⤓ land ─▏ Cruise [ Land ] Off ▕─[ALab on]
 › Ask Codex to work on this project
 ──────────────────────────────────────────────────────────────────────
   you@example.com / Pro / weekly [██░░░░░░] 30% used ↻ Fri 16:00 · resets ●●● │ main
@@ -94,16 +120,18 @@ only the `[ALab off]` recovery switch. Click it or use `/alab on` to restore Enh
 Changing presentation preserves the draft, selected model, permissions,
 conversation, queued messages, attachments, and configured status-line items.
 
-When the shared policy supports the session, the launch banner adds a compact
-row such as `✦ Autopilot ∞ cruise`. It names the real mode: `∞ cruise`,
-`⤓ land`, or `○ off`. With Autopilot off the
-banner's trail, wordmark and row wear aterm's white moonbow (white to steel on a dark
-background, pearl to graphite on a light one), as aterm's own card does; cruise and
-land keep the spectrum. When policy does not support the session, the plain banner
-shows without the row; outside aterm only the Autopilot row is absent. There is one codex-alab
-product version and no separate harness version. The `[ALab on]` button selects
+The launch card places the Codex mark at the upper left and the rainbow kitty
+beside the release pair and session details. Narrow panes use a
+six-column, three-row Codex mark when the release pair and all visible facts
+fit beside it at their current size. Direct truecolor aterm draws the PNG. Other
+terminals and multiplexers use a text rendering of the same ring and prompt.
+If the details need their own column, direct truecolor aterm can place a
+four-column mark beside the title and complete release pair alone.
+The Autopilot row follows the
+session's reported mode. Outside aterm the card still draws the session details.
+The `[ALab on]` button selects
 Vanilla; Cruise, Land and Off select Autopilot policy while Enhanced stays on.
-aterm never draws controls over either interface.
+aterm never draws controls over either interface. [Dark and light launch-card previews](design/codex-opening-banner.md#preview)
 
 Use `/alab account` to inspect the full selected email, subscription plan, weekly
 and five-hour allowances, reset times, and the usage snapshot's checked time.
@@ -113,6 +141,8 @@ boundary and the workspace fields are not targets, and dragging footer text reta
 native text selection. The details use the connected server's account data and
 request a native usage refresh for signed-in ChatGPT accounts. Existing account
 and usage updates appear while the view is open; closing it preserves the draft.
+In a local aterm session, the inspector points to `/accounts` for the other
+configured subscriptions and their switch commands.
 Switching ALab off closes the view, and the command stays inactive until ALab is
 enabled again. `/usage` retains Codex's
 analytics and reset actions.
@@ -124,9 +154,89 @@ periods without observations. Estimates require three
 readings spanning 30 minutes and are withheld when the data is stale. Account changes
 and resets keep histories separate.
 
+The footer shows the most recent account credit balance. For local personal
+accounts, it also shows credits charged to this chat when task accounting
+reports them. The inspector gives the billing report's cutoff time when available,
+including when the provider returns no entry for this chat. An empty report
+shows `Chat spending unreported`.
+When billing identifies both plan and credit use and supplies a net amount,
+the spending line shows the exact amount followed by `plan also used`.
+An explicit zero net debit also appears in the inspector. If billing attributes it
+to the included plan, the inspector shows `Covered by plan`.
+When the provider identifies the plan, credits, or both but omits the debit,
+the inspector names the source and shows `credit amount unreported`. Reports
+without credit activity leave the footer available for the balance.
+The inspector also shows how this chat's usage compares with the current 5-hour
+and weekly limits when the billing service supplies those percentages. A chat
+can exceed 100% of a current limit across multiple windows. Credit spending
+comes from the separate debit field or explicit billing source.
+Opening the inspector requests chat spending for a local personal account even
+when plan allowance remains and no credits are available. Account refreshes
+share the same limit of one billing request per minute for the displayed chat.
+While waiting for a first report, the inspector shows `Checking chat spending…`.
+If billing is temporarily unavailable, the inspector says so. An existing
+report stays visible during the next check.
+When the footer shows chat credit activity, a confirmed empty earned-reset
+inventory stays in the inspector, even if the account balance is unreported.
+If the detailed weekly allowance is too wide to fit beside the credit figures,
+the footer shows the short weekly reading when it fits. A fresh earned reset
+expiring within 24 hours takes priority over that weekly reading when only
+one fits beside the credit figures. With incomplete expiration data, the
+compact count shows the known minimum, for example `≥1 reset expires soon`.
+If a quota refresh omits the plan for the same account, the current chat’s
+report and any pending billing request are preserved. A refresh identifying
+a workspace or explicitly reporting an unknown plan clears personal chat spending.
+When a billing refresh times out, returns an older cutoff, or reports that
+usage is unavailable, the display labels the previous figure `Last report`
+and keeps its original cutoff. While that report is retained, a current
+account balance takes the first position in the footer. A fresh billing
+report puts chat spending first again. The inspector shows both figures.
+When the account balance itself goes stale, the footer and inspector label
+the last reported amount `Stale balance`, including an explicitly reported
+zero or unlimited balance. A missing amount stays unknown.
+A report at the same or a later cutoff can correct the total, including a refund
+or a cleared charge. An undated report can update the display without inheriting
+a cutoff. Switching chats or accounts clears the previous chat’s figure.
+If a billing check detects a different local sign-in for the same account ID,
+it clears the previous figure. The inspector says `Chat spending unavailable`
+when the check cannot establish a report for the current sign-in. The next
+eligible check verifies the new sign-in and fetches that user’s report.
+Partial reports show `Partial` before the amount so the qualifier stays visible
+when the footer is clipped. A negative net debit appears as `Net refund` followed
+by the amount returned. For a local personal account,
+open `/usage` → **View analytics** → **Chats** for the breakdown. For a local
+workspace account, the inspector points to **View analytics** → **Credits** for
+workspace spending. It shows these directions once the account's plan is known.
+When the provider supplies an individual monthly credit limit, the inspector
+shows its remaining percentage and reported reset time. An exhausted limit
+blocks spending even if either spending total is unreadable. At the reset time,
+the inspector marks the monthly limit as needing a refresh and retains the last
+reported balance. A subsequent account reading supplies the new percentage.
+A workspace spending restriction or an account marked unavailable to spend
+appears before earlier chat charges in the footer. A reported zero shows
+`0 credits left`. If the amount is missing or unreadable, the inspector shows
+`Unavailable to spend · balance unreported`. Once the provider allows spending
+again, the footer shows the chat's current reported charges first. When the
+provider identifies a spending restriction, the footer and account inspector
+name the cause alongside the reported balance. They distinguish an empty
+workspace balance from workspace, member, account and monthly spending limits.
+When only the plan allowance runs out, the footer keeps showing the
+account’s reported credit availability. The account inspector shows the figures at narrow
+terminal widths and identifies missing or stale balance data. A change to the
+shared account balance cannot identify which chat incurred a charge.
+
 Reset-credit dots use the backend's available count. Known credits expiring within
-24 hours receive a warm highlight and an inline warning. The inspector shows the
-known expiry time; missing or stale expiry details are identified explicitly. Reviewing
+24 hours appear in bold with an inline warning. Color terminals use a warm
+highlight where the palette permits it. On light 16-color terminals the meter
+uses the configured text color. In monochrome and light 16-color mode,
+an expiring credit is marked `◉` beside the other available credits `●`. The inspector shows the
+known expiry time. A current empty inventory shows just the count. Routine
+account polls keep checking that count and omit expiration details while zero
+is fresh. A new positive count makes the next poll eligible for details.
+Opening the inspector explicitly requests details. Available
+resets with missing dates are identified explicitly. Expiring and expired
+counts share one direction to review resets in `/usage`. A stale inventory
+is marked as needing a refresh. Reviewing
 or redeeming a reset remains an explicit native `/usage` action.
 Passing a known expiry removes that credit even after detail metadata ages out;
 stale details hide future-expiry warnings without restoring expired credits.
@@ -135,9 +245,11 @@ detail read identifies the currently available credits.
 In short windows, the details scroll with the configured list navigation keys;
 the view displays the resolved shortcuts for scrolling and closing.
 
-During a server reconnect, the activity label says `Reconnecting`; a failed
-connection says `Offline`. The account inspector keeps that connection label in
-its fixed title and identifies the displayed account and allowance as cached.
+During a server reconnect, the account row starts with `Reconnecting`. If the
+connection fails, it starts with `Offline`. The label stays visible as the pane
+narrows and before the first account read. Cached account and allowance details
+follow when space permits. The account inspector keeps the connection label in
+its fixed title and identifies those details as cached.
 Scrolling the details cannot hide the connection label. A restored connection
 returns to the current native task activity and account-refresh flow.
 
@@ -165,22 +277,284 @@ before restoring the selected conversation.
 `/alab account` inspects the account used by the connected server. For ALab's
 default embedded server, manage sign-in from a shell with `codex login`,
 `codex login status` and `codex logout`; `/logout` also signs out from the TUI.
-The inspector has no sign-in or saved-account picker. A remote app-server manages
-its own credentials.
+A remote app-server manages its own credentials.
 
-Inside aterm, `/accounts` shows aterm's account pool read-only (label, masked
-email, enrolled or not, 5-hour and weekly usage) and `/accounts add [label]`
+**To switch an idle conversation on signed ALab 0.11.0 in aterm**, open
+`/status` to see its connected email and thread ID. `/accounts` lists
+the local slot labels and masked emails. With Autopilot Off, signed
+aterm 0.209.0 and Codex 0.11.0 can show “Account changes are unavailable
+on this host.” Enable Land in the conversation you intend to switch so
+aterm can supervise its restart.
+
+If the two masks are identical, run the label lookup from the codex-alab
+checkout. It selects an installed Python 3.11 or newer and reads the local
+roster. Each label appears beside its configured provider email and any
+distinct sign-in address.
+
+```sh
+bash alab/account-labels.sh
+```
+
+When the sign-in address differs from the provider email, it appears in `loginEmail`.
+To check whether aRegistry has saved an explicit alias link for each sign-in
+address assigned to this Mac, run this from the checkout.
+
+```sh
+python3 alab/account_registry_probe.py --here --show-alias-declarations
+```
+
+Read `alias_declaration` beside each `registered_login`. A saved link is
+`declared` and an unset link is `absent`. A `disputed` link has competing
+values that the typed address record and the Registry email view both show.
+The targets stay private. This check also works when the mailbox view is unavailable.
+
+Exit 0 means the requested count was met and every declaration is settled.
+Exit 1 means too few assignments matched or a login has a `disputed` or
+`unconfirmed` declaration. Exit 2 means the lookup itself could not be
+verified. For example, if the two Registry views disagree about the competing
+alias values, the report withholds the logins and exits 2.
+
+To see which inbox aRegistry lists for each sign-in address, run this command.
+
+```sh
+python3 alab/account_registry_probe.py --here --show-mail-routes
+```
+
+This report puts the saved-link status in `mail_route.alias_declaration`.
+When `mail_route.status` is `reported`, `mail_route.mailbox_key`
+identifies the recorded destination. A provider observation
+(`mail_route.evidence` of `observed`) can establish that inbox even when the
+alias is `absent`. A status of `no-effective-route` means aRegistry returned
+no destination for the login. To see the routing metadata, run `aterm db alab mail`.
+
+An alias or mail-route check can confirm its result despite a disputed
+subscription status when the typed account record and the complete Registry
+account view show the same competing values. Plain login discovery and
+inventory require a settled status. Setup checks each requested account's
+eligibility separately.
+
+Both reports include a `check` object. The value of `check.name` is
+`alias-declarations` or `mail-routes`. A top-level `proven` value of
+`true` confirms the requested account associations. In that case,
+`check.status` is `complete` when every alias declaration is settled
+or, for mail routes, every login has a confirmed inbox.
+Otherwise it is `unresolved`. The mail-route check can exit 0 with no
+saved aliases if every inbox is confirmed. It can exit 1 with a saved
+alias if its inbox is unresolved.
+
+When the associations cannot be confirmed, `check.status` carries the
+top-level association status, such as `insufficient-accounts` or
+`unavailable`. The numeric `check.exit_code` records the lookup result.
+Use `--output <new-file>` to save a private copy before the command writes
+the JSON to stdout. If stdout fails afterward, the command exits 2 and
+reports that the private file was saved. That file contains the complete lookup.
+
+The two local slots checked by a plain quota overview can differ from this
+Mac's Registry assignments. [Choose which subscriptions to check](#live-overview-account-selection).
+
+When the target row shows **Request switch**, close the account pane with Esc
+and enter its `/accounts use <label>` command in the conversation. After the restart, open
+`/status` again to confirm the connected email and the original thread ID.
+[Signed switch verification](PARALLEL-LOGINS.md#interactive-switch-on-m159-2026-11-18)
+
+If you already have a conversation open under each login, selecting its aterm
+tab takes you directly to that conversation. The enhanced Codex footer shows
+the connected email when it fits. Use `/status` in a narrow tab. Each tab
+retains its conversation and model selection.
+
+If the session has closed, keep the same Codex home. Look up the destination
+email in `aterm harness accounts list --cli codex --json`. Use `auth.json`
+in that account's current `dir`, or `$HOME/.codex/auth.json` when aterm
+omits `dir`. For example, with the default account as the destination and
+the saved thread ID in `thread_id`, reopen it from the shell.
+
+```sh
+CODEX_AUTH_PATH="$HOME/.codex/auth.json" codex --no-daemon resume "$thread_id"
+```
+
+Check the email and thread ID in `/status` before sending a follow-up.
+After a quota failure, the follow-up starts a new turn with the saved prompt
+and tool results. Signed Codex 0.11.0 can display **Queued follow-up inputs**
+while the destination checks usage on reopening such a thread. In the
+verified case, the destination had capacity and sent the queued prompt
+when the read completed. [Signed recovery checks](PARALLEL-LOGINS.md#reopening-an-interrupted-turn-on-m159-2026-11-19)
+
+In the enhanced interface on the ALab 0.170 review build, sign in to the account you want to use
+and run `codex resume`. The picker starts with all active conversations
+in this device’s shared Codex home, across logins and project directories,
+newest first. To find an older conversation, type a word from its title
+or preview. Select the conversation and press Enter. If the picker asks
+where to work, choose **Use session directory** to reopen its original
+project. If the project has moved, launch the picker from its new location
+and choose **Use current directory**. New requests use the current login.
+This also works on a login’s first conversation. [Cross-login resume tests](reviews/managed-daemon-account-resume-2026-11-19.md)
+
+Inside aterm, `/accounts` shows each configured label, masked email, login-file
+presence, cached pool status, and 5-hour and weekly usage. Press Enter to
+refresh the list. The slot marked **current session** comes from aterm's
+launch record.
+
+In the development build's enhanced interface, **Connected server account**
+shows the full email reported by the local Codex server above the roster.
+The line updates when the login changes
+and disappears if the connection or identity becomes unavailable.
+A signed-out row can also show the reason aterm recorded for a failed login
+renewal, such as an expired token. The pane explains when account rotation or
+this session’s Autopilot is off. Refresh it after changing a setting. When
+aterm can verify the destination subscription and carry that choice through
+restart, press → to open the account picker. On a host that supports only
+named switches, use `/accounts use <label>`. Each row shows its slot
+label and the masked email supplied by the host. Use ↑ or ↓ to highlight a
+destination, and press Enter to switch.
+Esc returns to the account list. The arrows follow your list navigation key
+bindings. When two addresses have the same mask, press ← in the account list
+to see the local slot labels and configured sign-in addresses together on a
+host with the address view. A distinct expected provider email appears beside
+the sign-in address. Esc returns to the account list. With a signed 0.209.0 host,
+run `bash alab/account-labels.sh` from the checkout.
+If the server is connected and the pane has no email to show, `/status` reports
+the session's available account details. An API-key session shows its authentication
+method, and a ChatGPT session can show its plan when the email is unavailable.
+During an outage the pane shows the connection state alongside the slot labels.
+Run `aterm harness accounts list --cli codex` in a shell for the full
+addresses. An addressed row can omit its local label from that listing.
+The label lookup also accepts two specific provider addresses as arguments
+and pairs each with the label used by `/accounts add` and `/accounts use`.
+
+To find the sign-in addresses assigned to this Mac, run the Registry check
+on the Mac. This works before you create its local slots.
+
+```sh
+python3 alab/account_registry_probe.py --here --show-logins
+```
+
+The report lists registered login addresses for current preferences and
+placements. It withholds them when the Registry cannot confirm the machine
+or the address binding. A shared receiving mailbox can serve both logins.
+Use `--machine <label-or-key>` to look up a named machine in the local replica.
+
+### Live overview account selection
+
+With exactly two configured subscriptions, `--overview` finds both addresses.
+Add `--registry-here` to check every subscription currently assigned to this
+Mac when the Registry lists two or more. Other configured slots are skipped.
+
+```sh
+account_python="$(bash -c 'source alab/lib.sh && alab_python_311')"
+"$account_python" alab/smoke/live_account_quota.py --overview --registry-here
+```
+
+The report matches each registered sign-in address and account key to a
+local slot and verifies its provider identity. To check for a saved alias
+link, use the [`--show-alias-declarations` lookup](#sign-in-and-separate-accounts).
+A change to the machine binding or assignments during the overview withholds
+the report. You can also supply two provider addresses explicitly.
+If an assigned subscription has no local slot, the check can show the native
+setup command. Alongside the assignment and local roster checks, it reads each
+missing account's typed Registry record twice. Both reads must confirm a live
+account with the same eligible status (unset, `pending`, or `active`). An
+unreadable or disputed status withholds the setup suggestion.
+Sync loads preferred accounts and can recognize the existing default login.
+For a placement still missing after sync, use the account key shown in the
+`aterm harness accounts add` command.
+If aterm confirms local sign-ins and identifies empty slots among the
+remaining assignments, the check gives their labels. If aterm has sign-in
+instructions for an empty slot, the check also gives its Registry key. In
+`aterm harness accounts list --cli codex --json`, match that key to the
+row's `ac` field and read `sign_in_needed`. The native report can also say
+to wait for the Registry. For the other empty slots, open `/accounts add`.
+The check stops before contacting the provider.
+For a verified login with a confirmed slot label, `Request switch` shows
+the `/accounts use` command to enter in the conversation you want to move.
+If the provider blocks ordinary requests, reports a reached spend control or
+rate limit, or a host sample reports a hold, usage limit, sign-out or missing
+enrollment, the report shows the slot label and the reason the switch is
+unavailable. If aterm reports a lease on the account held by another Mac,
+the overview shows its expiry in UTC while that time is still ahead.
+The host checks current eligibility
+again when you request a switch. When aterm reports that account switching is
+off, the overview withholds switch commands for all slots. A pin can still
+select the account for the next launch. If the configured Codex launcher can
+use only the default login, the overview directs you to `/accounts` in the
+running session. That session can be using a different Codex build.
+The report checks each label against the credential directory aterm currently
+selects, including a directory assigned by renewal. If a destination moves,
+its switch command disappears. If aterm refuses the roster, all switch commands
+disappear. The provider results still show which credential files passed verification.
+Each row shows the sign-in check separately from provider usage. A slot at
+its weekly limit can show `Sign-in Verified` and `Provider usage Blocked`.
+`Unverified` means the check could not confirm that slot's current login.
+`Blocked` means the provider denies ordinary requests for that login.
+`Unknown` means the provider's permission could not be established. The
+report includes the check time and local reset times for measured windows.
+`Next launch  Selected by aterm` marks the subscription the host would
+choose for a new ordinary launch at the time of the check. It appears when
+the host reports the same choice across the check and its account key
+matches the verified login. In a running conversation, `/status` shows its connected account.
+When aterm forecasts a wait for the next launch, the overview shows its
+local date and time after reconfirming the decision and its login bindings.
+The host's launch policy can make that time differ from either provider
+window's reset. An expired or changed forecast leaves the choice unconfirmed.
+
+Add `--defaults` to the overview to see which model and reasoning effort a
+fresh thread starts with under each login. The check uses the installed
+Codex defaults and each subscription's own model catalog. An existing
+conversation can keep its saved model and effort when you switch accounts.
+
+Add `--registry-machine <machine>` to see whether the local Registry replica
+associates each verified account with that machine. The report matches stable
+account keys and lists the source of each association. A retained observation
+means the Registry previously saw the account there. A Registry read failure
+leaves the verified sign-in and live allowance visible.
+
+If no alternate is selectable, the pane says so. A
+row at its usage limit shows its cached usage and reset time when available.
+The roster can still show a subscription as usable after its
+allowance runs out. At relaunch aterm checks the destination identity and
+refreshes stale usage before starting the conversation there.
+`/accounts add [label]`
 starts or follows aterm's enrollment of a label aterm already has configured.
-Neither changes the account a running session uses. `/accounts use <label>` moves
-the running session to another signed-in account, and `/accounts auto` to the
-account a new launch would start on, by asking aterm to restart the session there:
-the conversation resumes in a new process under the other login. It is asked only
-at rest, so a running turn, queued input, a draft, a background terminal or a box
-waiting for its answer refuses it with nothing sent; anything else held only in
-memory (sub-agents at rest among it) ends with the old process.
+To switch directly by label, use `/accounts use <label>`. Use `/accounts auto`
+for the account a new launch would start on. The conversation resumes in a new
+process.
+If the requested account has exhausted its allowance, aterm can resume on the
+current serving account. After the restart, `/status` shows the connected email,
+thread ID and remaining allowance. Switches require an idle session. A running
+turn, queued input, a draft in this or another conversation, a background
+terminal or an unanswered prompt prevents the restart. Other work held only
+in memory, including idle sub-agents, ends with the old process.
 It needs Autopilot on and an aterm that carries `restart account=`; on any other
 aterm it answers "Account changes are unavailable on this host." and nothing
 restarts (`alab/design/accounts-assignment.md`).
+
+To enroll a second subscription on a Mac managed by the lab registry, run
+`aterm harness accounts sync alab --cli codex` to load this machine's preferred
+accounts. For a specific registered subscription, run
+`aterm harness accounts add <registry-account-key> --cli codex`. Aterm resolves
+the account identity and creates its local roster row. In signed Codex 0.11.0,
+`/accounts add` lists enrollment targets by slot label. If the label is
+unfamiliar, run `bash alab/account-labels.sh` from the checkout before
+selecting it. At **Account authentication required**, finish the provider's
+sign-in on that Mac and choose **Refresh this operation**. Aterm verifies the
+account identity before binding the login. Open `/accounts` to check the
+enrolled accounts and their allowances.
+
+When the host identifies a row, the development picker also shows its masked
+email and whether the slot is signed out or has a login file. It shows the
+local lookup when two targets share a mask and calls the authentication step
+**Complete sign-in in aterm**. After **Enrollment refused**, it offers
+**Open /accounts**. On signed 0.11.0, close the enrollment result and open
+`/accounts`.
+In a terminal on that Mac, run
+`aterm harness accounts list --cli codex` and look for a `sign-in needed`
+line under the account. That line gives aterm's current instructions.
+
+Automatic quota rotation needs a running session managed by aterm and an eligible
+signed-in destination. On aterm 0.208.0 and 0.209.0, a weekly limit can
+interrupt a turn and leave the second subscription unused. A corrected host completed
+the same turn on the destination in a full terminal test. The roster report
+explains a refused selection, including a login that belongs to a different
+account. [Host versions and switching results](PARALLEL-LOGINS.md#automatic-switching-in-the-full-aterm-host-on-m74-november-18)
 
 To keep a separate work login while sharing `$CODEX_HOME`'s configuration,
 skills, rules and session history, point `CODEX_AUTH_PATH` at an absolute
@@ -281,14 +655,66 @@ Claude Code uses those two keys for a checklist and transcript, respectively.
 explains that it opens from an empty prompt. It omits disabled shortcuts and
 advertises the stash shortcut only when the current keymap leaves it available.
 
-At narrow widths, remove context first, then mode, model, branch and activity. Then
-the account unit shrinks as one: the five-hour allowance goes, the email is cut with
-`…` to the room beside the plan (never below 8 columns), the plan goes and the email
-takes its room back, and then the email goes; the weekly allowance goes last. Full identity remains in the
-inspector. At the smallest widths only the weekly field may fit. The build names shorten before dropping either version
+As the account row narrows, it drops context, mode, model, branch and task
+activity, then the five-hour allowance. It shortens the email beside the plan
+and drops the plan when fewer than eight columns remain for the name.
+For a connected local subscription with fresh usage, the footer can also drop
+the reset details, then the bar, to keep the account name beside the full
+weekly percentage. Warnings about stale or expiring credits retain their
+usual priority. A 31-column terminal can show `team…ops / weekly 100% used`.
+When the pair cannot fit, the weekly allowance takes precedence. The inspector
+keeps the full email, quota and reset details.
+The build names shorten before dropping either version
 number on an 80-column prompt, and the button adapts independently. Use explicit labels and
 display-cell-aware truncation. Color supports the text; it never supplies the
 only distinction between normal, unavailable, and exhausted allowance.
+
+## When a chat stops for a misalignment finding
+
+A misalignment finding ends the request. In Enhanced mode, Cruise and Land wait
+for a person. If you see **Review findings**, open it to read what the server
+flagged and the exact continuation it proposes. Only **Acknowledge findings and
+continue** submits that continuation. Use **Back** to leave it unsubmitted.
+Repeating your original prompt can return the same finding before any tool runs.
+
+A shell command that was running when the finding arrived can still finish.
+On signed 0.11.0, its live row can show `(exit 1)` while it runs and keep that
+label even after it succeeds. Before repeating a command that changes files,
+check its saved result. In a reopened session, press `Ctrl+T` (the default)
+to see the command's output and completion indicator in the detailed transcript.
+
+An app-server client can call `thread/read` with `includeTurns` set to `true`.
+Match the `commandExecution` item by ID and check its `status` and `exitCode`.
+A failed turn can contain a successful command. If the command's completion
+has yet to appear, its exit code is still unknown. On builds with the display
+fix, the live row stays pending until the command reports its outcome.
+
+On signed 0.11.0, the reopened transcript can show `✗ (1)` for a saved
+`declined` or `failed` command whose `exitCode` is `null`. In that case
+the record contains no process exit code. Canceling at the approval prompt
+can also leave an interrupted turn with no `commandExecution` item.
+
+On signed 0.11.0 for macOS, a command requested with `tty=true` can run in the
+account’s home directory if its requested working directory is missing. The
+saved item still shows the requested path. For cleanup that depends on a
+specific directory, use `tty=false` and an explicit `workdir`. In that mode,
+a missing directory stops the command before it starts.
+
+If you see **Server-suggested continuation (not submitted)**, interactive review
+was off. Signed 0.11.0 can automatically send a follow-up queued before a finding.
+For a new session on that version, launch `codex --enable misalignment_review`.
+A finding then clears the queued input and pauses the chat for review. Keep a
+copy of any queued text you want to reuse.
+
+On builds that show **automatic sending paused**, a queued follow-up stays
+available while you send a fresh request. Use the displayed edit shortcut to
+recall it, then press Enter to send it. To enable interactive review for future
+launches, run `codex features enable misalignment_review`. The setting takes
+effect at launch.
+
+Codex omits the explanation, continuation,
+and review identifier from saved history, so resuming a thread cannot reconstruct
+its earlier review prompt. A fresh, reviewable finding can offer the action again.
 
 ## Local work and prompt stash
 
@@ -359,7 +785,7 @@ feature availability.
 | Agents and background shells | `/tasks`, `/subagents`, `/ps`, `/stop` | Unified local view; `/agents` remains the native shared-server dashboard |
 | Task progress | `/tasks`, native plan events and `task-progress` status item | Inspectable live checklist; not Claude's persistent/shared task backend |
 | Review and diff | `/review`, `/diff` | Existing capability; review workflows and diff viewers differ |
-| Sign-in and account selection | `codex login`, `codex login status`, `codex logout`, `CODEX_AUTH_PATH`, `CODEX_HOME` | Shell sign-in, per-account auth files and isolated homes; no in-session `/login` or saved-account picker |
+| Sign-in and account selection | `codex login`, `codex login status`, `codex logout`, `/accounts`, `CODEX_AUTH_PATH`, `CODEX_HOME` | Shell sign-in and per-account auth files. In aterm, the account picker can resume the same thread on another signed-in account. |
 | Usage and status customization | `/alab account`, `/usage`, `/status`, `/statusline` | Inspect selected email, plan, quota and reset times; compact footer groups email, plan and allowances into one account unit that opens it |
 | Skills, hooks, MCP, plugins | `/skills`, `/hooks`, `/mcp`, `/plugins` | Existing entry points; not a claim of ecosystem compatibility |
 | Voice | `/voice`, `F8`, `F9` | Existing capability; backend availability and controls differ |
@@ -378,3 +804,21 @@ Claude reference checked on 2026-10-20 against its official documentation:
 ALab-specific code belongs in `codex-rs/alab-tui/`. Upstream files contain only
 marked hooks. The ordinary Codex presentation path remains the off-state path,
 so upstream behavior and user settings remain the reference for compatibility.
+
+## Launch artwork and compact controls
+
+To use a text header in Enhanced, start Codex with `ALAB_BANNER=off codex`.
+The header still shows the release pair, such as `0.11 on Codex 0.169`, and
+the composer keeps its Autopilot controls. For future launches, leave
+`ALAB_BANNER` unset and set `welcome = false` under `[tui.effects]` in
+`config.toml`.
+
+When a narrow pane shows `∞▾`, clicking `∞` changes Cruise to Land. Clicking
+`▾` opens the picker with the current mode selected. Choose **Cruise**,
+**Land** or **Off**, or press Escape to return to your draft.
+[See the compact switch and its picker](design/assets/codex-compact-mode-picker.png).
+
+From the keyboard, submit `/alab menu` to open the picker. To open it during a
+turn or while keeping a draft in place, assign **Open Autopilot picker** in
+`/keymap`. With the composer empty, press `?` (the default shortcut) and look
+under **Session** for **Open Autopilot** and your assigned key or chord.

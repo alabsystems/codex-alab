@@ -16,10 +16,13 @@ pub use codex_alab_aterm::frontend_control::retained_service;
 pub use codex_alab_aterm::source_retained_service::StartupSettings;
 
 pub async fn open() -> std::io::Result<Controller> {
-    let unavailable = codex_alab_core::managed_auth::unavailable;
-    let endpoint = codex_alab_aterm::Endpoint::managed_auth_from_env().ok_or_else(unavailable)?;
-    let identity = crate::identity::current().map_err(|_| unavailable())?;
-    let birth = crate::identity::proc_start_utc(&identity).ok_or_else(unavailable)?;
+    let endpoint = codex_alab_aterm::Endpoint::managed_auth_from_env().ok_or_else(|| {
+        std::io::Error::other("retained session control requires an aterm session endpoint")
+    })?;
+    let missing_identity =
+        || std::io::Error::other("retained session control could not identify the current process");
+    let identity = crate::identity::current().map_err(|_| missing_identity())?;
+    let birth = crate::identity::proc_start_utc(&identity).ok_or_else(missing_identity)?;
     let operation = format!(
         "{:016x}{:016x}",
         codex_alab_core::native_source::connection_request_prefix(),

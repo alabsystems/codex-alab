@@ -131,6 +131,7 @@ pub(crate) struct CreditsSnapshotDisplay {
 pub(crate) struct SpendControlLimitSnapshotDisplay {
     /// Local timestamp representing when this monthly usage value was captured.
     pub captured_at: DateTime<Local>,
+    pub alab_reset_at: i64, // ALAB(credit-reporting): expire the monthly percentage at its exact provider deadline
     pub percent_remaining: f64,
     pub used: String,
     pub limit: String,
@@ -195,11 +196,13 @@ impl SpendControlLimitSnapshotDisplay {
         captured_at: DateTime<Local>,
         clock_format: ClockFormat,
     ) -> Option<Self> {
+        let amount = |raw: &str| codex_alab_tui::interface::individual_limit_amount(format_credit_amount(raw)); // ALAB(credit-reporting): retain the individual limit when its amounts are unreadable
         Some(Self {
             captured_at,
+            alab_reset_at: value.resets_at, // ALAB(credit-reporting): keep the source timestamp alongside the local label
             percent_remaining: f64::from(value.remaining_percent.clamp(0, 100)),
-            used: format_credit_amount(&value.used)?,
-            limit: format_credit_amount(&value.limit)?,
+            used: amount(&value.used)?,
+            limit: amount(&value.limit)?,
             resets_at: DateTime::<Utc>::from_timestamp(value.resets_at, 0).map(|dt| {
                 format_reset_timestamp(dt.with_timezone(&Local), captured_at, clock_format)
             }),

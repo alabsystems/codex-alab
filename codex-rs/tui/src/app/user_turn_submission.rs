@@ -45,7 +45,8 @@ pub(super) async fn try_submit_user_turn(
         CloudSubmissionIntent::UseKnownTurn
     };
     let original_active = app.active_turn_id_for_thread(thread_id).await;
-    let mut active = original_active.clone();
+    let initial_steer = op.alab_initial_steer(thread_id, app_server.thread_params_mode(), original_active.as_deref()); // ALAB(queue-review): preserve an emitted steer after its turn finishes.
+    let mut active = initial_steer.clone();
     let preflight = |model: &str| {
         let enabled = app.chat_widget.daybreak_enabled
             && !app.chat_widget.side_conversation_active()
@@ -68,7 +69,8 @@ pub(super) async fn try_submit_user_turn(
             start_settings,
         )
         .await;
-    if active != original_active
+    // ALAB(queue-review): update the event store only from a server-observed change.
+    if active != initial_steer
         && let Some(channel) = app.thread_event_channels.get(&thread_id)
     {
         let mut store = channel.store.lock().await;

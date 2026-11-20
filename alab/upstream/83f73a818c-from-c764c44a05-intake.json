@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "base": "c764c44a0559b36e016efefcfeb473966162e5d5",
+  "target": "83f73a818cb319a19aab0b2d99ee3c1d562e6110",
+  "frontier": "c764c44a0559b36e016efefcfeb473966162e5d5",
+  "commits": [
+    {
+      "sha": "83f73a818cb319a19aab0b2d99ee3c1d562e6110",
+      "subject": "Defer Git worktree status until the turn starts (#62437)",
+      "paths": [
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/src/turn_metadata.rs",
+        "codex-rs/core/src/turn_metadata_tests.rs",
+        "codex-rs/core/tests/responses_headers.rs",
+        "codex-rs/core/tests/suite/git_enrichment.rs",
+        "codex-rs/core/tests/suite/wake_reservation.rs",
+        "codex-rs/git-utils/src/status.rs",
+        "codex-rs/git-utils/src/status_tests.rs",
+        "codex-rs/memories/write/src/phase1.rs",
+        "codex-rs/memories/write/src/runtime.rs"
+      ],
+      "classes": [
+        "fix",
+        "background",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream’s deferred Git status and shared root discovery. Preserve the fork’s existing choice to omit per-turn Git metadata in Enhanced mode.",
+      "evidence": [
+        "Fresh turn contexts start collection after model and helper setup. A one-shot signal immediately before the admitted task runs starts the status scan. Requests can use partial HEAD and remote information while the scan is pending. Cancelling an unadmitted wake drops the signal.",
+        "ALab’s guard in collect_git_workspaces runs before root discovery, HEAD, remote and worktree reads. It controls disclosure on every turn, including memory request metadata. Keep the running-version hook, original-workspace selection, and local completion checks that serve separate purposes.",
+        "Memory extraction shares the thread manager’s background root discovery and supplies the resolved root alongside the original working directory to the local change probe. Existing positional Git environment handling remains anchored to the original directory.",
+        "Upstream added request-level coverage for delayed status and refreshed refs, and a wake whose cancellation permits no worktree scan. On the merged source the restored-tree and host admission boundaries must precede Git status admission."
+      ],
+      "revisit": "Run the blocked-status and interrupted-wake cases, and compare Enhanced first and resumed requests with the Vanilla Git metadata control. Revisit the privacy hook if upstream offers equivalent per-mode collection and disclosure policy."
+    }
+  ]
+}

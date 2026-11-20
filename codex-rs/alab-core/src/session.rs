@@ -15,6 +15,7 @@ use crate::boxes::BoxAnswer;
 use crate::boxes::BoxOutcome;
 use crate::boxes::BoxSlot;
 use crate::boxes::OpenBox;
+use crate::wall_kind::LimitClass;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -354,6 +355,8 @@ pub enum RecoveryWall {
         retry_at_ms: Option<u64>,
     },
     Usage {
+        /// The provider evidence available to authorize an account rotation.
+        limit_class: LimitClass,
         reset_at_ms: Option<u64>,
         reset_label: Option<String>,
         quota: Option<crate::quota::Scope>,
@@ -1299,6 +1302,11 @@ impl UpgradeRequest {
     pub fn requires_context(&self) -> bool {
         self.requires_context
     }
+    /// Report whether this caller delivered the refusal. Only the caller that
+    /// took the pending decision has a new upgrade opportunity to act on.
+    pub fn refuse_if_pending(self) -> bool {
+        refuse_upgrade(&self.decision)
+    }
     pub fn decide_with_context<T: std::any::Any + Send>(
         self,
         native_ready: bool,
@@ -1319,20 +1327,21 @@ impl UpgradeRequest {
 
 impl Drop for UpgradeRequest {
     fn drop(&mut self) {
-        let decide = { lock(&self.decision).take() };
-        if let Some(decide) = decide {
-            decide(false, None);
-        }
+        refuse_upgrade(&self.decision);
     }
 }
 
 impl Drop for UpgradeCancellation {
     fn drop(&mut self) {
-        let decide = { lock(&self.decision).take() };
-        if let Some(decide) = decide {
-            decide(false, None);
-        }
+        refuse_upgrade(&self.decision);
     }
+}
+
+fn refuse_upgrade(decision: &Mutex<Option<UpgradeDecision>>) -> bool {
+    let decide = { lock(decision).take() };
+    let Some(decide) = decide else { return false };
+    decide(false, None);
+    true
 }
 
 static SHARED: Shared = Shared::new();

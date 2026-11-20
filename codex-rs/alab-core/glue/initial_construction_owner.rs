@@ -25,11 +25,8 @@ struct FrozenInitialRequest {
     params: serde_json::Value,
 }
 impl FrozenInitialRequest {
-    fn tuple(&self) -> (String, Option<serde_json::Value>) {
-        (
-            self.method.clone(),
-            self.had_params.then(|| self.params.clone()),
-        )
+    fn into_tuple(self) -> (String, Option<serde_json::Value>) {
+        (self.method, self.had_params.then_some(self.params))
     }
     fn valid(&self) -> bool {
         matches!(
@@ -119,14 +116,27 @@ impl InitialConstructionOperation {
         }
     }
     pub fn restore(checkpoint: InitialConstructionCheckpoint) -> IoResult<Self> {
+        Self::validate_checkpoint(&checkpoint)?;
+        Ok(Self(Arc::new(InitialScope {
+            selection: checkpoint.selection,
+            action: checkpoint.action,
+            request: Mutex::new(checkpoint.request.map(FrozenInitialRequest::into_tuple)),
+            result: Mutex::new(checkpoint.result),
+            next_selection: Mutex::new(checkpoint.next_selection),
+        })))
+    }
+    /// Check retained request and result data before constructing an operation.
+    pub fn validate_checkpoint(checkpoint: &InitialConstructionCheckpoint) -> IoResult<()> {
         if checkpoint.schema != 1
             || !checkpoint.selection.valid()
             || checkpoint.request.as_ref().is_some_and(|request| {
                 !request.valid()
-                    || checkpoint
-                        .action
-                        .as_ref()
-                        .is_some_and(|action| !action.matches(&request.method, &request.tuple().1))
+                    || checkpoint.action.as_ref().is_some_and(|action| {
+                        !action.matches(
+                            &request.method,
+                            request.had_params.then_some(&request.params),
+                        )
+                    })
             })
             || (checkpoint.request.is_none()
                 && (checkpoint.result.is_some() || checkpoint.next_selection.is_some()))
@@ -143,23 +153,16 @@ impl InitialConstructionOperation {
         {
             return Err(invalid("invalid initial construction checkpoint"));
         }
-        Ok(Self(Arc::new(InitialScope {
-            selection: checkpoint.selection,
-            action: checkpoint.action,
-            request: Mutex::new(checkpoint.request.map(|request| request.tuple())),
-            result: Mutex::new(checkpoint.result),
-            next_selection: Mutex::new(checkpoint.next_selection),
-        })))
+        Ok(())
     }
 }
 impl InitialAction {
-    pub(super) fn matches(&self, method: &str, params: &Option<serde_json::Value>) -> bool {
+    pub(super) fn matches(&self, method: &str, params: Option<&serde_json::Value>) -> bool {
         match self {
             Self::Start => method == "thread/start",
             Self::Fork(id) => {
                 method == "thread/fork"
                     && params
-                        .as_ref()
                         .and_then(|value| value.get("threadId"))
                         .and_then(serde_json::Value::as_str)
                         == Some(id.as_str())
@@ -167,7 +170,6 @@ impl InitialAction {
             Self::Resume(id) => {
                 method == "thread/resume"
                     && params
-                        .as_ref()
                         .and_then(|value| value.get("threadId"))
                         .and_then(serde_json::Value::as_str)
                         == Some(id.as_str())

@@ -59,9 +59,12 @@ for pattern in '*.snap.new' '.*.pending-snap'; do
 done
 
 alab_say "fetching upstream (openai/codex main + release tags)"
-"${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/command_guard.py" \
-  --inherited-group-timeout 120 -- "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
-  "${repo_root}/alab/github.py" --repo "${repo_root}" --anonymous fetch upstream \
+# Standalone setup owns the group that its deadline wrapper may leave behind.
+fetch_python="${ALAB_PYTHON:-/usr/bin/python3}"
+fetch_guard="${repo_root}/alab/command_guard.py"
+"${fetch_python}" -I -B "${fetch_guard}" -- \
+  "${fetch_python}" -I -B "${fetch_guard}" --inherited-group-timeout 120 --retire-on-term -- \
+  "${fetch_python}" -I -B "${repo_root}/alab/github.py" --repo "${repo_root}" --anonymous fetch upstream \
   '+refs/tags/rust-v*:refs/upstream-tags/rust-v*' \
   'refs/heads/main:refs/remotes/upstream/main'
 alab_say "upstream/main is $(git log -1 --format='%h %cs %s' upstream/main)"

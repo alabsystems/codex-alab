@@ -26,6 +26,10 @@ struct Binding {
     identity: [u64; 2],
 }
 
+pub const SOURCE_DIR: &str = "source.noindex";
+pub const BUILD_DIR: &str = "build.noindex";
+pub const PREDECESSOR_DIR: &str = "predecessor-tests.noindex";
+
 pub struct Checkout {
     pub root: PathBuf,
     pub campaign: PathBuf,
@@ -34,7 +38,7 @@ pub struct Checkout {
     _lease: Option<File>,
 }
 
-fn owned(path: &Path) -> Result<std::fs::Metadata> {
+pub(crate) fn owned(path: &Path) -> Result<std::fs::Metadata> {
     let info = std::fs::symlink_metadata(path)?;
     // SAFETY: geteuid has no preconditions.
     if !info.is_dir() || info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o022 != 0 {
@@ -55,7 +59,15 @@ fn make_owned(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn common(repo: &Path) -> Result<PathBuf> {
+/// Private sibling campaigns keep test builds outside all publication outputs.
+pub fn predecessor_state(state: &Path) -> Result<PathBuf> {
+    owned(state)?;
+    let root = state.canonicalize()?.join(PREDECESSOR_DIR);
+    make_owned(&root)?;
+    Ok(root)
+}
+
+pub(crate) fn common(repo: &Path) -> Result<PathBuf> {
     Ok(std::fs::canonicalize(
         crate::git(
             repo,
@@ -67,6 +79,29 @@ fn common(repo: &Path) -> Result<PathBuf> {
 
 impl Checkout {
     pub fn prepare(repo: &Path, release: &Release, state: &Path) -> Result<Self> {
+        Self::prepare_with(repo, release, state, || Ok(()))
+    }
+
+    /// Consume a completed build under its original source lease.
+    pub fn reopen(repo: &Path, release: &Release, state: &Path) -> Result<Self> {
+        Self::open(repo, release, state, None)
+    }
+
+    pub(crate) fn prepare_with(
+        repo: &Path,
+        release: &Release,
+        state: &Path,
+        before_new_source: impl Fn() -> Result<()>,
+    ) -> Result<Self> {
+        Self::open(repo, release, state, Some(&before_new_source))
+    }
+
+    fn open(
+        repo: &Path,
+        release: &Release,
+        state: &Path,
+        admit_creation: Option<&dyn Fn() -> Result<()>>,
+    ) -> Result<Self> {
         release.check_local(repo)?;
         owned(state)?;
         let state = std::fs::canonicalize(state)?;
@@ -84,11 +119,18 @@ impl Checkout {
         }
         let intent = release.id()?;
         let campaign = state.join(&intent);
-        make_owned(&campaign)?;
+        if let Some(admit) = admit_creation {
+            if !campaign.try_exists()? {
+                admit()?;
+            }
+            make_owned(&campaign)?;
+        } else {
+            owned(&campaign)?;
+        }
         let lease = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(admit_creation.is_some())
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -102,13 +144,16 @@ impl Checkout {
         if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        let root = campaign.join("source.noindex");
+        let root = campaign.join(SOURCE_DIR);
         let reason = format!("native-release:{intent}");
         match std::fs::symlink_metadata(&root) {
             Ok(_) => {
                 owned(&root)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let admit =
+                    admit_creation.ok_or("completed product's source checkout is missing")?;
+                admit()?;
                 crate::git(
                     &repo,
                     &[
@@ -140,25 +185,42 @@ impl Checkout {
             binding,
             _lease: Some(lease),
         };
-        checkout.check(release)?;
-        // An interrupted initial creation can recover only through all actual
-        // Git/directory/content checks above; a leftover file alone proves none.
-        crate::save_record(
-            &checkout.campaign.join("source.json"),
-            &serde_json::to_vec_pretty(&checkout.binding)?,
-        )?;
+        checkout.check_source(release)?;
+        if admit_creation.is_some() {
+            // Recover interrupted creation only after checking the actual source.
+            crate::save_record(
+                &checkout.campaign.join("source.json"),
+                &serde_json::to_vec_pretty(&checkout.binding)?,
+            )?;
+        } else {
+            checkout.check_binding()?;
+        }
         Ok(checkout)
+    }
+
+    /// Reopen the already-bound source of a native publication during migration.
+    pub(crate) fn release_at(repo: &Path, campaign: &Path) -> Result<Release> {
+        let binding: Binding =
+            serde_json::from_slice(&crate::record_bytes(&campaign.join("source.json"))?)?;
+        let release = Release::from_commit(repo, &binding.source, "aarch64-apple-darwin")?;
+        if campaign.file_name().and_then(|s| s.to_str()) != Some(release.id()?.as_str()) {
+            return Err("native campaign name differs from its source intent".into());
+        }
+        Self::recorded(repo, &release, campaign)?;
+        Ok(release)
     }
 
     /// The worker rechecks the parent's recorded snapshot without acquiring a
     /// second lease. This is content admission, not evidence of a live owner.
     pub fn recorded(repo: &Path, release: &Release, campaign: &Path) -> Result<PathBuf> {
         owned(campaign)?;
+        // Git registers the canonical path used by prepare_with.
+        let campaign = campaign.canonicalize()?;
         let binding: Binding =
             serde_json::from_slice(&crate::record_bytes(&campaign.join("source.json"))?)?;
         let checkout = Self {
-            root: campaign.join("source.noindex"),
-            campaign: campaign.to_path_buf(),
+            root: campaign.join(SOURCE_DIR),
+            campaign,
             repo: repo.to_path_buf(),
             binding,
             _lease: None,
@@ -168,12 +230,17 @@ impl Checkout {
     }
 
     pub fn output(&self) -> Result<PathBuf> {
-        let output = self.campaign.join("build.noindex");
+        let output = self.campaign.join(BUILD_DIR);
         make_owned(&output)?;
         Ok(output)
     }
 
     pub fn check(&self, release: &Release) -> Result<()> {
+        self.check_source(release)?;
+        self.check_binding()
+    }
+
+    fn check_source(&self, release: &Release) -> Result<()> {
         let info = owned(&self.root)?;
         if [info.dev(), info.ino()] != self.binding.identity
             || common(&self.root)? != self.binding.common
@@ -219,17 +286,13 @@ impl Checkout {
                 "--",
             ],
         )?;
-        release.check_local(&self.root)?;
-        let record = self.campaign.join("source.json");
-        match std::fs::symlink_metadata(&record) {
-            Ok(_) => {
-                let saved: Binding = serde_json::from_slice(&crate::record_bytes(&record)?)?;
-                if saved != self.binding {
-                    return Err("release source binding changed".into());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        release.check_local(&self.root)
+    }
+
+    fn check_binding(&self) -> Result<()> {
+        let bytes = crate::record_bytes(&self.campaign.join("source.json"))?;
+        if serde_json::from_slice::<Binding>(&bytes)? != self.binding {
+            return Err("release source binding changed".into());
         }
         Ok(())
     }
@@ -276,12 +339,28 @@ mod tests {
         crate::git(&repo, &["commit", "--quiet", "-m", "source fixture"])?;
         let source = crate::git(&repo, &["rev-parse", "HEAD"])?;
         let release = Release::from_commit(&repo, source.trim(), "aarch64-apple-darwin")?;
+        assert!(Checkout::reopen(&repo, &release, &state).is_err());
+        assert!(!state.join(release.id()?).exists());
         let first = Checkout::prepare(&repo, &release, &state)?;
         first.check(&release)?;
         assert!(Checkout::prepare(&repo, &release, &state).is_err());
         let root = first.root.clone();
         drop(first);
-        let second = Checkout::prepare(&repo, &release, &state)?;
+        let alias = temporary.path().join("state-alias");
+        std::os::unix::fs::symlink(state.canonicalize()?, &alias)?;
+        let campaign = alias.join(release.id()?);
+        assert_eq!(Checkout::release_at(&repo, &campaign)?, release);
+        assert_eq!(Checkout::recorded(&repo, &release, &campaign)?, root);
+        let campaign_link = temporary.path().join("campaign-link");
+        std::os::unix::fs::symlink(&campaign, &campaign_link)?;
+        assert!(Checkout::recorded(&repo, &release, &campaign_link).is_err());
+        let binding = campaign.join("source.json");
+        let original = std::fs::read(&binding)?;
+        std::fs::remove_file(&binding)?;
+        assert!(Checkout::reopen(&repo, &release, &state).is_err());
+        assert!(!binding.exists());
+        crate::save_record(&binding, &original)?;
+        let second = Checkout::reopen(&repo, &release, &state)?;
         assert_eq!(second.root, root);
         std::fs::write(root.join("VERSION"), "0.6.0\n")?;
         assert!(second.check(&release).is_err());

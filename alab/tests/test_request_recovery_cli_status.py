@@ -1,6 +1,7 @@
 # Copyright 2026 Andrew Yates
 # SPDX-License-Identifier: Apache-2.0
 """CLI cancellation accounting with inert cases; no Codex or provider is run."""
+import hashlib
 import importlib.util
 import io
 import json
@@ -202,6 +203,61 @@ class RequestRecoveryCliStatusTests(unittest.TestCase):
                 self.assertEqual(done.returncode, status, done.stdout + done.stderr)
                 self.assert_partial_report(witness)
                 self.assertTrue(witness['escaped_primary_identity'])
+
+    def test_package_source_and_recorded_executable_checked_before_running_any_case(self):
+        package = self.root / 'package'
+        binary = package / 'bin/codex'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'inert binary')
+        source = 'a' * 40
+        record = {'source': source, 'version': '0.11.0', 'target': 'fixture'}
+        (package / 'codex-package.json').write_text(json.dumps({**record, 'entrypoint': 'bin/codex'}))
+
+        def run_case(executable, output, name, *_):
+            self.assertEqual(executable, binary)
+            (output / name).mkdir()
+            return {'case': name, 'passed': True}
+
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        changed = '0' * 64
+
+        def observation(commit=source, built=digest, packaged=digest):
+            return {'source': commit, 'binaries': {'codex': {'built_sha256': built, 'packaged_sha256': packaged}}}
+
+        for label, expected, verification, error in (
+            ('legacy', source, None, None),
+            ('wrong-source', 'b' * 40, None, 'expected package source'),
+            ('matching', source, observation(), None),
+            ('wrong-observation-source', source, observation(commit='b' * 40), 'verification source'),
+            ('changed-file', source, observation(built=changed, packaged=changed), 'codex digest'),
+            ('changed-package', source, observation(built=changed), 'codex digest'),
+            ('incomplete', source, {'source': source}, 'lacks the codex build observation'),
+        ):
+            build = record.copy()
+            if verification is not None:
+                build['compiler'] = {'verification': verification}
+            (package / 'alab-build.json').write_text(json.dumps(build))
+            output = self.root / label
+            args = [str(SOURCE), '--package', str(package), '--expected-source', expected, '--output', str(output)]
+            with (self.subTest(label=label), patch.object(sys, 'argv', args), redirect_stdout(io.StringIO()),
+                  patch.object(SMOKE, 'CASES', SMOKE.CASES[:1]), patch.object(SMOKE, 'case', side_effect=run_case) as case):
+                self.assertEqual(SMOKE.cli(), 0 if error is None else 1)
+                report = json.loads((output / 'result.json').read_text())
+                self.assertEqual((report['expectedSource'], report['package']['source']), (expected, source))
+                self.assertEqual(case.call_count, int(error is None))
+                self.assertEqual(len(report['cases']), case.call_count)
+                if error:
+                    self.assertIn(error, report['error'])
+
+    def test_invalid_source_selectors_fail_before_creating_output(self):
+        output = self.root / 'output'
+        for selector, expected in (('--codex', 'a' * 40), ('--package', 'a1dcce1'), ('--package', 'G' * 40)):
+            args = [str(SOURCE), selector, str(self.root), '--expected-source', expected, '--output', str(output)]
+            with (self.subTest(selector=selector, expected=expected), patch.object(sys, 'argv', args),
+                  redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught):
+                SMOKE.cli()
+            self.assertEqual(caught.exception.code, 2)
+            self.assertFalse(output.exists())
 
     def test_help_and_argument_errors_do_not_start_cases_or_create_output(self):
         for scenario, status in (('help', 0), ('arguments', 2)):

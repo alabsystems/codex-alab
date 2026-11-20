@@ -17,6 +17,7 @@ use crate::replies::Kept;
 use crate::replies::NO_WORK_ACTS;
 use crate::replies::Replies;
 use crate::replies::mark_of;
+use codex_alab_core::wall_kind::LimitClass;
 
 /// The `harness_held` requests the fake took: its sets of `arm` (`Some`), or its unsets.
 fn held_sent(h: &Harness, arm: Option<&str>) -> usize {
@@ -166,6 +167,7 @@ async fn a_held_point_names_its_arm_once_and_the_lift_takes_it_down() {
 async fn six_no_work_answers_name_no_work_and_a_limit_names_none() {
     let h = settled(&[("limit_wait", "true")]).await;
     let wall = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(Instant::now() + Duration::from_secs(3600)),
         reset_label: Some("15:00".to_string()),
     };
@@ -651,6 +653,7 @@ async fn a_held_limit_at_finish_takes_the_old_arm_out_before_standby_lifts() {
     // `Some`, while `point_held_arm()` is `None`).
     let sample = TurnEnd {
         wall: Some(Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: None,
             reset_label: None,
         }),

@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "base": "86d0e458e3cf6c8e8bd07d93fe7e35d565110c27",
+  "target": "ba8ab2d0501f13f70d109d090a1951d1699cd297",
+  "frontier": "86d0e458e3cf6c8e8bd07d93fe7e35d565110c27",
+  "commits": [
+    {
+      "sha": "ba8ab2d0501f13f70d109d090a1951d1699cd297",
+      "subject": "Allow paging through long choices in async questions (#62209)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/async_questions/input.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/layout.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/mod.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/options.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/render.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/snapshots/codex_tui__bottom_pane__async_questions__tests__question_clipped_choice_rejected.snap",
+        "codex-rs/tui/src/bottom_pane/async_questions/snapshots/codex_tui__bottom_pane__async_questions__tests__question_other_clipped_width_boundary.snap",
+        "codex-rs/tui/src/bottom_pane/async_questions/state.rs",
+        "codex-rs/tui/src/bottom_pane/async_questions/state_tests.rs",
+        "codex-rs/tui/src/bottom_pane/selection_popup_common.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Allow a user to read and page through an oversized async choice before submitting it. Keep the existing question draft, selected answer and native owner across ordinary and retained restoration.",
+      "evidence": [
+        "Reviewed all ten paths against 86d0e458e3cf6c8e8bd07d93fe7e35d565110c27. Binary diff SHA-256 c6ebb1f9905f1338e37e664ed8457d35bcccc70f497acf5fbb68726a53e8a0cd.",
+        "Forward and backward page movement keeps the selected option while the viewport moves through its description. Submission requires actual visible coverage for the current choice. Horizontal clipping still refuses an unseen option.",
+        "Paging state lives with the transient AsyncQuestions viewport. The parked QuestionState shape is unchanged. Restore clears paint evidence, retains the draft and selection, and requires a fresh visible page before submission."
+      ],
+      "revisit": "Run scrolling_an_oversized_choice_preserves_selection_and_requires_reading_every_line, paging_waits_for_the_current_choice_to_be_rendered, horizontally_clipped_choice_cannot_be_submitted and resolving_another_question_preserves_the_displayed_choice. Exercise a parked draft through redraw and retained restore."
+    }
+  ]
+}

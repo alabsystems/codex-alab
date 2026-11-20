@@ -108,7 +108,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 }
 
 pub fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
@@ -135,6 +135,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         ),
     ]);
 
+    if codex_alab_core::active() { properties.insert("invocation_id".to_string(), JsonSchema::string(Some("Pass the Invocation ID from exec_command with session_id. Required after resume, fork, or number reuse.".to_string()))); } // ALAB(shell-output): bind to the originally disclosed command.
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
         description:
@@ -189,7 +190,7 @@ pub fn request_permissions_tool_description() -> String {
 }
 
 fn unified_exec_output_schema() -> Value {
-    json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "chunk_id": {
@@ -219,7 +220,21 @@ fn unified_exec_output_schema() -> Value {
         },
         "required": ["wall_time_seconds", "output"],
         "additionalProperties": false
-    })
+    });
+    // ALAB(shell-output): advertise recovery fields only in the enhanced experience.
+    if codex_alab_core::active() {
+        schema["properties"]["invocation_id"] = json!({"type": "string", "description": "Identity of the running command. Pass with session_id to write_stdin."}); // ALAB(shell-output): nested tools can bind future input.
+        schema["properties"]["full_output_path"] = json!({
+            "type": "string",
+            "description": "Path to the raw shell output log in the command environment when shell output is clipped."
+        });
+        schema["properties"]["full_output_status"] = json!({
+            "type": "string",
+            "enum": ["in_progress", "partial", "unavailable"],
+            "description": "State of the shell output log when capture is still running, incomplete, or unavailable."
+        });
+    }
+    schema
 }
 
 fn create_approval_parameters(

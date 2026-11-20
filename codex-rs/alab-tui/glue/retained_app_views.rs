@@ -9,6 +9,12 @@ use std::io;
 #[path = "retained_pending_view_identity.rs"]
 pub(crate) mod identity;
 
+type CapturedPendingViews = (
+    Vec<identity::CapturedView>,
+    Vec<std::sync::Arc<crate::app::retained_original_input::Item>>,
+    Box<serde_json::value::RawValue>,
+);
+
 impl App {
     /// Capture the actual native view together with IDs borrowed from SAME
     /// original callback registry, before any capture RPC or image transition.
@@ -25,11 +31,7 @@ impl App {
         &self,
         session: &AppServerSession,
         bytes: usize,
-    ) -> io::Result<(
-        Vec<identity::CapturedView>,
-        Vec<std::sync::Arc<crate::app::retained_original_input::Item>>,
-        Box<serde_json::value::RawValue>,
-    )> {
+    ) -> io::Result<CapturedPendingViews> {
         self.alab_validate_pending_view_backend(session)?;
         let mut seen = HashSet::new();
         let mut views = Vec::new();

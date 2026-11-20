@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "base": "e58677f0cbff983a3438a773fdd7c96a88ab0359",
+  "target": "a734a13ad77c759c927fc1ff86d4f7d31e53e997",
+  "frontier": "e58677f0cbff983a3438a773fdd7c96a88ab0359",
+  "commits": [
+    {
+      "sha": "a734a13ad77c759c927fc1ff86d4f7d31e53e997",
+      "subject": "Omit unknown server versions from `/status` (#62202)",
+      "paths": [
+        "codex-rs/tui/src/app/daemon_menu.rs",
+        "codex-rs/tui/src/app/daemon_menu_tests.rs",
+        "codex-rs/tui/src/app/server_version_notice.rs",
+        "codex-rs/tui/src/app/tests/startup.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_command_tests.rs",
+        "codex-rs/tui/src/status/card.rs",
+        "codex-rs/tui/src/status/remote_connection.rs",
+        "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_cloud_server.snap",
+        "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_cloud_server_with_version.snap",
+        "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_remote_server_without_version.snap",
+        "codex-rs/tui/src/status/tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Show a remote or cloud service's reported version when it is known. Preserve the private local-service label and a readable saved status card across binary handoff.",
+      "evidence": [
+        "Reviewed all twelve upstream paths against e58677f0cb. Binary diff SHA-256 c2d0a241f01f2fb4f08fcb079ba53b7bd046c8d42f7c2a4914d774017a7243c6.",
+        "The remote address sanitizer, local-daemon owner bit and version-notice selection stay in the shared constructor. The fork's owned-local target can supply its Local address through one match arm.",
+        "The released retained status-card frame stores a missing remote version as the string unknown. Map that value to an absent display version on restore and keep previously serialized known values readable."
+      ],
+      "revisit": "Run the remote and cloud status snapshots, daemon menu and notice cases, the retained status-card round trips, and task-group navigation on the composed TUI."
+    }
+  ]
+}

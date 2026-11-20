@@ -6,8 +6,6 @@ import errno
 import io
 import os
 from pathlib import Path
-import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -59,26 +57,22 @@ class VersionsDiagnosticsTests(unittest.TestCase):
 
     def directory_fault(self, error=None, *, prefix=None):
         events = []
+        github = ledger_tests.VERSIONS.GITHUB
 
-        def create_directory(**kwargs):
-            real = tempfile.TemporaryDirectory(**kwargs)
-            event = {'path': real.name, 'prefix': kwargs.get('prefix'), 'calls': 0}
-            events.append(event)
+        class Directory(github._ScratchDirectory):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.event = {'path': self.name, 'prefix': kwargs.get('prefix'), 'calls': 0}
+                events.append(self.event)
 
-            class Directory:
-                name = real.name
+            def cleanup(self):
+                self.event['calls'] += 1
+                super().cleanup()
+                self.event['absent_after_real_cleanup'] = not Path(self.name).exists()
+                if error is not None and (prefix is None or self.event['prefix'] == prefix):
+                    raise error
 
-                def cleanup(self):
-                    event['calls'] += 1
-                    real.cleanup()
-                    event['absent_after_real_cleanup'] = not Path(self.name).exists()
-                    if error is not None and (prefix is None or event['prefix'] == prefix):
-                        raise error
-
-            return Directory()
-
-        namespace = SimpleNamespace(**{**vars(tempfile), 'TemporaryDirectory': create_directory})
-        return patch.object(ledger_tests.VERSIONS.GITHUB, 'tempfile', namespace), events
+        return patch.object(github, '_ScratchDirectory', Directory), events
 
     def assert_cleaned(self, events):
         self.assertTrue(events)

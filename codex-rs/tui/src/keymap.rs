@@ -157,6 +157,7 @@ pub(crate) struct AppKeymap {
 /// handler code, not here.
 #[derive(Clone, Debug)]
 pub(crate) struct ChatKeymap {
+    pub(crate) open_autopilot: Vec<KeyBinding>, // ALAB(interface): resolved native picker action.
     /// Open the preset submenu.
     pub(crate) open_presets: Vec<KeyBinding>,
     /// Start or stop a voice conversation.
@@ -929,6 +930,7 @@ impl RuntimeKeymap {
                 }));
 
         let mut chat = ChatKeymap {
+            open_autopilot: resolve_local!(keymap, defaults, chat, open_autopilot), // ALAB(interface): honor configured picker keys.
             open_presets: resolve_local!(keymap, defaults, chat, open_presets),
             toggle_voice: if voice_toggle_default_is_shadowed {
                 Vec::new()
@@ -1859,6 +1861,7 @@ impl RuntimeKeymap {
             },
             chords: Arc::default(),
             chat: ChatKeymap {
+                open_autopilot: Vec::new(), // ALAB(interface): opt in to a picker shortcut.
                 open_presets: Vec::new(),
                 toggle_voice: default_bindings![plain(KeyCode::F(8))],
                 toggle_voice_mute: default_bindings![plain(KeyCode::F(9))],
@@ -2170,6 +2173,7 @@ impl RuntimeKeymap {
     fn validate_conflicts(&self) -> Result<(), String> {
         for (action, bindings) in [
             ("global.change_host", &self.app.change_host),
+            ("chat.open_autopilot", &self.chat.open_autopilot), // ALAB(interface): preserve reserved input keys.
             ("chat.open_presets", &self.chat.open_presets),
             ("chat.toggle_voice", &self.chat.toggle_voice),
             (
@@ -2217,6 +2221,7 @@ impl RuntimeKeymap {
             ("global.close_sidebar_tab", &self.app.close_sidebar_tab),
             ("global.sidebar_up", &self.app.sidebar_up),
             ("global.sidebar_down", &self.app.sidebar_down),
+            ("chat.open_autopilot", &self.chat.open_autopilot), // ALAB(interface): preserve reserved input keys.
             ("chat.open_presets", &self.chat.open_presets),
             ("chat.toggle_voice", &self.chat.toggle_voice),
         ] {
@@ -2286,6 +2291,7 @@ impl RuntimeKeymap {
             ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
             ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
             ("toggle_side_conversation", side_toggle_bindings.as_slice()),
+            ("chat.open_autopilot", self.chat.open_autopilot.as_slice()), // ALAB(interface): reject conflicting picker keys.
             ("chat.open_presets", self.chat.open_presets.as_slice()),
             ("chat.toggle_voice", self.chat.toggle_voice.as_slice()),
             (
@@ -2472,6 +2478,7 @@ impl RuntimeKeymap {
                 ),
                 ("copy", self.app.copy.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
+                ("chat.open_autopilot", self.chat.open_autopilot.as_slice()), // ALAB(interface): reject conflicting picker keys.
                 ("chat.open_presets", self.chat.open_presets.as_slice()),
                 ("chat.toggle_voice", self.chat.toggle_voice.as_slice()),
                 (
@@ -4604,3 +4611,7 @@ mod tests {
 #[cfg(unix)]
 #[path = "../../alab-tui/glue/retained_bottom_keymap.rs"]
 pub(crate) mod alab_retained; // ALAB(retained-ui): exact pure native keymap fields share one enclosing alias table.
+
+#[cfg(test)]
+#[path = "../../alab-tui/glue/keymap_autopilot_tests.rs"]
+mod alab_autopilot_tests; // ALAB(interface): cover picker shortcuts through the native registry.

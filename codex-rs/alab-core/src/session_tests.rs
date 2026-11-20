@@ -6,6 +6,7 @@ use crate::session::Frame;
 use crate::session::LastTurn;
 use crate::session::ProgramState;
 use crate::session::Shared;
+use crate::wall_kind::LimitClass;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::time::Duration;
@@ -286,6 +287,7 @@ fn provider_intent_survives_passivity_and_ends_at_off_or_a_new_target_turn() {
         by_autopilot: true,
         by_person: false,
         wall: RecoveryWall::Usage {
+            limit_class: LimitClass::Ordinary,
             quota: None,
             reset_at_ms: Some(500),
             reset_label: None,
@@ -453,6 +455,7 @@ fn an_event_moves_only_the_upgrade_scan_and_each_admission_fact_moves_both() {
         renewal: Some(AccountHandoff {
             purpose: crate::account_handoff::Purpose::Login,
             destination: None,
+            limit: None,
             openai_scope: true,
             local: false,
             account: "a".repeat(64),
@@ -1581,6 +1584,7 @@ fn renewal_custody_survives_its_accepted_turn_but_not_new_native_work() {
         renewal: Some(AccountHandoff {
             purpose: crate::account_handoff::Purpose::Login,
             destination: None,
+            limit: None,
             openai_scope: true,
             local: false,
             account: "a".repeat(64),
@@ -1644,6 +1648,7 @@ fn a_usage_move_newly_on_record_wakes_its_watchers_once() {
         renewal: Some(AccountHandoff {
             purpose,
             destination: None,
+            limit: None,
             openai_scope: true,
             local: false,
             account: account.repeat(64),

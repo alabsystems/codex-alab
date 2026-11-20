@@ -65,10 +65,10 @@ pub(crate) enum ConstructionOwner {
 }
 pub(crate) enum ConstructionCheckpoint {
     Initial {
-        _data: InitialConstructionCheckpoint,
+        _data: Box<InitialConstructionCheckpoint>,
     },
     Later {
-        _data: ClientConstructionCheckpoint,
+        _data: Box<ClientConstructionCheckpoint>,
     },
 }
 struct ConstructionResource {
@@ -86,10 +86,10 @@ impl ConstructionOwner {
     pub(crate) fn checkpoint(&self) -> ConstructionCheckpoint {
         match self {
             Self::Initial(actual) => ConstructionCheckpoint::Initial {
-                _data: actual.checkpoint(),
+                _data: Box::new(actual.checkpoint()),
             },
             Self::Later(actual) => ConstructionCheckpoint::Later {
-                _data: actual.checkpoint(),
+                _data: Box::new(actual.checkpoint()),
             },
             Self::Caller(actual) => actual.checkpoint(),
         }
@@ -98,7 +98,7 @@ impl ConstructionOwner {
 enum Project {
     Unstarted,
     Running,
-    Observed(Receipt),
+    Observed(Box<Receipt>),
     Unknown,
 }
 enum Replay {
@@ -256,7 +256,7 @@ impl Pending {
             {
                 bail!("task capability belongs to another actual converted thread");
             }
-            receipt.clone()
+            (**receipt).clone()
         };
         // No progress guard is held while accessing delivery state. Genuine
         // false always replaces the historical cache for THIS physical tenure.
@@ -401,7 +401,7 @@ impl Pending {
             state._unmatched_receipt = Some(receipt);
             bail!("retained projection changed before its actual response");
         }
-        state.project = Project::Observed(receipt);
+        state.project = Project::Observed(Box::new(receipt));
         guard.finished = true;
         Ok(())
     }
@@ -508,7 +508,7 @@ impl Pending {
         {
             bail!("callback cut precedes the actual ordered replay End");
         }
-        Ok(Some(receipt.clone()))
+        Ok(Some((**receipt).clone()))
     }
     /// A post-commit semantic ACK uses only the exact retained private result.
     /// A failed/cancelled Commit cannot acquire this surface via a UI flag.
@@ -577,7 +577,7 @@ impl Pending {
         if !self.native.matches(receipt) || !matches_receipt(tail, receipt) {
             bail!("retained commit changed its route/frontier");
         }
-        let receipt = receipt.clone();
+        let receipt = (**receipt).clone();
         state.replay = Replay::Committing;
         Ok(Some(Commit {
             pending: self.clone(),

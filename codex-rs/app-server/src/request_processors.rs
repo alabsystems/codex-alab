@@ -726,6 +726,7 @@ fn config_for_provider(
         })
     })?;
     let mut config = startup.as_ref().clone();
+    config.alab_select_provider_catalog(provider_id).map_err(|err| internal_error(err.to_string()))?; // ALAB(kimi): the selected provider owns its packaged model catalog.
     config.model_provider_id = provider_id.to_owned();
     config.model_provider = provider.clone();
     Ok(Arc::new(config))

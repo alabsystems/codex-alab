@@ -45,7 +45,7 @@ def trace_with_records(records, recover):
     requests[1]['body']['input'].extend(copy.deepcopy(records))
     requests[2]['body']['input'] = copy.deepcopy(requests[1]['body']['input'])
     if not recover:
-        events = [{'type': 'turn.failed'}]
+        events = FIXTURE.refusal_events()
         requests = requests[:2]
     return events, requests
 
@@ -175,7 +175,7 @@ class RequestRecoveryToolScopeTests(unittest.TestCase):
                                                'message': 'Invalid tool schema'}})
                         result = SMOKE.case(Path('/unexecuted-fixture/codex'), root, 'fixture',
                                             400, envelope, recover)
-                    configure.assert_called_once_with(root / 'fixture', 1234, stream_max_retries=2)
+                    configure.assert_called_once_with(root / 'fixture', 1234, stream_max_retries=2, supports_websockets=False)
                     server.shutdown.assert_called_once_with()
                     thread.join.assert_called_once_with()
                     server.server_close.assert_called_once_with()

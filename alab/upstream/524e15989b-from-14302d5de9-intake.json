@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "14302d5de9ec4183fd2b53ad2a0ae7bdf80340d5",
+  "target": "524e15989b79039e14d01cd197ed6e6580bd59f2",
+  "frontier": "14302d5de9ec4183fd2b53ad2a0ae7bdf80340d5",
+  "commits": [
+    {
+      "sha": "524e15989b79039e14d01cd197ed6e6580bd59f2",
+      "subject": "Expand connector result metadata coverage across auth configurations (#62434)",
+      "paths": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/tools/executed_tool_calls.rs",
+        "codex-rs/core/tests/suite/code_mode.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Take the connector result tests and the upstream capture and send paths together. Preserve the existing feature default and the per-turn checks on the selected account and destination.",
+      "evidence": [
+        "The model client passes the result destination through to turn selection. Only a sampling turn with the same ID, a selected destination and a current matching owner can attach retained result bodies.",
+        "The capture path rechecks the owner while holding the retained-body lock and keeps its count and byte budgets. The header iterator still rejects an unrecognized configured name, including an environment-backed name whose value is absent.",
+        "The expanded integration test uses separate loopback Apps and inference endpoints. It checks metadata grant and request budgets across direct and Code Mode calls, independent credentials, a header helper and the disabled private-results feature. General executed-call metadata and private result bodies have separate controls."
+      ],
+      "revisit": "Run the expanded direct and Code Mode cases on the integrated source. Revisit the grant checks when upstream changes the supported authentication modes or destination policy."
+    }
+  ]
+}

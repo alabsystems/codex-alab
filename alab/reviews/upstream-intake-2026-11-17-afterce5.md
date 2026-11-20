@@ -56,3 +56,30 @@ Prior Row8 adaptation remains mandatory and UNIMPLEMENTED: preserve queued child
 Private source/control index: ~/.ubd/codex-upstream-twelve-afterce5-source-20261117/index.json, SHA25618b8369936822c4c617a2e47d09beaaa5b28f464d024e694dea1a57a8a1f77e1. This metadata records proposed decisions; source/runtime qualification and required adaptations remain separate.
 
 Independent source review of rows 3/4: private peer index 36526bc2ff6902f1d7356d8b9eb84a6d77a7804e5e6b8be52059278ed817f8fd binds the exact two patches and nine selected declarations/cases across codex-core, codex-mcp and codex-guardian-v2, all UNRUN. Its named census covers 1439 owned Rust paths/eight changed API symbols with zero matches; that is bounded callsite evidence. ALab extension registration order, account/startup/native admission hooks and apps/plugins/Guardian defaults must survive eventual composition. This review adds neither feature activation nor runtime retirement/exactly-once qualification.
+
+## Native rollout search checks on November 19
+
+The upstream change `378364e784` and a private application to the 278-commit
+reviewed integration produced the same stable Git patch ID
+`e22d9b7dea3a683a3c1197bf6963ad84efaf342f`. The integration also retains
+ALab's four existing rollout exports for local resume and retained writers.
+Source-selected Trust 15698 ran three native tests on private source
+`eea5fbea1e46f5fd8844500e5f8b37d181b68933` with the original lockfile.
+
+| Native test | What it exercised |
+| --- | --- |
+| `plain_snippets_compile_once_and_match_decoded_text_across_files` | Reused a query over three real files, checked decoded case-insensitive text and counted regex compilations. A second query owned a separate matcher. |
+| `compressed_search_preserves_error_handling` | Found seven compressed matches despite a malformed file, rejected an oversized query, and preserved the missing-file error before regex construction. |
+| `searches_are_independent_across_catalog_refills` | Queried a real local catalog with hits across a 256-row refill and checked concurrent queries for different terms. |
+
+All three tests passed. The rollout libtest log had SHA-256
+`c5db802145e5d094ebbf701330e74f7542aab71f1a88a91622b8768eec023d1a`.
+The thread-store libtest log had SHA-256
+`b27415a08cd037c6e5147428efb84db97deb94c7f8554eb3f40ba09d7fdf5cfa`.
+
+The complete library suites on the same checkout passed all 176 rollout tests
+and all 316 thread-store tests. Both native runs completed with zero failures,
+ignored tests or filtered tests. The rollout libtest log had SHA-256
+`40b23d87a762a04d00241aba3e7f00a5f8330310bc47fb60d0b21659d3fbf45a`.
+The thread-store libtest log had SHA-256
+`c00e5ae184c5f1d2fd623265a963fb4ed4e3da52f7f63ec12947db60385bbf7d`.

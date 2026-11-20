@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "base": "0ba514837d1ed6bee7a9c5729ad1942ef0b3573c",
+  "target": "cc7a62e19cb4703495e3a6d01e1af076e8223833",
+  "frontier": "0ba514837d1ed6bee7a9c5729ad1942ef0b3573c",
+  "commits": [
+    {
+      "sha": "cc7a62e19cb4703495e3a6d01e1af076e8223833",
+      "subject": "Report API spend limit errors by scope (#62329)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ErrorNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRevertResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadSearchPartialNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadTurnsListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/CodexErrorInfo.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/shared.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/cli/src/doctor.rs",
+        "codex-rs/codex-api/src/api_bridge.rs",
+        "codex-rs/codex-api/src/api_bridge_tests.rs",
+        "codex-rs/codex-api/src/error.rs",
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/codex-api/src/sse/responses_error.rs",
+        "codex-rs/codex-api/src/sse/responses_error_tests.rs",
+        "codex-rs/core/src/responses_retry.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/tasks/compact.rs",
+        "codex-rs/core/tests/suite/quota_exceeded.rs",
+        "codex-rs/core/tests/suite/retry_after.rs",
+        "codex-rs/ext/goal/src/extension.rs",
+        "codex-rs/ext/guardian-reviewer/src/retry.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/metrics.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler/execution.rs",
+        "codex-rs/protocol/src/codex_error_info.rs",
+        "codex-rs/protocol/src/error.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/response-debug-context/src/lib.rs",
+        "codex-rs/tui/src/chatwidget/rate_limits.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery",
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Carry upstream's API key, project and organization spending-limit errors through the protocol and conversation history. Stop automatic retries when a spending limit is reached. Keep ALab's account-owned subscription reset handling for usage limits.",
+      "evidence": [
+        "Upstream cc7a62e19c recognizes the three service codes in HTTP 429 and streamed responses. Core marks them as terminal sampling outcomes. The app-server and public SDK expose each scope separately, and the terminal displays the reported limit.",
+        "ALab adaptation 8e55a9a214 keeps the three scopes distinct in diagnostics, prevents a second compaction error notification and preserves terminal classification when replaying a saved turn. The goal extension reserves subscription reset handling for generic usage errors associated with the original request.",
+        "The SDK regeneration check on the merged schema identified two existing ALab realtime submissionId fields missing from generated Python notifications. Regenerate both fork protocol exports and the tracked SDK sources together. The focused tests cover HTTP and stream classification, manual local and remote compaction, and saved error replay.",
+        "Five native controls at 8e55a9a214 passed across the HTTP error decoder, streamed failure and WebSocket paths. The fork regenerated stable and experimental Rust exports from 4d585f13ec and committed both archives at 233bce956b. The combined candidate at b8a4b5899d passed 153 Python SDK contract and runtime tests."
+      ],
+      "revisit": "Exercise the three limits with misleading retry advice and verify one terminal notification per failed operation. Retain distinct tests for existing subscription reset behavior and validate the fork's generated protocol exports before publishing."
+    }
+  ]
+}

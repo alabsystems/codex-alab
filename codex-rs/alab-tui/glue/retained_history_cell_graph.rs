@@ -42,6 +42,8 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
+const INTEGER_EXIT_SCHEMA: u8 = 5;
+const SCHEMA: u8 = 6;
 const MAX_CELLS: usize = 1_000_000;
 pub(crate) fn depth(value: usize) -> io::Result<usize> {
     if value >= 256 {
@@ -97,12 +99,17 @@ pub(crate) struct RestoreContext {
     frames: frames::Bindings,
     cells: Option<CellRestore>,
     completed_graph: Option<std::sync::Weak<()>>,
+    // Also applies to unique widget bodies restored through this graph's identity.
+    legacy_command_outputs: bool,
 }
 struct CellRestore {
     pending: Vec<Option<Body>>,
     ready: Vec<Option<Arc<dyn HistoryCell>>>,
 }
 impl RestoreContext {
+    pub(crate) fn legacy_command_outputs(&self) -> bool {
+        self.legacy_command_outputs
+    }
     pub(crate) fn bind_image_renderer(
         &mut self,
         actual: &Arc<crate::retained_image_renderer::Binding>,
@@ -212,6 +219,13 @@ impl RestoreContext {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::history_cell) struct FindingCommandData {
+    marker: crate::chatwidget::AlabPendingCommand,
+    command: CellRef,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::history_cell) enum Body {
     Image {
@@ -222,6 +236,9 @@ pub(in crate::history_cell) enum Body {
     },
     Message {
         original: Box<MessageData>,
+    },
+    FindingCommandPending {
+        original: Box<FindingCommandData>,
     },
     Exec {
         original: Box<ExecData>,
@@ -310,6 +327,21 @@ impl Body {
         if let Some(original) = MessageData::capture(actual, context)? {
             return Ok(Self::Message {
                 original: Box::new(original),
+            });
+        }
+        if let Some(original) = actual
+            .as_any()
+            .downcast_ref::<crate::chatwidget::AlabPendingCommand>()
+        {
+            let exec = original.original().ok_or_else(|| {
+                native::invalid("retained command observation requires its native command")
+            })?;
+            let cell: Arc<dyn HistoryCell> = exec.clone();
+            return Ok(Self::FindingCommandPending {
+                original: Box::new(FindingCommandData {
+                    marker: original.clone(),
+                    command: context.cell(&cell)?,
+                }),
             });
         }
         if let Some(original) = ExecData::capture(actual, context)? {
@@ -438,6 +470,16 @@ impl Body {
                 .restore()
                 .map(|actual| Box::new(actual) as Box<dyn HistoryCell>),
             Self::Message { original } => original.restore(shared, resources),
+            Self::FindingCommandPending { original } => {
+                let FindingCommandData { marker, command } = *original;
+                let cell: Arc<dyn std::any::Any + Send + Sync> =
+                    resources.cell(command, shared, _next)?;
+                let exec = cell.downcast::<crate::exec_cell::ExecCell>().map_err(|_| {
+                    native::invalid("pending command edge does not refer to a native command")
+                })?;
+                let process_id = marker.process_id().map(str::to_owned);
+                Ok(Box::new(marker.with_original(exec, process_id)))
+            }
             Self::Exec { original } => original.restore(shared, resources, _next),
             Self::Terminal { original } => Ok(original.restore()),
             Self::Mcp { original } => original.restore(),
@@ -596,7 +638,7 @@ impl Capture {
             index += 1;
         }
         let data = Data {
-            schema: 5,
+            schema: SCHEMA,
             cells,
             inline: self.inline.export()?,
             activity: self.activity.export()?,
@@ -662,7 +704,7 @@ impl Restored {
         let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(native::invalid)?;
         let data: Data = serde_json::from_slice(bytes).map_err(native::invalid)?;
         if raw != serde_json::to_value(&data).map_err(native::invalid)?
-            || data.schema != 5
+            || !matches!(data.schema, INTEGER_EXIT_SCHEMA | SCHEMA)
             || data.cells.len() > MAX_CELLS
         {
             return Err(native::invalid(
@@ -675,6 +717,7 @@ impl Restored {
             ));
         }
         resources.completed_graph = None;
+        resources.legacy_command_outputs = data.schema == INTEGER_EXIT_SCHEMA;
         resources.inline.install(data.inline)?;
         resources.activity.install(data.activity)?;
         resources.frames.install(data.frames)?;

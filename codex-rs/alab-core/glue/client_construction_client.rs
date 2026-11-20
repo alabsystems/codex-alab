@@ -13,6 +13,8 @@ mod preparation;
 pub use preparation::ClientConstructionCheckpoint;
 pub use preparation::ClientConstructionOperation;
 pub use preparation::ClientPreparationRetirement;
+pub use preparation::SavedResumeObservation;
+pub use preparation::SavedResumeQuery;
 #[path = "retained_side_boundary_client.rs"]
 mod side_boundary;
 pub use side_boundary::scope_original_side_injection;
@@ -37,6 +39,7 @@ pub(super) async fn request(
     request: ClientRequest,
 ) -> IoResult<RequestResult> {
     let operation = CLIENT_SCOPE.try_with(Clone::clone).ok();
+    let saved_resume = saved_resume_reply::matches(&request);
     if request.method_name() == "thread/inject_items"
         && side_boundary::active()
         && let Some(operation) = operation.as_ref()
@@ -49,7 +52,9 @@ pub(super) async fn request(
             "thread/start" | "thread/fork" | "thread/resume"
         )
     {
-        return handle.request(request).await;
+        let result = handle.request(request).await;
+        saved_resume_reply::record_received(saved_resume, &result);
+        return result;
     }
     let AppServerRequestHandle::Remote(remote) = handle else {
         return Err(std::io::Error::new(
@@ -83,8 +88,12 @@ pub(super) async fn request(
         CLIENT_KEY.into(),
         serde_json::to_value(selection).map_err(std::io::Error::other)?,
     );
-    let result = remote.request_json_rpc(wire).await?;
-    let mut result = match result {
+    let result = remote.request_json_rpc(wire).await;
+    if result.is_ok() {
+        operation.record_saved_reply_received(&offer);
+    }
+    saved_resume_reply::record_retained(saved_resume, &result);
+    let mut result = match result? {
         Ok(value) => value,
         Err(error) => return Ok(Err(error)),
     };

@@ -55,6 +55,7 @@ pub enum ApiError {
     ModelNotFound {
         message: String,
         status: Option<StatusCode>,
+        alab_empty_stream: bool, // ALAB(defaults): set only by an original transport with a pre-output refusal.
     },
     #[error("invalid prompt: {message}")]
     InvalidPrompt { message: String },
@@ -156,6 +157,7 @@ pub(crate) fn parse_terminal_provider_error(
         ) => Some(ApiError::ModelNotFound {
             message: message.unwrap_or(code).to_owned(),
             status,
+            alab_empty_stream: false, // ALAB(defaults): classifying a code alone cannot attest to prior transport output.
         }),
         _ => None,
     }

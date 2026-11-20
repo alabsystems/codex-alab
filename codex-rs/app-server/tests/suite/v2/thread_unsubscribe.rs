@@ -43,6 +43,9 @@ use test_case::test_case;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+#[path = "../../../../alab-core/glue/saved_chat_release_diagnostic_tests.rs"]
+mod alab_saved_chat_release; // ALAB(retained-ui): read the server-side outcome from SQLite after the stdio client exits.
+
 #[tokio::test]
 async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;

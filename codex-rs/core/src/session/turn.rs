@@ -576,6 +576,7 @@ pub(crate) async fn run_turn(
         .await;
 
         // Capture once so context, advertised tools, and tool calls share one request view.
+        let initial_sampling_step = next_step_context.is_some(); // ALAB(defaults): later steps require their completed tool results before replay.
         let step_context = match next_step_context.take() {
             Some(step_context) if pending_input.is_empty() => step_context,
             None if pending_input.is_empty() => {
@@ -945,6 +946,7 @@ pub(crate) async fn run_turn(
                 can_drain_pending_input = false;
                 continue;
             }
+            Err(err) if sess.alab_recover_retired_model(&step_context, &err, initial_sampling_step).or_cancel(&cancellation_token).await? => { step_context.alab_arm_retirement_retry(err); client_session = sess.services.model_client.new_session(); can_drain_pending_input = false; continue; } // ALAB(defaults): recapture the original turn with the serving account’s confirmed successor.
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
                 return Err(err);
             }
@@ -2008,6 +2010,7 @@ async fn run_sampling_request(
         let mut draining_for_mailbox = false;
         crate::responses_retry::alab_capacity_retry::preflight_weekly(&sess, &turn_context).or_cancel(&cancellation_token).await?; // ALAB(weekly-reset): check earned-reset eligibility before every sampling attempt, including retries.
         let err = match try_run_sampling_request(
+            first_attempt, // ALAB(defaults): retry from a refusal on the initial transport attempt only.
             tool_runtime.clone(),
             Arc::clone(&sess),
             sampling_step_context,
@@ -2893,6 +2896,7 @@ async fn drain_in_flight(
     )
 )]
 async fn try_run_sampling_request(
+    first_attempt: bool, // ALAB(defaults): bind retirement to this original inference request.
     tool_runtime: ToolCallRuntime,
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -3013,12 +3017,17 @@ async fn try_run_sampling_request(
             .instrument(trace_span!("stream_request"))
             .await
     };
-    let stream = stream_request(&prompt)
+    let mut prompt = prompt; // ALAB(shell-invocation): the extra context belongs only to this real sampling attempt.
+    let mut submitted_exits = super::shell_resume_exits::prepare(&sess, &turn_context.config.codex_home, &mut prompt).or_cancel(&cancellation_token).await?; // ALAB(shell-invocation): read before the model can choose its first tool.
+    let prompt = Arc::new(prompt); // ALAB(defaults): retain the materialized request across a confirmed model retirement.
+    step_context.alab_verify_retirement_input(&sess, &prompt.input).await?; // ALAB(defaults): match the original input and its completed effects.
+    let stream = step_context.alab_observe_model_open(&sess, stream_request(&prompt), first_attempt, post_mode.is_none() && hooks.execution_mode_for_event(HookEventName::PreModelRequest).is_none()) // ALAB(defaults): observe the actual provider request before per-request interceptors.
         .or_cancel(&cancellation_token)
         .await?;
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(error) => {
+            step_context.alab_retain_refused_input(&prompt); // ALAB(defaults): retain the actual materialized request after a pre-stream refusal.
             if let Some(finish_post_request) = finish_post_request {
                 finish_post_request(PostModelRequest {
                     status: ModelRequestStatus::Failed,
@@ -3149,6 +3158,7 @@ async fn try_run_sampling_request(
         }) {
             Ok(event) => event,
             Err(err) => {
+                step_context.alab_retain_refused_input(&prompt); // ALAB(defaults): retain only a provider-confirmed pre-output refusal.
                 if let CodexErrorDetails::ResponseIncomplete(incomplete) = err.details() {
                     if let Some(usage) = &incomplete.token_usage {
                         request_token_usage
@@ -3538,8 +3548,10 @@ async fn try_run_sampling_request(
                 token_usage,
                 usage_metadata,
                 reasoning_removals: _,
+                interrupted, // ALAB(shell-invocation): keep incompletely drained requests eligible for redelivery.
                 end_turn,
             } => {
+                if !interrupted { super::shell_resume_exits::accept(&mut submitted_exits, resampling.retry_pending).await; } // ALAB(shell-invocation): only a completed generation can collect its submitted observations.
                 if let Some(accepted) = pending_audio.take() {
                     sess.record_retained_context(
                         codex_history::RetainedContextEvent::AcceptedFileAudio {

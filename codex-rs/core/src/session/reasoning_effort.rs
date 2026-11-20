@@ -29,7 +29,8 @@ impl Session {
     /// Establishes the selected effort in surviving history, independent of replayed settings.
     pub(crate) async fn record_reasoning_effort_override(&self, step_context: &StepContext) {
         let settings = &step_context.settings;
-        let Some(effort) = self.effort_for_configuration_update(settings) else {
+        let selected_effort = self.alab_effort_for_request(settings).await; // ALAB(defaults): use this captured step's catalog while keeping the saved preference.
+        let Some(effort) = self.effort_for_configuration_update(settings, selected_effort) else {
             return;
         };
         let should_skip = {
@@ -98,7 +99,7 @@ impl Session {
         settings: &ResolvedStepSettings,
         usage: RequestEffortUsage,
     ) -> Option<ReasoningEffort> {
-        let selected_effort = settings.reasoning_effort().cloned();
+        let selected_effort = self.alab_effort_for_request(settings).await; // ALAB(defaults): a temporary request effort is never the thread's stored selection.
         if !self
             .services
             .model_client
@@ -109,7 +110,7 @@ impl Session {
             }
             return selected_effort;
         }
-        let effort = self.effort_for_configuration_update(settings);
+        let effort = self.effort_for_configuration_update(settings, selected_effort.clone());
         let mut state = self.state.lock().await;
         if let Some(pinned) = state.reasoning_effort_pin.get(&settings.model_info.slug) {
             let model = &settings.model_info;
@@ -147,6 +148,7 @@ impl Session {
     fn effort_for_configuration_update(
         &self,
         settings: &ResolvedStepSettings,
+        selected_effort: Option<ReasoningEffort>,
     ) -> Option<ReasoningEffort> {
         if !self
             .services
@@ -157,7 +159,7 @@ impl Session {
         }
         let effort = settings
             .model_info
-            .resolve_reasoning_effort(settings.effective_reasoning_effort()?);
+            .resolve_reasoning_effort(selected_effort.or_else(|| settings.model_info.default_reasoning_level.clone())?);
         // Persistent normalizes to "disabled". Keep unknown custom values out of
         // durable updates so injected items stay bounded to known backend modes.
         if matches!(&effort, ReasoningEffort::Custom(value) if value != "disabled") {

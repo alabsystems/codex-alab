@@ -17,6 +17,7 @@ use clap::CommandFactory;
 use codex_alab_core::session::InFlightRetry;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Duration;
 
 fn intent(wall: RecoveryWall) -> Recovery {
@@ -887,6 +888,52 @@ fn the_unique_newest_record_selects_all_retry_metadata_even_when_it_is_empty() {
 }
 
 #[test]
+fn legacy_and_reclassified_usage_waits_keep_their_rotation_scope_across_saves() {
+    let scope = |bucket: &str| codex_alab_core::quota::Scope {
+        account: "source".into(),
+        user: Some("owner".into()),
+        bucket: bucket.into(),
+        ..Default::default()
+    };
+    let capture = |classification, quota| {
+        intent(RecoveryWall::Usage {
+            limit_class: classification,
+            reset_at_ms: Some(1_600_000),
+            reset_label: None,
+            quota,
+        })
+    };
+    for (wire_classification, bucket, expected) in [
+        (None, Some("codex"), LimitClass::Ordinary), // Legacy ordinary.
+        (None, Some("codex_other"), LimitClass::Unverified), // Could have been Reserve or workspace usage.
+        (None, None, LimitClass::Unverified),
+        (Some("ordinary"), Some("codex_other"), LimitClass::Ordinary), // Known Reserve/workspace.
+        (Some("model"), Some("codex_other"), LimitClass::Model),
+        (Some("model"), None, LimitClass::Model), // Failure to bind never makes it ordinary.
+        (Some("unverified"), Some("codex"), LimitClass::Unverified),
+    ] {
+        let quota = bucket.map(scope);
+        let expected = capture(expected, quota);
+        let mut wire = serde_json::to_value(record::Recovery::from(expected.clone())).unwrap();
+        let wall = wire["wall"].as_object_mut().unwrap();
+        match wire_classification {
+            Some(classification) => {
+                wall.insert("limitClass".into(), serde_json::json!(classification));
+            }
+            None => {
+                wall.remove("limitClass");
+            }
+        }
+        for _ in 0..3 {
+            let decoded: record::Recovery = serde_json::from_value(wire).unwrap();
+            let recovered = Recovery::from(decoded);
+            assert_eq!(recovered, expected);
+            wire = serde_json::to_value(record::Recovery::from(recovered)).unwrap();
+        }
+    }
+}
+
+#[test]
 fn writer_round_trips_recovery_and_reexec_keeps_the_original_deadline() {
     let home = tempfile::tempdir().expect("scratch records");
     let shared = shared_with(launch(4242, true));
@@ -925,6 +972,7 @@ fn writer_round_trips_recovery_and_reexec_keeps_the_original_deadline() {
     );
 
     let usage = intent(RecoveryWall::Usage {
+        limit_class: LimitClass::Ordinary,
         quota: Some(codex_alab_core::quota::Scope {
             account: "test-account".into(),
             bucket: "codex".into(),
@@ -961,6 +1009,7 @@ fn writer_round_trips_recovery_and_reexec_keeps_the_original_deadline() {
     shared.set_recovery(Some(Recovery {
         thread: "another-thread".into(),
         ..intent(RecoveryWall::Usage {
+            limit_class: LimitClass::Ordinary,
             quota: None,
             reset_at_ms: None,
             reset_label: None,
@@ -1021,6 +1070,7 @@ fn long_provider_details_keep_classification_and_deadlines_in_a_readable_record(
             retry_at_ms: Some(1_700_000),
         },
         RecoveryWall::Usage {
+            limit_class: LimitClass::Ordinary,
             quota: None,
             reset_at_ms: Some(1_600_000),
             reset_label: Some(long),

@@ -157,6 +157,12 @@ impl Tui {
         if let Err(err) = terminal_stderr::resume() {
             tracing::warn!("failed to suppress terminal stderr after external program: {err}");
         }
+        // An editor can restore cooked termios while Crossterm still caches raw mode.
+        // Clear the cache through the same owner that retained the original terminal modes.
+        #[cfg(unix)]
+        if let Err(err) = disable_raw_mode() {
+            tracing::warn!("failed to reset raw mode after external program: {err}");
+        }
         if let Err(err) = set_modes() {
             tracing::warn!("failed to re-enable terminal modes after external program: {err}");
         }

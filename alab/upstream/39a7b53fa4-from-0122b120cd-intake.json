@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "base": "0122b120cd7d8375676ea2e72e113c2f892343b0",
+  "target": "39a7b53fa47fc987acf7d2c268588da7cb5202ed",
+  "frontier": "0122b120cd7d8375676ea2e72e113c2f892343b0",
+  "commits": [
+    {
+      "sha": "6d40c0ac9b99f4ccb8d432f354c042cd7649e00d",
+      "subject": "Clarify recovery guidance for stale Guardian authorization (#62099)",
+      "paths": [
+        "codex-rs/core/tests/suite/guardian_authorization_refresh.rs",
+        "codex-rs/ext/guardian-reviewer/src/completion.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "exec-handoff",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Stale Guardian authorization gets specific recovery wording only. Denied status remains; text does not grant ALab execution or current authorization.",
+      "evidence": [
+        "Canonical exact patch SHA256 6b989a0b85011b20291ce3efdc2364db8caf1d1a0ddb85436370af8676f0854b, 5059 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "The stale-decision result remains denied and distinguishes retry from remediation. Verify retained reviewers finish the original action once."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5cba3aec84fb7fb13785ab9da330ee6debca21e6",
+      "subject": "Support transparent TCP with inherited PID namespaces (#62100)",
+      "paths": [
+        "codex-rs/linux-sandbox/README.md",
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
+        "codex-rs/linux-sandbox/src/linux_run_main_tests.rs",
+        "codex-rs/linux-sandbox/src/managed_tcp.rs",
+        "codex-rs/linux-sandbox/tests/suite/managed_tcp.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Linux inherited PID namespace mode supervises relay and workload process group; isolated mode remains default. Source documents escaping descendants and supervisor-exit limits. Linux runtime validation remains UNRUN.",
+      "evidence": [
+        "Canonical exact patch SHA256 a54585d2258e72ddc625e9889785cd519ad380200f45672949aa5b7c81f1c450, 21428 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Keep isolated namespaces as default and supervise the inherited process group under the documented limits. Exercise allowed traffic and child retirement on Linux; the macOS checks cannot qualify this behavior."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7fb2cd20c8dc0861190877df8e461f9a1af9319e",
+      "subject": "Stabilize app-server and login integration tests (#62102)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/config_server_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_action_budget_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/process_exec.rs",
+        "codex-rs/login/tests/suite/login_server_e2e.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Integration stabilization changes test-local environment, readiness and cancellation synchronization. Preserve ALab production routing and ownership controls.",
+      "evidence": [
+        "Canonical exact patch SHA256 575f48d30cbe45bade21690a5e9f792ff3ba065cb174db7f9fe4fc831974ea40, 5946 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Keep stable process-readiness, login and cancellation tests with the original retained admission and publication boundaries. These changes do not select a new execution authority."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7457b7268fe109e5387bf0eac80ef4acd7c31365",
+      "subject": "Preserve trace context during WebSocket startup prewarm (#62103)",
+      "paths": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/session/startup_prewarm.rs",
+        "codex-rs/core/tests/websocket_startup_prewarm_tracing.rs"
+      ],
+      "classes": [
+        "fix",
+        "telemetry"
+      ],
+      "features": [
+        "provider-recovery",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Startup prewarm propagates W3C trace context into WebSocket handshake with span fallback and regression coverage; preserve ALab analytics/export defaults.",
+      "evidence": [
+        "Canonical exact patch SHA256 a2bf7a246acf9a3108990514060b74c16188b9f0a7cc8a7764aaa8c18eeb8c27, 8674 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Keep W3C trace propagation and the fallback span while preserving ALab export defaults and provider startup custody."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9a56c2b1aa994f696b144ba863200f4b73a74c0a",
+      "subject": "Preserve plugin runtimes across catalog metadata updates (#62105)",
+      "paths": [
+        "codex-rs/app-server/src/request_processors/plugins/reconcile.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_resource/plugin_metadata_refresh.rs",
+        "codex-rs/core-plugins/src/manager.rs",
+        "codex-rs/core-plugins/src/manager_tests.rs",
+        "codex-rs/core-plugins/src/remote.rs",
+        "codex-rs/core-plugins/src/remote_metadata.rs",
+        "codex-rs/core-plugins/src/remote_metadata_cache_tests.rs",
+        "codex-rs/core-plugins/src/remote_metadata_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "account-isolation",
+        "execution-continuity",
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Separate runtime identity from catalog-only metadata; preserve loaded MCP runtime on metadata updates while keeping auth/generation cancellation fences and callback notification. Apps/plugins remain disabled by ALab default.",
+      "evidence": [
+        "Canonical exact patch SHA256 22a465c490b9f0a8c99c599982fad3c14ff20cd7f4391eb81f12551f8fddf503, 43722 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Keep runtime generation and authenticated connector/session ownership separate from descriptive catalog fields. Check metadata refresh, retirement and no-repeat dispatch with an active runtime."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "6c0cee502d215e5df2dd9a303cf2e252229c9e12",
+      "subject": "Add GPT-6.2 Sol and Astra to model catalogs (#62106)",
+      "paths": [
+        "codex-rs/app-server/tests/prompt_prefix.rs",
+        "codex-rs/app-server/tests/suite/v2/bedrock_service_tier_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_start.rs",
+        "codex-rs/core/tests/suite/gcp.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__gcp__gcp_model_picker.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_absent.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_blank.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_custom.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_empty.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_null.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__request_plugin_install__catalog_plugin_recommendations_oversized.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_eviction__idle_eviction_followup.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__agent_message_board__remote__remote_board_permissions_direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_compaction_with_live_suffix.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_executor_plugin_policy_refresh.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_limits_visible_skills.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_policy_without_skill_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_off.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh_simplified_selection_hints_on.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__attached_side_chat_preserves_model_context_on_cold_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__budget_context__host_budget_context_after_compaction.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__cached_stdio_stays_dormant_in_a_new_chat_until_first_use.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_false_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_false.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__catalog_selected_plugin_wording_apps_true_simplified_true.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__child_completion_wakes_parent_after_final_answer.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages_ranked_search.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_mcp_schema_limits.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_settled_helpers__code_mode_settled_helpers.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__command_sessions__command_sessions_world_state.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__compaction__remote_slash_compact.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__dynamic_tools__dynamic_tools_update_preserves_pending_calls_and_survives_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__frozen_cloud_skills__frozen_cloud_skills_with_named_executor_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tool_removals_regular_responses.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__incremental_tools_catalog_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_failure_preserves_ordinary_mcp_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_revocation_preserves_history_and_ordinary_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_sharing__shared_mcp_keeps_tools_and_model_requested_input_per_chat.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_Direct.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_native_tools_hidden.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_native_tools_hidden_proactive.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_environment_mcp__same_named_executor_mcps_keep_calls_and_approvals_separate.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__partial_answers__preserved_answer_fork.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__prediction_fork_preserves_context_above_compaction_threshold.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_retention_disabled.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__retained_tool_outputs__retained_tool_output_survives_compaction_and_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_without_descriptions.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__skill_catalog_deltas.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_read_installation_recovery_request_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__statusline_authoring__explicit_statusline_mention_loads_the_bundled_skill.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__strict_3p_cache__strict_3p_mcp_catalog_cache.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__unavailable_images_are_rechecked_without_rewriting_history.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_local.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__world_state_prefix__extension_window_prefix_remote.snap",
+        "codex-rs/model-provider-info/src/lib.rs",
+        "codex-rs/model-provider/src/amazon_bedrock/catalog.rs",
+        "codex-rs/model-provider/src/amazon_bedrock/runtime_catalog.rs",
+        "codex-rs/model-provider/src/amazon_bedrock/runtime_catalog_tests.rs",
+        "codex-rs/model-provider/src/gcp/gcp_tests.rs",
+        "codex-rs/model-provider/src/gcp/mod.rs",
+        "codex-rs/model-provider/src/provider_tests.rs",
+        "codex-rs/models-manager/models.json",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__background_task_defaults_tests__command_center_new_draft_handoff.snap",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_govcloud_models.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_mantle_astra62_ultrafast.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_mantle_models.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_runtime_global_astra62_ultrafast.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_runtime_models.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__bedrock_runtime_us_astra62_ultrafast.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__daybreak_refusal_parent_owned.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_picker_refresh_preserves_highlight.snap",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_selection_popup.snap",
+        "codex-rs/tui/src/chatwidget/tests/bedrock_catalog_tests.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__app__agents_overview__tests__agents_overview.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__direction_restores_parent_find.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__hide_and_reopen_side_conversation.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__keyboard_pane_widths.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__selected_unloaded_subagent_V1.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__selected_unloaded_subagent_V2.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__single_side_chat.snap"
+      ],
+      "classes": [
+        "model",
+        "defaults",
+        "feature"
+      ],
+      "features": [
+        "model-discovery",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt GPT-6.2 catalog/provider support and compatible capability metadata. Preserve explicitly requested ALab-owned gpt-6.1-sol with ultra, documented in committed reconciliation; catalog ordering and model low defaults do not override that pin. Do not infer native or SourceV1 authority from model templates.",
+      "evidence": [
+        "Canonical exact patch SHA256 067e810d8a10e13096ba1cccadbf62fef366a71672d6beef56239afe296b041d, 751355 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Retain explicit packaged gpt-6.1-sol with ultra and the existing unpinned selection path. Run current catalog and provider selection tests before changing deployment defaults."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "8011b92bc82d4cc1b6dc3f35c0cd28768c797c97",
+      "subject": "Log macOS user verification enrollment failure diagnostics (#62107)",
+      "paths": [
+        "codex-rs/user-verification/src/platform_macos.rs",
+        "codex-rs/user-verification/src/platform_macos/enrollment_diagnostics.rs",
+        "codex-rs/user-verification/src/platform_macos/key_protection.rs",
+        "codex-rs/user-verification/src/platform_macos/provider.rs"
+      ],
+      "classes": [
+        "telemetry",
+        "fix"
+      ],
+      "features": [
+        "security-notices",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "macOS enrollment failures add bounded domain/code readiness diagnostics after failure. Original result classification and validation scope remain; no diagnostic descriptions or general user-info dump.",
+      "evidence": [
+        "Canonical exact patch SHA256 ecd6e118d3bcc6e62e0fef28e4cc57780d500e8ce0b76fd5196f40eeb95f1a33, 11155 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Keep local error classification and bounded domain/code fields. Validate macOS key-protection error results and privacy surface in the native path."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "8fca6ffb92a602875a0b97e3e535eb48375bdd8c",
+      "subject": "Support OTel header helpers in local managed requirements (#62110)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ConfigRequirementsReadResponse.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/OtelRequirements.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/config.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/otel_config.rs",
+        "codex-rs/app-server/tests/common/json_logging.rs",
+        "codex-rs/app-server/tests/common/test_app_server.rs",
+        "codex-rs/app-server/tests/suite/logging.rs",
+        "codex-rs/app-server/tests/suite/strict_config.rs",
+        "codex-rs/app-server/tests/suite/v2/config_rpc.rs",
+        "codex-rs/config/src/config_requirements.rs",
+        "codex-rs/config/src/lib.rs",
+        "codex-rs/config/src/requirements_layers/layer.rs",
+        "codex-rs/config/src/requirements_layers/stack_tests.rs",
+        "codex-rs/core/src/otel_init.rs",
+        "codex-rs/otel/src/config.rs",
+        "codex-rs/otel/src/headers_helper.rs",
+        "codex-rs/otel/src/headers_helper_tests.rs",
+        "codex-rs/otel/tests/suite/otel_headers_helper.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "telemetry",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "OTel helpers are admitted only from local system/MDM requirements, absolute direct executable with parent cwd, and credentials bound to explicit nonempty same-layer HTTP endpoints. Replacing helper/exporter revokes binding. Preserve ALab disabled export defaults.",
+      "evidence": [
+        "Canonical exact patch SHA256 b3bdb1effa94f12730d7851db9401f065426c8e70c5c5d0b1e1f6fb91ce9fd83, 41823 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Require a local system/MDM requirements source and same-layer explicit HTTP exporter endpoints. Keep policy mediation around direct helper execution and verify exporter replacement, cloud refusal and retained frontend policy."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "39a7b53fa47fc987acf7d2c268588da7cb5202ed",
+      "subject": "Trust the bundled Memory session hook without saved hashes (#62112)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/hooks_list.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/scenarios_bundled_app_hooks.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__bundled_app_hooks__bundled_memory_hook_context.snap",
+        "codex-rs/hooks/src/engine/discovery.rs",
+        "codex-rs/hooks/src/engine/mod_tests.rs",
+        "codex-rs/plugin/src/bundled_hooks.rs",
+        "codex-rs/plugin/src/lib.rs"
+      ],
+      "classes": [
+        "feature",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "defer-activation",
+      "reason": "Retain the reviewed host App dispatch infrastructure and defer the automatic Memory trust exception. A matching declaration alone does not authenticate the bundled installation.",
+      "evidence": [
+        "Canonical exact patch SHA256 40fd2da002a96bae973380f0f2f1d53b182af564bf1f2f7b6a53ca574d51d275, 19699 bytes. All changed Git paths and blob identities are bound by source review packet 2db2b157710adf11ad9d5522e8b2a6935646db1a1a4925395c34bdf9af40de08.",
+        "Owned review: alab/reviews/upstream-intake-2026-11-17-after0122.md. All runtime checks for these nine commits are pending.",
+        "Classification uses the exact declared plugin, matcher, destination and empty input. A matching plugin directory can still be an unsigned declaration. Keep existing saved trust semantics where genuine bundled origin is unavailable and retain the full f993 pre-dispatch connector, generation, auth and policy checks."
+      ],
+      "revisit": "Admit a genuine bundled installation identity and qualify Memory discovery and current connector, auth and approval checks on the exact merged tree. Keep saved trust for unqualified sources."
+    }
+  ]
+}

@@ -92,19 +92,26 @@ pub(super) struct Checkpoint {
     version: u32,
     thread: String,
     turn: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<String>,
     pub options: ExecRecoveryOptions,
     worktree: Option<WorktreeSnapshot>,
 }
 
 #[cfg(unix)]
 impl Checkpoint {
-    pub fn new(options: ExecRecoveryOptions, worktree: Option<WorktreeSnapshot>) -> Self {
+    pub fn new(
+        options: ExecRecoveryOptions,
+        worktree: Option<WorktreeSnapshot>,
+        limit: Option<&str>,
+    ) -> Self {
         Self {
             version: 1,
             thread: options.thread().to_string(),
             turn: options.turn().to_owned(),
             options,
             worktree,
+            limit: limit.map(str::to_owned),
         }
     }
 
@@ -112,6 +119,10 @@ impl Checkpoint {
         let checkpoint: Self = serde_json::from_value(value)?;
         anyhow::ensure!(
             checkpoint.version == 1
+                && checkpoint
+                    .limit
+                    .as_deref()
+                    .is_none_or(codex_alab_core::wall_kind::valid_limit_id)
                 && checkpoint.thread == thread
                 && checkpoint.turn == turn
                 && checkpoint.options.thread().to_string() == thread
@@ -219,8 +230,25 @@ mod tests {
                 "disabled_plugin_ids": []
             }
         }))?;
-        let value = serde_json::to_value(Checkpoint::new(options, None))?;
+        let value = serde_json::to_value(Checkpoint::new(options, None, None))?;
+        assert!(
+            value.get("limit").is_none(),
+            "ordinary checkpoints keep their old shape"
+        );
         let checkpoint = Checkpoint::decode(value.clone(), &thread.to_string(), "original-turn")?;
+        let mut named = serde_json::to_value(Checkpoint::new(
+            checkpoint.options.clone(),
+            None,
+            Some("codex_other"),
+        ))?;
+        assert_eq!(
+            Checkpoint::decode(named.clone(), &thread.to_string(), "original-turn")?
+                .limit
+                .as_deref(),
+            Some("codex_other")
+        );
+        named["limit"] = serde_json::json!("codex");
+        assert!(Checkpoint::decode(named, &thread.to_string(), "original-turn").is_err());
         assert!(checkpoint.worktree(false)?.is_none());
         assert!(checkpoint.worktree(true).is_err());
         assert!(Checkpoint::decode(value.clone(), &thread.to_string(), "another-turn").is_err());

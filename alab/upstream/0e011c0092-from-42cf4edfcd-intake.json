@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "42cf4edfcdc872cf2700a54ad0fef7cd25e5295c",
+  "target": "0e011c00928a16579b0bda47473cee986628cb51",
+  "frontier": "42cf4edfcdc872cf2700a54ad0fef7cd25e5295c",
+  "commits": [
+    {
+      "sha": "0e011c00928a16579b0bda47473cee986628cb51",
+      "subject": "Verify dependency hashes when running Python repository tools (#62346)",
+      "paths": [
+        "codex-rs/app-server-protocol/scripts/write_schema_fixtures.py",
+        "codex-rs/scripts/run_locked_python_tool.py",
+        "scripts/format.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "sdk/python/tests/test_contract_generation.py"
+      ],
+      "classes": [
+        "security",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream's shared runner for hash-verified Python formatting and SDK schema generation. Keep the fork's source-selected Trust build and scoped upstream formatting rules.",
+      "evidence": [
+        "All five files on integrated source 93787cbdcf match upstream. The runner exports the selected lockfile group, verifies package hashes in a temporary virtual environment, and invokes the chosen tool there. Repository schema refreshes use the runner for Python types. Scratch and experimental exports leave the SDK alone.",
+        "Under the protected execution profile, eleven formatter and generation tests passed. The actual runner installed the locked Ruff versions 0.15.13 for repository scripts and 0.15.12 for the SDK. A fresh isolated project with altered package hashes was rejected before Ruff ran.",
+        "The locked SDK test group regenerated v2_all.py from the combined stable schema in a disposable source tree. Its SHA-256 ca60032f523568c3b6b1833a582d52158a6dc60800eb5720d964220d0e61cd59 matched the checked-in Python types byte for byte."
+      ],
+      "revisit": ""
+    }
+  ]
+}

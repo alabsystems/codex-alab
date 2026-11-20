@@ -55,6 +55,9 @@ struct DisclosureData {
 struct LayoutData {
     #[serde(deserialize_with = "required")]
     image: Option<Id>,
+    // Omitting the tail preserves the original wire form for zero or one raster.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    additional_images: Vec<Id>,
     logical: Vec<LogicalData>,
     text: String,
     rows: Vec<RowData>,
@@ -178,6 +181,12 @@ impl Restored {
 }
 impl LayoutData {
     fn capture(value: &TextLayout, graph: &mut native::Capture) -> io::Result<Self> {
+        if value.images.len() > native::MAX_NODES {
+            return Err(native::invalid("native layout image capacity"));
+        }
+        let mut images = value.images.iter().map(|image| graph.image(image));
+        let image = images.next().transpose()?;
+        let additional_images = images.collect::<io::Result<Vec<_>>>()?;
         let logical = value
             .logical
             .iter()
@@ -212,11 +221,8 @@ impl LayoutData {
             })
             .collect::<io::Result<Vec<_>>>()?;
         Ok(Self {
-            image: value
-                .image
-                .as_ref()
-                .map(|value| graph.image(value))
-                .transpose()?,
+            image,
+            additional_images,
             logical,
             text: value.text.clone(),
             rows,
@@ -241,6 +247,8 @@ impl LayoutData {
         if self.width == 0
             || self.logical.len() > native::MAX_NODES
             || self.rows.len() > native::MAX_NODES
+            || self.additional_images.len() >= native::MAX_NODES
+            || (self.image.is_none() && !self.additional_images.is_empty())
         {
             return Err(native::invalid("invalid native layout dimensions/capacity"));
         }
@@ -319,7 +327,12 @@ impl LayoutData {
             })
             .transpose()?;
         Ok(TextLayout {
-            image: self.image.map(|id| graph.image(id)).transpose()?,
+            images: self
+                .image
+                .iter()
+                .chain(&self.additional_images)
+                .map(|&id| graph.image(id))
+                .collect::<io::Result<_>>()?,
             logical,
             text: self.text.clone(),
             rows,

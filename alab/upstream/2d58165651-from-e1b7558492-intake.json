@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "base": "e1b755849216aacd40574b5ccf9ee18d18b1a867",
+  "target": "2d581656514cf4d87a43e20f3a8be4a0a2696025",
+  "frontier": "e1b755849216aacd40574b5ccf9ee18d18b1a867",
+  "commits": [
+    {
+      "sha": "2d581656514cf4d87a43e20f3a8be4a0a2696025",
+      "subject": "Expose custom status lines in `/experimental` (#62387)",
+      "paths": [
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__statusline_authoring__explicit_statusline_mention_loads_the_bundled_skill.snap",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/skills/src/assets/samples/create-statusline/SKILL.md",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/experimental_features_tests.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/status_line_settings_tests.rs",
+        "codex-rs/tui/src/app/statusline_picker.rs",
+        "codex-rs/tui/src/app/statusline_picker_tests.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/projectless_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests/startup_defaults_tests.rs",
+        "codex-rs/tui/src/bottom_pane/experimental_features_view_tests.rs",
+        "codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__experimental_features_view__tests__experimental_features_tui_extensions_statusline.snap",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/constructor.rs",
+        "codex-rs/tui/src/chatwidget/session_flow.rs",
+        "codex-rs/tui/src/chatwidget/status_controls.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader.rs",
+        "codex-rs/tui/src/chatwidget/statusline_reader_tests.rs",
+        "codex-rs/tui/src/chatwidget/tests/status_surface_previews.rs",
+        "codex-rs/tui/src/config_update.rs",
+        "codex-rs/tui/src/statusline_metrics.rs"
+      ],
+      "classes": [
+        "feature",
+        "defaults"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Expose the upstream Custom status line experiment. The serving app server owns the opt-in for this TUI launch. Keep the fork’s fresh config read and defaults installation under the original retained startup owner.",
+      "evidence": [
+        "Upstream leaves the experiment off by default. The menu saves the selection in the server profile for the next TUI start. The reader, picker and metrics use the startup flag while local preferences still select a provider. Built-in status line items and the fork’s packaged footer remain available.",
+        "Fresh startup reads the effective server config once with layers and applies project and model defaults. A resume or fork reads the flag without layers, waits at most two seconds for that request, and leaves the saved session settings intact when the read fails or times out.",
+        "The fork keeps OwnedLocal on its local working directory. When configured replay is required, the original fresh read and defaults conversion remain inside the pending projection, with its same-client tail and UI witness before input release. The startup flag follows replacement chat widgets. The custom-provider picker still checks its thread and backend.",
+        "The upstream change includes the selected-server profile save, restart boundary, local provider reload and experimental-menu controls, plus the bundled authoring sample update. These are review findings. Native startup and retained-session qualification use the combined source."
+      ],
+      "revisit": "Exercise fresh and resumed starts with different client and server opt-ins, preserve a saved model and effort, and run the retained configured-input controls on the integrated product."
+    }
+  ]
+}

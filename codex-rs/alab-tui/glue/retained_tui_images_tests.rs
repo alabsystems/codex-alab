@@ -127,13 +127,26 @@ fn real_completed_local_write_and_clear_retire_only_after_same_frame_finishes() 
         0xC100,
     )
     .map_err(io::Error::other)?;
-    assert!(result.is_none());
+    let file = result.ok_or_else(|| io::Error::other("actual placement alias missing"))?;
+    assert!(file.path().exists());
+    let records = book.records()?;
+    assert!(
+        file.same_actual(
+            records[0]
+                .lock()
+                .map_err(|error| io::Error::other(error.to_string()))?
+                .file
+                .as_ref()
+                .ok_or_else(|| io::Error::other("actual original file missing"))?,
+        )
+    );
+    drop(records);
     output.flush()?;
     let placement = ImagePlacement {
         image,
         area: Rect::new(1, 1, 1, 1),
         first_row: 0,
-        file: None,
+        file: Some(file),
     };
     flushed(&[placement], 0xC100)?;
     frame.finish()?;
@@ -168,7 +181,7 @@ fn nested_original_clear_cannot_retire_files_before_the_same_outer_writer_commit
     let image = raster();
     let mut bytes = Vec::new();
     let initial = book.begin()?;
-    let _file = draw_owned(
+    let file = draw_owned(
         &image,
         &mut bytes,
         Rect::new(1, 1, 1, 1),
@@ -176,14 +189,15 @@ fn nested_original_clear_cannot_retire_files_before_the_same_outer_writer_commit
         KittyPlacement::Cursor(0xC100),
         0xC100,
     )
-    .map_err(io::Error::other)?;
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("actual placement alias missing"))?;
     bytes.flush()?;
     flushed(
         &[ImagePlacement {
             image,
             area: Rect::new(1, 1, 1, 1),
             first_row: 0,
-            file: None,
+            file: Some(file),
         }],
         0xC100,
     )?;

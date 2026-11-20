@@ -41,6 +41,11 @@ enum ConstructionIntent {
     Projected {
         selection: Box<ClientConstructionSelection>,
     },
+    SavedResume {
+        opening: String,
+        child: String,
+        selection: Box<ClientConstructionSelection>,
+    },
 }
 impl ConstructionIntent {
     fn selection(
@@ -61,6 +66,16 @@ impl ConstructionIntent {
             Self::Projected { selection } if method != Method::Start => {
                 Ok(selection.as_ref().clone())
             }
+            Self::SavedResume {
+                child, selection, ..
+            } if method == Method::Resume
+                && parameters
+                    .get("threadId")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(child.as_str()) =>
+            {
+                Ok(selection.as_ref().clone())
+            }
             _ => Err(invalid(
                 "client construction method disagrees with its original intent",
             )),
@@ -74,72 +89,64 @@ pub struct ClientConstructionCheckpoint {
     retired: bool,
     preparation: String,
     intent: ConstructionIntent,
-    frozen: Option<Prepare>,
+    frozen: Option<Arc<Prepare>>,
     offer: Option<Offer>,
     result: Option<ClientConstructionResult>,
     mutation_attempted: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    saved_reply_received: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     side_boundary: Option<side_boundary::Checkpoint>,
 }
 #[derive(Clone)]
-pub struct ClientConstructionOperation(Arc<Mutex<ClientConstructionCheckpoint>>);
+pub struct ClientConstructionOperation {
+    state: Arc<Mutex<ClientConstructionCheckpoint>>,
+    restored: bool,
+}
 impl ClientConstructionOperation {
     /// Retain this owner before running the entire original new-chat future.
     /// Its exact Primary policy is derived once from the first original typed
     /// Start wire, never from placeholders, defaults or a copied UI projection.
     pub fn for_start() -> Self {
-        Self(Arc::new(Mutex::new(ClientConstructionCheckpoint {
-            schema: 2,
-            retired: false,
-            preparation: fresh(),
-            intent: ConstructionIntent::Start,
-            frozen: None,
-            offer: None,
-            result: None,
-            mutation_attempted: false,
-            side_boundary: None,
-        })))
+        Self::with_intent(ConstructionIntent::Start, fresh())
     }
-    pub fn new(mut selection: ClientConstructionSelection) -> IoResult<Self> {
+    pub fn new(selection: ClientConstructionSelection) -> IoResult<Self> {
         if selection.prepared.is_some() {
             return Err(invalid(
                 "new client choice cannot inherit an old prepared offer",
             ));
         }
-        selection.prepared = None;
-        Ok(Self(Arc::new(Mutex::new(ClientConstructionCheckpoint {
-            schema: 2,
-            retired: false,
-            preparation: fresh(),
-            intent: ConstructionIntent::Projected {
-                selection: Box::new(selection),
-            },
-            frozen: None,
-            offer: None,
-            result: None,
-            mutation_attempted: false,
-            side_boundary: None,
-        }))))
+        Ok(Self::fresh(selection))
     }
     pub(super) fn fresh(selection: ClientConstructionSelection) -> Self {
         // Keep an invalid inherited offer as invalid input; freeze() denies it
         // before any preflight or mutation, rather than silently clearing it.
-        Self(Arc::new(Mutex::new(ClientConstructionCheckpoint {
-            schema: 2,
-            retired: false,
-            preparation: fresh(),
-            intent: ConstructionIntent::Projected {
+        Self::with_intent(
+            ConstructionIntent::Projected {
                 selection: Box::new(selection),
             },
-            frozen: None,
-            offer: None,
-            result: None,
-            mutation_attempted: false,
-            side_boundary: None,
-        })))
+            fresh(),
+        )
+    }
+    fn with_intent(intent: ConstructionIntent, preparation: String) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ClientConstructionCheckpoint {
+                schema: 2,
+                retired: false,
+                preparation,
+                intent,
+                frozen: None,
+                offer: None,
+                result: None,
+                mutation_attempted: false,
+                saved_reply_received: false,
+                side_boundary: None,
+            })),
+            restored: false,
+        }
     }
     pub fn checkpoint(&self) -> ClientConstructionCheckpoint {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -147,20 +154,33 @@ impl ClientConstructionOperation {
     /// Local freeze occurred before any prepare/mutation send. False permits
     /// retiring only a failed frontend record, never Native/Source effects.
     pub fn original_request_started_data(&self) -> bool {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .frozen
             .is_some()
     }
     pub fn restore(checkpoint: ClientConstructionCheckpoint) -> IoResult<Self> {
-        if !Self::valid_side(&checkpoint)
+        Self::validate_checkpoint(&checkpoint)?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(checkpoint)),
+            restored: true,
+        })
+    }
+    /// Check retained request and result data before constructing an operation.
+    pub fn validate_checkpoint(checkpoint: &ClientConstructionCheckpoint) -> IoResult<()> {
+        if !Self::valid_side(checkpoint)
+            || !checkpoint.valid_saved_binding()
+            || (checkpoint.saved_reply_received
+                && (!checkpoint.mutation_attempted || checkpoint.saved_opening().is_none()))
             || checkpoint.schema != 2
             || !metadata::preparation::token(&checkpoint.preparation)
             || matches!(&checkpoint.intent, ConstructionIntent::Projected { selection } if selection.prepared.is_some())
             || checkpoint.frozen.as_ref().is_some_and(|frozen| {
                 !frozen.valid()
                     || frozen.preparation != checkpoint.preparation
+                    || frozen.saved_opening.as_deref()
+                        != checkpoint.saved_opening().map(|(opening, _)| opening)
                     || match checkpoint
                         .intent
                         .selection(frozen.method, &frozen.parameters)
@@ -183,7 +203,7 @@ impl ClientConstructionOperation {
         {
             return Err(invalid("invalid client construction checkpoint"));
         }
-        Ok(Self(Arc::new(Mutex::new(checkpoint))))
+        Ok(())
     }
     /// Actual pending UI owner must retain this same operation BEFORE awaiting
     /// its original work. This only scopes request construction, never UI ACK.
@@ -191,14 +211,14 @@ impl ClientConstructionOperation {
         CLIENT_SCOPE.scope(self.clone(), work).await
     }
     pub fn observed_result(&self) -> Option<ClientConstructionResult> {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .result
             .clone()
     }
     pub fn prepared_offer(&self) -> Option<Offer> {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .offer
@@ -214,23 +234,29 @@ impl ClientConstructionOperation {
             .params
             .clone()
             .ok_or_else(|| invalid("client construction parameters missing"))?;
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.restored && state.saved_opening().is_some() {
+            return Err(invalid(
+                "restored saved opening can only read its original outcome",
+            ));
+        }
         let selection = state.intent.selection(method, &parameters)?;
         let frozen = Prepare {
             preparation: state.preparation.clone(),
+            saved_opening: state.saved_opening().map(|(opening, _)| opening.to_owned()),
             method,
             parameters,
             selection,
         };
         if state.retired
             || !frozen.valid()
-            || state.frozen.as_ref().is_some_and(|old| old != &frozen)
+            || state.frozen.as_deref().is_some_and(|old| old != &frozen)
         {
             return Err(invalid(
                 "client construction cannot retry changed full arguments",
             ));
         }
-        state.frozen = Some(frozen.clone());
+        state.frozen.get_or_insert_with(|| Arc::new(frozen.clone()));
         Ok(frozen)
     }
     pub(super) async fn prepare(
@@ -242,13 +268,18 @@ impl ClientConstructionOperation {
         if let Some(offer) = self.prepared_offer() {
             return Ok(Ok(offer));
         }
-        let selection = Request::Prepare(Box::new(frozen.clone()));
+        let mut original_data = frozen.clone();
+        let saved_opening = original_data.saved_opening.take();
+        let mut metadata = serde_json::json!({
+            (metadata::preparation::KEY):encode_request(&Request::Prepare(Box::new(original_data)))?
+        });
+        if let Some(opening) = saved_opening {
+            metadata[metadata::preparation::SAVED_OPENING_KEY] = opening.into();
+        }
         let wire = codex_app_server_protocol::JSONRPCRequest {
             id: RequestId::String(format!("alab-client-prepare-{}", fresh())),
             method: "config/read".into(),
-            params: Some(serde_json::json!({"includeLayers":false,"_meta":{
-                (metadata::preparation::KEY):encode_request(&selection)?
-            }})),
+            params: Some(serde_json::json!({"includeLayers":false,"_meta":metadata})),
             trace: original.trace.clone(),
         };
         let mut value = match remote.request_json_rpc(wire).await? {
@@ -281,8 +312,8 @@ impl ClientConstructionOperation {
             return Err(invalid("client preparation observation disagrees"));
         }
         {
-            let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.frozen.as_ref() != Some(&frozen)
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.frozen.as_deref() != Some(&frozen)
                 || state.offer.as_ref().is_some_and(|old| old != &offer)
             {
                 return Err(invalid("client preparation changed its original operation"));
@@ -306,6 +337,11 @@ impl ClientConstructionOperation {
             ));
         };
         let checkpoint = self.checkpoint();
+        if self.restored && checkpoint.saved_opening().is_some() {
+            return Err(invalid(
+                "restored saved opening cannot retire its original construction",
+            ));
+        }
         if checkpoint.retired {
             return Ok(ClientPreparationRetirement::Retired);
         }
@@ -354,7 +390,7 @@ impl ClientConstructionOperation {
             Completion::Retired { preparation, claim }
                 if preparation == offer.preparation && claim == offer.claim =>
             {
-                let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.offer.as_ref() != Some(&offer) {
                     return Err(invalid("preparation retirement owner changed"));
                 }
@@ -370,8 +406,11 @@ impl ClientConstructionOperation {
         }
     }
     pub(super) fn begin_mutation(&self, offer: &Offer) -> IoResult<ClientConstructionSelection> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.retired || state.offer.as_ref() != Some(offer) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.retired
+            || state.offer.as_ref() != Some(offer)
+            || (state.saved_opening().is_some() && (self.restored || state.mutation_attempted))
+        {
             return Err(invalid("client prepared owner changed"));
         }
         state.mutation_attempted = true;
@@ -385,7 +424,7 @@ impl ClientConstructionOperation {
         Ok(selection)
     }
     pub(super) fn record(&self, result: ClientConstructionResult) -> IoResult<()> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.mutation_attempted
             || state.offer.as_ref() != Some(&result.prepared)
             || state.result.as_ref().is_some_and(|old| old != &result)
@@ -395,7 +434,18 @@ impl ClientConstructionOperation {
         state.result = Some(result);
         Ok(())
     }
+    pub(super) fn record_saved_reply_received(&self, offer: &Offer) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.saved_opening().is_some() && state.offer.as_ref() == Some(offer) {
+            state.saved_reply_received = true;
+        }
+    }
 }
+
+#[path = "saved_opening_query_client.rs"]
+mod saved_opening;
+pub use saved_opening::SavedResumeObservation;
+pub use saved_opening::SavedResumeQuery;
 fn fresh() -> String {
     format!(
         "{:016x}{:016x}",
@@ -477,7 +527,7 @@ impl ClientConstructionOperation {
         let params: codex_app_server_protocol::ThreadInjectItemsParams =
             serde_json::from_value(parameters.clone())
                 .map_err(|_| invalid("original typed Side injection params invalid"))?;
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let selection = Self::side_selection(&state)?;
         if state
             .result
@@ -504,7 +554,7 @@ impl ClientConstructionOperation {
         &self,
         complete: side_boundary::side_metadata::Completion,
     ) -> IoResult<()> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let selection = Self::side_selection(&state)?;
         let thread = state
             .result
@@ -533,7 +583,7 @@ impl ClientConstructionOperation {
 impl ClientConstructionOperation {
     /// Exact original injection result DATA, never Native/currentness proof.
     pub fn side_boundary_observation_data(&self) -> Option<(String, String)> {
-        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let complete = state.side_boundary.as_ref()?.result.as_ref()?;
         complete
             .valid()
@@ -547,7 +597,7 @@ mod side_boundary_tests;
 
 impl ClientConstructionOperation {
     pub(crate) fn side_rollback_data(&self) -> IoResult<(String, String)> {
-        let p = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let p = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let frozen = p
             .frozen
             .as_ref()
@@ -579,7 +629,7 @@ impl ClientConstructionOperation {
     /// Observed construction DATA only. Server close still authenticates the
     /// actual Native A and selects only an existing private Scope/Core owner.
     pub fn side_view_data(&self) -> Option<crate::SideView> {
-        let p = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let p = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let frozen = p.frozen.as_ref()?;
         if frozen.selection.presentation != ClientPresentation::SideConversation {
             return None;

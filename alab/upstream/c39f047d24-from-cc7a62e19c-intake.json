@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "base": "cc7a62e19cb4703495e3a6d01e1af076e8223833",
+  "target": "c39f047d24e66521d0c538d153a857ed5c03910b",
+  "frontier": "cc7a62e19cb4703495e3a6d01e1af076e8223833",
+  "commits": [
+    {
+      "sha": "c39f047d24e66521d0c538d153a857ed5c03910b",
+      "subject": "Migrate the Windows MXC sandbox to the public V1 SDK (#62331)",
+      "paths": [
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/mxc-sandbox/Cargo.toml",
+        "codex-rs/mxc-sandbox/README.md",
+        "codex-rs/mxc-sandbox/src/availability.rs",
+        "codex-rs/mxc-sandbox/src/native.rs",
+        "codex-rs/mxc-sandbox/src/native_tests.rs",
+        "codex-rs/mxc-sandbox/src/policy.rs",
+        "codex-rs/mxc-sandbox/src/policy_tests.rs",
+        "codex-rs/mxc-sandbox/src/windows.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Use the public MXC V1 SDK and its ProcessContainer policies on Windows. Preserve the normal platform selection and the upstream dependency revision.",
+      "evidence": [
+        "The SDK pin moves to microsoft/mxc c6620183. The Windows backend constructs a V1 container request with inherited stdio, filesystem grants, environment and network policy. The SDK reports availability and rejects unsupported deny paths during launch.",
+        "The candidate retains the committed ALab Bazel removals. The upstream Cargo manifest and lock contain the new MXC revision. The exact Microsoft source was fetched and verified against the locked Git object ID.",
+        "At b8a4b5899d the crate Rust sources, Cargo manifest and README match upstream. All 14 package records changed by the migration match the upstream lock, and locked offline metadata resolved after the required registry downloads. The Windows release check on the exact upstream commit reported a failure. Its annotation gives the exit status only, so the cause and the fork\u2019s native Windows behavior are unverified."
+      ],
+      "revisit": "Exercise request construction and actual ProcessContainer launch on a supported Windows host, including a host that cannot enforce a requested path denial."
+    }
+  ]
+}

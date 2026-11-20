@@ -340,6 +340,7 @@ pub(crate) enum SearchMode {
 /// visible rows and source items and for preserving selection while filters
 /// change.
 pub(crate) struct ListSelectionView {
+    alab_pointer: Option<Box<alab_picker_mouse::Pointer>>, // ALAB(interface): mouse gestures belong to one live Autopilot picker.
     presentation: super::ViewPresentation,
     picker_surface: PickerSurface,
     max_visible_rows: usize,
@@ -502,6 +503,7 @@ impl ListSelectionView {
             reserve_result_rows: params.reserve_result_rows,
             allow_input_when_disconnected: params.allow_input_when_disconnected,
             presentation: params.presentation,
+            alab_pointer: alab_picker_mouse::Pointer::for_view(params.view_id), // ALAB(interface): other native lists retain their input behavior.
             view_id: params.view_id,
             footer_note: params.footer_note,
             footer_hint: params.footer_hint,
@@ -739,7 +741,7 @@ impl ListSelectionView {
         }
     }
 
-    fn build_rows(&self) -> Vec<GenericDisplayRow> {
+    fn build_rows(&self, width: u16) -> Vec<GenericDisplayRow> { // ALAB(interface): size the Autopilot current marker in the native list.
         let enabled_row_number_width = self
             .filtered_indices
             .iter()
@@ -762,7 +764,7 @@ impl ListSelectionView {
                     let is_selected = self.state.selected_idx == Some(visible_idx);
                     let prefix = if is_selected { '›' } else { ' ' };
                     let name = item.name.as_str();
-                    let marker = if item.is_current { " (current)" } else { "" };
+                    let (marker, number_gap) = self.alab_current_marker(item, enabled_row_number + 1, width); // ALAB(interface): keep focus and active mode distinct when their label would wrap.
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
                     let wrap_prefix = if self.is_searchable {
@@ -788,7 +790,7 @@ impl ListSelectionView {
                     } else {
                         enabled_row_number += 1;
                         let n = enabled_row_number;
-                        format!("{prefix} {n}. ")
+                        format!("{prefix}{number_gap}{n}. ") // ALAB(interface): use the existing gutter cell for a compact current mark.
                     };
                     let wrap_prefix_width = UnicodeWidthStr::width(wrap_prefix.as_str());
                     let mut name_prefix_spans = Vec::new();
@@ -804,6 +806,7 @@ impl ListSelectionView {
                     let wrap_indent = (description.is_none() && item.disabled_reason.is_none())
                         .then_some(wrap_prefix_width);
                     GenericDisplayRow {
+                        alab_picker_rect: (self.alab_pointer.is_some() && !is_disabled).then(Cell::default), // ALAB(interface): capture only enabled Autopilot row geometry.
                         category_tag: item.category_tag.clone(),
                         selection_style: row_selection_style,
                         name: name_with_marker,
@@ -971,6 +974,7 @@ impl ListSelectionView {
     }
 
     fn accept(&mut self, kind: SelectionActionKind) {
+        if !codex_alab_tui::interface::picker_accepts_selection(self.view_id) { return; } // ALAB(interface): a withdrawn Autopilot choice cannot dispatch or dismiss its picker between redraws.
         let selected_actual_idx = self.selected_actual_idx();
         if matches!(kind, SelectionActionKind::Primary)
             && selected_actual_idx
@@ -1274,6 +1278,8 @@ impl ListSelectionView {
 }
 
 impl BottomPaneView for ListSelectionView {
+    fn alab_picker_mouse(&mut self, event: crossterm::event::MouseEvent) -> super::alab_picker_pointer::PickerMouse { self.alab_pointer_result(event) } // ALAB(interface): the picker reports mouse ownership and repaint independently.
+    fn alab_cancel_picker_mouse(&mut self, keep_geometry: bool) -> bool { self.alab_clear_pointer(keep_geometry) } // ALAB(interface): boundaries retire old pointer feedback and input.
     fn pre_draw_tick(&mut self, _now: std::time::Instant) -> bool { alab_answer::tick(self) } // ALAB(answer): codex-alab answers the plan box and the goal box under a proven aterm claim
     fn presentation(&self) -> super::ViewPresentation {
         self.presentation
@@ -1554,7 +1560,7 @@ impl Renderable for ListSelectionView {
         };
 
         // Measure at the same width as the painted rows, including any side panel.
-        let rows = self.build_rows();
+        let rows = self.build_rows(effective_rows_width); // ALAB(interface): measure the marker at its painted width.
         let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
             .with_description_layout(self.description_layout);
         let rows_height = match self.row_display {
@@ -1619,6 +1625,7 @@ impl Renderable for ListSelectionView {
         self.rendered_item_count.set(/*val*/ 0);
         self.search_cursor.set(/*val*/ None);
         if area.height == 0 || area.width == 0 {
+            self.alab_clear_pointer(false); // ALAB(interface): an empty paint has no mouse targets.
             return;
         }
         let search_field_visible = self.search_field_visible();
@@ -1630,7 +1637,7 @@ impl Renderable for ListSelectionView {
         } else {
             area.width
         };
-        let rows = self.build_rows();
+        let rows = self.build_rows(effective_rows_width); // ALAB(interface): use the same current marker as height measurement.
         let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
             .with_description_layout(self.description_layout);
         let show_selected_description = should_show_selected_description_below(
@@ -1819,6 +1826,8 @@ impl Renderable for ListSelectionView {
                 );
             }
         }
+
+        self.alab_publish_pointer_rows(&rows, area, buf, effective_rows_width, list_area.height, column_width); // ALAB(interface): the same painted choices own hover and pointer input.
 
         // -- Side content (preview panel) --
         if let Some(sw) = side_w {
@@ -3519,3 +3528,5 @@ mod picker_tests;
 #[cfg(unix)]
 #[path = "../../../alab-tui/glue/retained_approval_list.rs"]
 pub(crate) mod alab_retained_approval_list; // ALAB(retained-ui): data-only native approval list state, with original callbacks intact.
+
+#[path = "../../../alab-tui/glue/autopilot_picker_mouse.rs"] mod alab_picker_mouse; // ALAB(interface): pointer input for the native Autopilot picker.

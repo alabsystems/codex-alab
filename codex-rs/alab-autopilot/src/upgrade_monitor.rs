@@ -5,13 +5,17 @@
 //! cannot start, misses a downstream symlink change, or closes. A delayed check schedules
 //! from the current time, so waking a sleeping machine never replays the missed minutes.
 
+use codex_file_watcher::FileWatcher;
+use codex_file_watcher::FileWatcherSubscriber;
+use codex_file_watcher::Receiver;
+use codex_file_watcher::WatchRegistration;
 use std::future::Future;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-pub(crate) fn watch_paths(
-    directories: &[std::path::PathBuf],
-) -> Vec<codex_file_watcher::WatchPath> {
+fn watch_paths(directories: &[PathBuf]) -> Vec<codex_file_watcher::WatchPath> {
     directories
         .iter()
         .map(|path| codex_file_watcher::WatchPath {
@@ -19,6 +23,68 @@ pub(crate) fn watch_paths(
             recursive: false,
         })
         .collect()
+}
+
+/// The subscriber owns its watcher and the registration owns its requested paths.
+pub(crate) struct LaunchWatch {
+    directories: Vec<PathBuf>,
+    subscriber: FileWatcherSubscriber,
+    registration: WatchRegistration,
+    receiver: Receiver,
+}
+
+impl LaunchWatch {
+    fn subscribe(watcher: FileWatcher, directories: Vec<PathBuf>) -> Self {
+        let (subscriber, receiver) = Arc::new(watcher).add_subscriber();
+        let registration = subscriber.register_paths(watch_paths(&directories));
+        Self {
+            directories,
+            subscriber,
+            registration,
+            receiver,
+        }
+    }
+
+    fn open(directories: Vec<PathBuf>) -> Result<Self, String> {
+        Ok(Self::subscribe(
+            FileWatcher::new().map_err(|error| error.to_string())?,
+            directories,
+        ))
+    }
+
+    fn registered(&self) -> bool {
+        !self.directories.is_empty() && self.registration.registration_succeeded()
+    }
+
+    pub(crate) async fn hint(watch: &mut Option<Self>) -> bool {
+        match watch {
+            Some(watch) => watch.receiver.recv().await.is_some(),
+            None => std::future::pending().await,
+        }
+    }
+
+    pub(crate) fn refresh(
+        watch: &mut Option<Self>,
+        directories: Vec<PathBuf>,
+        wake: Wake,
+    ) -> Result<(), String> {
+        // A failed OS watch can still have a positive reference count on its
+        // subscriber. A fresh backend retries registration even for identical paths.
+        if wake == Wake::Reconcile && !watch.as_ref().is_some_and(Self::registered) {
+            *watch = Some(Self::open(directories)?);
+        } else if let Some(watch) = watch
+            && directories != watch.directories
+        {
+            let replacement = watch.subscriber.register_paths(watch_paths(&directories));
+            watch.registration = replacement;
+            watch.directories = directories;
+        }
+        if watch.as_ref().is_some_and(Self::registered) {
+            Ok(())
+        } else {
+            Err("the launch chain could not be watched".into())
+        }
+    }
 }
 
 pub(crate) const RECONCILE_AFTER: Duration = Duration::from_secs(60);
@@ -108,6 +174,70 @@ mod tests {
             codex_alab_tui::upgrade::named_build(&root.join("launch/codex")),
             Some(root.join("store/new")),
         );
+    }
+
+    #[tokio::test]
+    async fn repaired_registration_wakes_on_the_next_package_selection() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = std::env::var_os("ALAB_TEST_SCRATCH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let temporary = tempfile::Builder::new()
+            .prefix("codex-launch-repair-")
+            .tempdir_in(scratch)
+            .unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        for build in ["old", "new"] {
+            std::fs::write(root.join(build), b"image").unwrap();
+        }
+        let selection = root.join("codex");
+        symlink("old", &selection).unwrap();
+        let directories = codex_alab_tui::upgrade::watch_directories(&selection);
+
+        // The native watcher’s inert backend deterministically reproduces a failed
+        // OS registration. The first retry uses the real filesystem watcher.
+        let mut watch = Some(LaunchWatch::subscribe(
+            FileWatcher::noop(),
+            directories.clone(),
+        ));
+        assert!(!watch.as_ref().unwrap().registered());
+        assert!(LaunchWatch::refresh(&mut watch, directories.clone(), Wake::Hint).is_err());
+        LaunchWatch::refresh(&mut watch, directories, Wake::Reconcile)
+            .expect("restore the OS watch for the same directories");
+        symlink("new", root.join("next")).unwrap();
+        std::fs::rename(root.join("next"), &selection).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let event = watch
+                    .as_mut()
+                    .unwrap()
+                    .receiver
+                    .recv()
+                    .await
+                    .expect("live watcher");
+                if event.paths.iter().any(|path| path == &selection) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the renamed selection wakes the repaired watcher before the minute check");
+        assert_eq!(
+            codex_alab_tui::upgrade::named_build(&selection),
+            Some(root.join("new"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_watcher_reopens_only_on_reconciliation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directories = vec![temporary.path().canonicalize().unwrap()];
+        let mut watch = None;
+        assert!(LaunchWatch::refresh(&mut watch, directories.clone(), Wake::Hint).is_err());
+        assert!(watch.is_none());
+        LaunchWatch::refresh(&mut watch, directories, Wake::Reconcile).unwrap();
+        assert!(watch.as_ref().unwrap().registered());
     }
 
     /// No notification is required, including after a lost event or failed watcher.

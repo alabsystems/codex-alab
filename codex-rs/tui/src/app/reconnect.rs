@@ -29,12 +29,14 @@ pub(super) struct Reconnected {
     thread: Option<AppServerStartedThread>,
 }
 
+#[path = "../../../alab-tui/glue/snapshot_input_reconnect.rs"] mod snapshot_input; // ALAB(retained-ui): bind replayed input to the actual resumed conversation.
+
 #[expect(
     clippy::too_many_arguments,
     reason = "retain logical ownership across connection replacement"
 )]
 pub(super) async fn reconnect(
-    backend_id: crate::backend_id::BackendId,
+    owner: impl Into<crate::daemon_login::ReconnectOwner>, // ALAB(accounts): an admitted backend carries its login across transport loss.
     target: AppServerTarget,
     config: Config,
     local_settings: crate::local_settings::LocalSettings,
@@ -43,6 +45,7 @@ pub(super) async fn reconnect(
     task_tools: ThreadToolTransport,
     presentation: ReconnectPresentation,
 ) -> Result<Reconnected> {
+    let crate::daemon_login::ReconnectOwner { backend: backend_id, login: daemon_login } = owner.into(); // ALAB(accounts): plain backend IDs keep their original transport semantics.
     if matches!(target, AppServerTarget::Cloud) {
         color_eyre::eyre::bail!("Reopen Codex to reconnect the cloud backend.");
     }
@@ -73,11 +76,13 @@ pub(super) async fn reconnect(
             tokio::time::sleep(Duration::from_secs(delay)).await;
             stage = "connecting to the server";
             let client = crate::app_server_connection::connect(&target).await?;
+            let client = crate::daemon_login::check_replacement(daemon_login.as_deref(), &target, client).await?; // ALAB(accounts): recheck the actual replacement before any bootstrap or resume.
             let mut session = AppServerSession::new(backend_id, client, mode)
                 .with_selected_target(&target)? // ALAB(owned-local): retain the same controller and backend-owned task tools on reconnection.
                 .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
+            session.daemon_login = daemon_login.clone(); // ALAB(accounts): keep this owner through subsequent transport replacements.
             stage = "loading session settings";
             let bootstrap = session.bootstrap(&config).await?;
             let thread = if let Some(thread_id) = thread_id {
@@ -92,6 +97,7 @@ pub(super) async fn reconnect(
                     .await
                 {
                     Ok(thread) => Some(thread),
+                    Err(error) if error.is::<crate::app_server_session::history_page::ThreadResponseIdMismatch>() => return Err(error), // ALAB(history): an overview reconnect cannot discard a contradictory success as a missing thread.
                     Err(error)
                         if matches!(
                             error.downcast_ref::<TypedRequestError>(),
@@ -133,7 +139,9 @@ pub(super) async fn reconnect(
         };
         let result = tokio::time::timeout_at(deadline, attempt).await;
         match result {
-            Ok(Ok(connected)) => return Ok(connected),
+            Ok(Ok(connected)) => return snapshot_input::validate_returned_thread(thread_id, connected), // ALAB(retained-ui): a different returned conversation ends this attempt without repeating the resume.
+            Ok(Err(error)) if error.is::<crate::app_server_session::history_page::ThreadResponseIdMismatch>() => return Err(error), // ALAB(history): an observed resume success must not be sent again after an identity mismatch.
+            Ok(Err(error)) if error.is::<crate::daemon_login::DaemonLoginChanged>() => return Err(error), // ALAB(accounts): a different observed login cannot recover this session.
             Ok(Err(_)) => {}
             Err(_) => break,
         }
@@ -361,6 +369,7 @@ impl App {
         connected: Reconnected,
         client_version: &str,
     ) -> Result<()> {
+        let input_thread = self.alab_check_reconnect_input_owner(app_server.backend_id(), &connected)?; // ALAB(retained-ui): reject a split configured display before parking its input or replacing its view.
         // Keep input paused while the disconnected view is replaced so its keys cannot reach the
         // restored composer. The final drain below drops anything typed during the handoff.
         let discard_replaced_view_input = self.chat_widget.cancel_active_disconnected_view();
@@ -378,6 +387,7 @@ impl App {
             .selected_index_for_present_view(agents_overview::AGENTS_OVERVIEW_VIEW_ID)
             .and_then(|index| self.agents_overview.visible_thread_ids.get(index).copied());
         let displayed = self.current_displayed_thread_id();
+        let resumed = snapshot_input::writable_result(&session, thread.as_ref()); // ALAB(retained-ui): remember the actual writable result before the replacement adopts its channels.
         let mut input = self.chat_widget.capture_thread_input_state();
         if let Some(input) = input.as_mut() {
             input.reconnect_pending = true;
@@ -409,6 +419,8 @@ impl App {
         self.rate_limit_refresh_state.invalidate_recovery();
         session.worktree_source_config_builder = app_server.worktree_source_config_builder.clone();
         session.inherit_task_tool_capabilities(app_server);
+        let outgoing_backend = app_server.backend_id(); // ALAB(retained-ui): unassigned channels and this backend's channels move to the replacement.
+        self.saved_openings.alab_retire_connection(app_server); // ALAB(retained-ui): keep the original unsubscribe attached to each flight of this physical connection.
         *app_server = session;
         #[cfg(any(target_os = "windows", test))]
         let interrupted_windows_setup = self.windows_sandbox.pending_setup.take().is_some();
@@ -465,16 +477,14 @@ impl App {
         self.agents_overview.refresh_show_more = false;
         self.agents_overview.active_refresh_thread_ids.clear();
         self.agents_overview.refresh_pending = false;
-        for input in self.agents_overview.input_states.values_mut() {
-            input.reconnect_pending = true;
-        }
+        self.alab_mark_reconnected_parked_inputs(outgoing_backend); // ALAB(retained-ui): only this connection's parked drafts enter recovery.
         self.pending_startup_thread_start = matches!(
             self.reconnect.presentation,
             ReconnectPresentation::Startup(_)
         );
         // Move cached UI state into fresh channels. Old producers retain the old sender/store,
         // so their late requests cannot leak into recovery. Background threads attach on selection.
-        for channel in self.thread_event_channels.values_mut() {
+        for (_, channel) in self.thread_event_channels.iter_mut().filter(|(id, channel)| snapshot_input::belongs_to_reconnect(**id, channel.backend_id, &self.backend_registry, outgoing_backend)) { // ALAB(retained-ui): a different live backend keeps its own channel, queued updates and attachment.
             let mut replacement = ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY);
             replacement.backend_id = channel.backend_id;
             if channel.attachment() == ThreadEventAttachment::ExternalWriter {
@@ -487,6 +497,7 @@ impl App {
                 ThreadEventStore::new(THREAD_EVENT_CHANNEL_CAPACITY),
             );
             store.pending_interactive_replay = Default::default();
+            store.attachment_prefix = None; // ALAB(retained-ui): this buffered prefix belonged to the attachment on the displaced store.
             store.pending_interrupt_turn_id = None;
             store.active = false;
             store
@@ -498,7 +509,7 @@ impl App {
             *replacement.store.lock().await = store;
             *channel = replacement;
         }
-        if let Some(id) = self.current_displayed_thread_id()
+        if let Some(id) = input_thread // ALAB(retained-ui): park the draft only under its confirmed displaced widget and backend.
             && let Some(mut input) = input.clone()
         {
             input.reconnect_pending = true;
@@ -512,7 +523,7 @@ impl App {
             {
                 self.restore_runtime_permissions(&mut started.session, cached);
             }
-            self.agents_overview.input_states.remove(&id);
+            let restored_input = self.alab_reconnected_store_input(input_thread, id, input.as_ref()).await; // ALAB(retained-ui): a resumed background conversation keeps its own parked draft.
             if started
                 .turns
                 .iter()
@@ -532,7 +543,7 @@ impl App {
             {
                 let mut store = channel.store.lock().await;
                 store.set_session(started.session, started.turns);
-                store.input_state = input.clone();
+                store.input_state = restored_input; // ALAB(retained-ui): install only the matching conversation's input.
             }
             self.thread_event_channels.insert(id, channel);
         }
@@ -607,6 +618,7 @@ impl App {
             server.reconnect(app_server.request_handle(), self.app_event_tx.clone());
         }
         self.reconnect.offline = false;
+        self.saved_openings.alab_retry_saved_history(app_server, None); // ALAB(retained-ui): the authenticated successor can read outcomes for missing originals.
         self.alab_refresh_connection_state(); // ALAB(interface): restore the latest native activity once the replacement connection is adopted.
         self.chat_widget.update_account_state(
             bootstrap.status_account_display,
@@ -623,9 +635,7 @@ impl App {
             );
         }
         self.feedback_audience = bootstrap.feedback_audience;
-        if displayed.is_some_and(|id| !self.thread_unavailable(id)) {
-            self.chat_widget.maybe_send_next_queued_input();
-        }
+        self.alab_release_reconnected_input(displayed, resumed); // ALAB(retained-ui): release the replay hold after adopting the displayed conversation's actual writer.
         let connected_notice_key = crate::status::remote_connection::server_version_notice_key(
             &self.app_server_target,
             app_server.server_codex_home(),
@@ -667,3 +677,5 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))] #[path = "../../../alab-tui/glue/daemon_login_reconnect_tests.rs"] mod alab_daemon_login_tests; // ALAB(accounts): exercise the real local socket replacement before bootstrap.

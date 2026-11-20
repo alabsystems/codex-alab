@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "base": "ca21fe65d18a9b6326759fb4263c65dfbb645aa5",
+  "target": "6d9f0199ed0cfdd184754e593e0625917ad0ca28",
+  "frontier": "ca21fe65d18a9b6326759fb4263c65dfbb645aa5",
+  "commits": [
+    {
+      "sha": "6d9f0199ed0cfdd184754e593e0625917ad0ca28",
+      "subject": "Refactor realtime handoff and history access (#62245)",
+      "paths": [
+        "codex-rs/core/src/context/realtime_delegation.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/context_manager/mod.rs",
+        "codex-rs/core/src/observation_clock.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/realtime_handoff.rs",
+        "codex-rs/core/src/session/rollout_reconstruction.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/thread_rollout_truncation.rs",
+        "codex-rs/history/src/lib.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/thread-store/src/local/rollout_migration.rs",
+        "codex-rs/thread-store/src/local/rollout_migration/rollback.rs",
+        "codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs",
+        "codex-rs/thread-store/src/local/rollout_migration/rollback_replay.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "execution-continuity",
+        "history-pagination"
+      ],
+      "decision": "adapt",
+      "reason": "Keep realtime handoff on ordinary turn admission and read canonical rollout observations through the shared history accessors. Preserve owned realtime payload moves during migration and materialization.",
+      "evidence": [
+        "Inspected all 18 paths against ca21fe65d1. Binary diff SHA-256 c40fe66df072d0e940785f51d168687a2f4c3c1c2cfc8f1a5298c5e30880f301.",
+        "Extracted Session handoff calls the same StartOrSteer handler, keeps server-draining refusal distinct and reports remaining submission errors through the existing event stream. The fork\u2019s execution-start barrier and renewal checks remain on that shared handler.",
+        "Observation-clock restore and rollout synchronization read the canonical timestamp. Migration still excludes inherited subagent realtime rows. Core instruction boundaries and store rollback consume the annotated envelope and retain their existing classifications; delegation truncation keeps UTF-8 boundaries and its original start/end marker.",
+        "Migration and materialization each own the parsed RolloutItem. The borrowed accessor followed by Cow::into_owned clones the realtime item, including transcript text and source IDs. Preserve moves through an owned accessor."
+      ],
+      "revisit": "Run focused realtime steering, observation-clock restoration and envelope rollback controls on the integrated source; retain the fork\u2019s original admission and replay ownership. Verify rollout readers move owned realtime payloads and retain pagination order and fork cutoffs."
+    }
+  ]
+}

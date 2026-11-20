@@ -26,10 +26,10 @@ an update fence.
 
 The source of `parse.rs` and the sequence framing/quarantine rules is
 `openai-oss-forks/crossterm` commit
-`ed1cdab335221515706178d68495bba2aed1924f`, which is the workspace's pinned
-crossterm revision. The MIT notice is in `LICENSE.crossterm`. ALab owns the
-adaptation because that revision hides its parser state and discards the input
-thread's JoinHandle. Changes retain crossterm's public event types, make raw-mode
+`ed1cdab335221515706178d68495bba2aed1924f`. Consecutive Escape handling follows
+`37ca4a27a9424ec5dbe6451f48c339d7b45f8d63`. The MIT notice is in
+`LICENSE.crossterm`. ALab owns the adaptation because crossterm hides its parser state
+and discards the input thread's JoinHandle. Changes retain crossterm's public event types, make raw-mode
 policy explicit, and keep internal query responses as owned data. The imported
 parser cases remain tests of this adaptation. Reassess the adaptation when the
 workspace changes its crossterm revision; do not silently switch parsers.

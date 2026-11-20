@@ -2,6 +2,8 @@
 
 //! Checks runtime release and notification delivery across listener shutdown and reconnect.
 
+#[path = "../../../alab-core/glue/cold_model_resume_tests.rs"] mod alab_cold_model_resume_tests; // ALAB(defaults): cover saved model upgrades through the real cold-resume request.
+
 use super::super::thread_goal_processor::ThreadGoalRequestProcessor;
 use super::super::thread_processor::ThreadRequestProcessor;
 use super::super::thread_processor::ThreadResumeTarget;

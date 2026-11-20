@@ -127,6 +127,7 @@ async fn start_review_conversation(
         .clone()
         .unwrap_or_else(|| ctx.model_info().slug.clone());
     sub_agent_config.model = Some(model);
+    sub_agent_config.alab_saved_model_can_follow = None; // ALAB(defaults): the review delegate uses the exact model selected for this review.
     (run_codex_thread_one_shot(
         sub_agent_config,
         Arc::clone(&session.services.auth_manager),

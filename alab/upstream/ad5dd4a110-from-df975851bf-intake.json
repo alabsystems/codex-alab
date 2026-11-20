@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "base": "df975851bf906d71e5a1ead04f1eaec41d26ca16",
+  "target": "ad5dd4a1104c37c1ab9cb7d122d27a464613815a",
+  "frontier": "df975851bf906d71e5a1ead04f1eaec41d26ca16",
+  "commits": [
+    {
+      "sha": "ad5dd4a1104c37c1ab9cb7d122d27a464613815a",
+      "subject": "Persist realtime handoffs before accepting turn input (#62288)",
+      "paths": [
+        "codex-rs/core/src/context/realtime_delegation.rs",
+        "codex-rs/core/src/context/realtime_delegation_tests.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/context_manager/history_tests.rs",
+        "codex-rs/core/src/guardian/input_budget_tests.rs",
+        "codex-rs/core/src/hook_runtime.rs",
+        "codex-rs/core/src/realtime_conversation.rs",
+        "codex-rs/core/src/realtime_history.rs",
+        "codex-rs/core/src/realtime_history/handoff.rs",
+        "codex-rs/core/src/realtime_history_tests.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/realtime_handoff.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/turn_input.rs",
+        "codex-rs/core/src/session/turn_input_tests.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
+        "codex-rs/core/src/state/session.rs",
+        "codex-rs/core/src/tasks/admission.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/history/src/lib.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "history-pagination"
+      ],
+      "decision": "adapt",
+      "reason": "Carry the durable realtime input path at its upstream activation level. Preserve the fork's process-transfer checks for every input path and the recording outcome of an original side-channel injection.",
+      "evidence": [
+        "Reviewed the 21-path change against df975851bf. Binary diff SHA-256 b71d669128091fdcb9ffc994d48188bef4d24835f0229ed8b0fda54e9dffee10.",
+        "The new handoff path reserves the transcript frames included in the rendered input. The live store seals those frames and the receiving envelope before exposing it to model history. An uncertain write retries with the same envelope. A second failure requires history recovery. The V3 recovery helper orders unconsumed speech before new chunks.",
+        "The production realtime fanout still calls route_realtime_text_input at this revision. The new route_realtime_handoff has no caller. Session resume calls restore_handoffs to read existing acceptance records. The V3 ordering helpers are exercised by unit tests. Live transport replacement and activation of the new input writer require separate observations.",
+        "Reconciling the change with the fork produced conflicts in session/mod.rs and session/turn_input.rs. Both ordinary input and the new realtime entry now acquire the same start guard before touching session state. Internal recovery also checks its original guard. Side-channel injection observes the actual result of its original rollout write. The new realtime entry constructs its own user input and has no original side-channel injection marker.",
+        "The pending input codec already copies typed metadata. Its round-trip control now carries a realtime handoff ID. An ID identifies the input and does not establish ownership of a live transport or settle an outstanding write.",
+        "Private e78c60ac993aa4f02e72b46606bd4bb73ed6acbd has canonical merge base f8e58064fccfdf9c220996bdb26d081a6a732d9f. Its text route lives under turn_input, its queued content is UserInput, and it lacks the #62251 annotated handoff projection and #62271 LiveThread seal. Compose those exact dependencies before applying this foundation to that candidate.",
+        "The donor records a queued handoff as ordinary input if its UUID and exact text no longer resolve to a live reservation. The fork's private input snapshot carries user metadata but has no matching reservation or prepared envelope. Require exact backed custody or refuse before native transfer. Keep strict earlier snapshot dialects and independent voice-call opening identity.",
+        "The donor releases the observation-clock lock before the canonical seal. The fork serializes realtime frames and compaction checkpoints under that lock. Reconcile receipt timestamp and append ordering through that same owner. Initial settings are separately appended before sealing, and opted-in prompt logging still precedes acceptance. Preserve those distinctions in failure and replay checks.",
+        "The donor's failed_realtime_receipt_preserves_sibling_input_before_sampling fixture has no live writer and inspects in-memory history. It provides no durable flush, cancellation or native transfer evidence.",
+        "On integrated source e8ce2fe5a7567689a082ef0df244ab6b1f9383fb, the native runner compiled Core and app-server and passed all 12 selected library tests. Nine Core cases covered ordered transcript attribution, recovery of unconsumed speech, overlapping handoff reservations, preservation of a sibling input on failed receipt, original input provenance, and sealed-tree input and wake refusal. Three app-server cases exercised retained side-channel input against the original Core, including queued acceptance, observed persistence and refusal of the wrong Core. The runtime log has SHA-256 1eaa2aee50dd624a9c35c4dc2b638c12d5fdf6183a6e7236b95af6c177239f54."
+      ],
+      "revisit": "When upstream connects the realtime fanout to the new input path, exercise its persistence and reconnect behavior end to end. Run transcript attribution and sibling-input checks alongside sealed-tree and side-channel persistence tests. Verify ownership of an active transport during native process transfer. Exercise a typed sibling against a real failed seal, a newer frame or checkpoint overtaking the receipt, and preservation or refusal of the exact pending owner under a native freeze."
+    }
+  ]
+}

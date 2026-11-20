@@ -1,6 +1,8 @@
 #[path = "../../../alab-core/glue/upgrade_submission.rs"] pub(crate) mod alab_upgrade_submission; // ALAB(upgrade): queued operations retain revocable manager admission.
 pub(crate) mod startup;
 #[path = "../../../alab-core/glue/assignment_lifecycle.rs"] pub(crate) mod alab_assignment; // ALAB(accounts): shared auth-manager admission follows real session tasks.
+#[path = "../../../alab-core/glue/queue_review.rs"]
+pub(crate) mod queue_review; // ALAB(queue-review): Core and cold Autopilot restore the same pending human review.
 
 use crate::McpRefreshReason;
 use crate::PromptCacheKey;
@@ -197,7 +199,6 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
-use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreResumePreparation;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
@@ -294,6 +295,7 @@ mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;
+#[path = "../../../alab-core/glue/shell_resume_exits.rs"] pub(crate) mod shell_resume_exits; // ALAB(shell-invocation): request-scoped delivery of native exits on resume.
 pub(crate) mod turn_context;
 #[path = "../../../alab-core/glue/exec_recovery_options.rs"]
 pub(crate) mod alab_exec_recovery_options; // ALAB(exec-recovery): capture original per-turn settings inside their owning session.
@@ -400,6 +402,7 @@ use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ModelRerouteEvent;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
@@ -634,22 +637,15 @@ impl Session {
         } else {
             RefreshStrategy::OnlineIfUncached
         };
-        if !session_source.is_non_root_agent() {
+        if !session_source.is_non_root_agent() && !config.alab_loads_startup_catalog() { // ALAB(defaults): the family resolver loads the serving catalog once for this root.
             let _ = models_manager
                 .list_models(refresh_strategy, config.http_client_factory())
                 .await;
         }
-        let model = models_manager
-            .get_default_model(
-                &config.model,
-                allow_provider_model_fallback,
-                refresh_strategy,
-                config.http_client_factory(),
-            )
-            .await;
+        let model = config.alab_resolve_catalog_model(models_manager, allow_provider_model_fallback, refresh_strategy).await; // ALAB(defaults): resolve an unpinned primary model from this thread's own catalog.
         if model.trim().is_empty() {
             return Err(CodexErr::InvalidRequest(
-                "No models are available. Set `model` explicitly or check your model catalog configuration.".to_string(),
+                config.alab_no_default_model_message().to_string(), // ALAB(defaults): distinguish an unavailable family from an empty catalog.
             ));
         }
         let model_info = models_manager
@@ -997,7 +993,7 @@ impl Session {
             settings: Settings {
                 model: model.clone(),
                 reasoning_effort: config.model_reasoning_effort.clone(),
-                developer_instructions: None,
+                developer_instructions: config.alab_start_mode_instructions(&session_source, parent_thread_id, &conversation_history), // ALAB(defaults): a fresh TUI thread owns its upstream Default preset before the first turn.
             },
         };
         let collaboration_mode = persisted_collaboration_mode.map_or(collaboration_mode, |saved| {
@@ -1029,7 +1025,7 @@ impl Session {
         thread_extension_init.insert(provider_auth.clone());
         let session_configuration = SessionConfiguration {
             turn_extension_init,
-            provider: provider_auth.model_provider(config.model_provider.clone()),
+            provider: provider_auth.model_provider(config.alab_thread_model_provider(models_manager.as_ref())), // ALAB(defaults): reuse the selected Mantle region for request routing and signing.
             step_settings: Arc::new(StepSettings {
                 collaboration_mode,
                 reasoning_summary: config.model_reasoning_summary,
@@ -1154,7 +1150,7 @@ impl Session {
             }
         }))));
         let io = SessionIo {
-            tx_sub: alab_upgrade_submission::Sender::new(tx_sub, Arc::clone(&session.services.local_agent_runtime.alab_upgrade)), // ALAB(upgrade): use this session's actual manager admission.
+            tx_sub: alab_upgrade_submission::Sender::new(tx_sub, Arc::clone(&session.services.local_agent_runtime.alab_upgrade), session.services.thread_extension_data.get()), // ALAB(upgrade): retain the actual source admission and destination startup hold.
             rx_event,
             agent_status: agent_status_rx,
             session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
@@ -2212,7 +2208,7 @@ impl Session {
                 };
 
             if let Some(catalog) = self.services.models_manager.refreshed_model_catalog() {
-                model_catalog_settings::normalize(&mut updated.step_settings, &catalog);
+                updated.alab_normalize_catalog(&catalog); // ALAB(defaults): a temporary model restriction cannot overwrite a followed thread’s saved effort.
             }
 
             if !should_commit(&state.session_configuration, &updated) {
@@ -2730,7 +2726,7 @@ impl Session {
             return;
         }
         let event = TurnStartedEvent {
-            turn_attribution: (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
+            turn_attribution: (task_kind == TaskKind::Regular).then(|| queue_review::recorded_attribution(turn_context)), // ALAB(queue-review): only a real manual selection can place review provenance on this turn.
             turn_id: turn_context.sub_id.clone(),
             root_turn_id: Some(turn_context.root_turn_id()),
             trace_id: turn_context.trace_id.clone(),
@@ -2848,7 +2844,7 @@ impl Session {
         let reporter = self
             .outcome_reporting
             .as_ref()
-            .map(|reporting| &reporting.reporter);
+            .and_then(|reporting| reporting.reporter.as_ref());
         if !notify_native_parent && reporter.is_none() {
             return;
         }
@@ -4675,13 +4671,11 @@ impl Session {
         }))
     }
 
-    pub(crate) async fn record_inter_agent_communication(
-        &self,
-        turn_context: &TurnContext,
-        model_info: &ModelInfo,
-        communication: impl Into<crate::PendingAgentMessage>,
-    ) {
-        let communication = communication.into();
+    /// Builds the same history item whether the recipient is live or has been evicted.
+    pub(crate) fn inter_agent_history_item(
+        communication: &InterAgentCommunication,
+        config: &Config,
+    ) -> ResponseItem {
         let mut response_item = communication.to_model_input_item();
         if let ResponseItem::AgentMessage {
             content,
@@ -4695,8 +4689,7 @@ impl Session {
                 .get_or_insert_with(|| {
                     vec![
                         ContentItemMetadata::tool(Some(
-                            turn_context
-                                .config
+                            config
                                 .multi_agent_v2
                                 .tool_namespace
                                 .clone()
@@ -4707,6 +4700,17 @@ impl Session {
                     ]
                 });
         }
+        response_item
+    }
+
+    pub(crate) async fn record_inter_agent_communication(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        communication: impl Into<crate::PendingAgentMessage>,
+    ) {
+        let communication = communication.into();
+        let response_item = Self::inter_agent_history_item(&communication, &turn_context.config);
         let (items, _) = self
             .prepare_conversation_items_for_history(
                 turn_context,
@@ -4747,16 +4751,21 @@ impl Session {
                 model_info.truncation_policy.into(),
             );
         }
-        if let Some(delivery) = &communication.delivery {
-            delivery.consumed(self.thread_id);
+        let result_write = communication.consumed(self.thread_id);
+        let saved = self
+            .persist_rollout_items(&[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: communication.trigger_turn,
+                },
+                RolloutItem::ResponseItem(response_item),
+            ])
+            .await;
+        if saved
+            && self.live_thread().is_some()
+            && let Some(write) = result_write
+        {
+            write.confirm();
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
         drop(boundary);
         self.send_raw_response_items(turn_context, &items).await;
     }
@@ -5414,6 +5423,21 @@ impl Session {
             && let Err(e) = live_thread.append_items(items).await
         {
             error!("failed to record rollout items: {e:#}");
+            if self
+                .services
+                .local_agent_runtime
+                .suspension_root()
+                .is_some()
+            {
+                self.services.local_agent_runtime.record_shutdown_failure(
+                    crate::thread_manager::AgentTreeShutdownFailure::operation_failed(
+                        "tree_suspension",
+                        "append_history",
+                        Some(self.thread_id),
+                        crate::thread_manager::thread_store_error_kind(&e),
+                    ),
+                );
+            }
             return false;
         }
         true
@@ -5969,16 +5993,14 @@ impl Session {
                 codex_history::HEARTBEAT_CONTENT_KIND.to_owned(),
             )]);
         }
+        let reviewed = queue_review::input_decision(self, turn_context, &metadata, input).await; // ALAB(queue-review): issue evidence only for input Core accepted after its hooks.
         let (prepared_items, image_preparations) = self
             .prepare_annotated_conversation_items_for_history(
                 turn_context,
                 model_info,
                 vec![ResponseItemEnvelope {
                     item: response_item,
-                    metadata: metadata.acceptance_order.map(|order| CodexHarnessMetadata {
-                        user_input_order: Some(order),
-                        ..Default::default()
-                    }),
+                    metadata: queue_review::history_metadata(metadata.acceptance_order, reviewed.clone()), // ALAB(queue-review): the native disposition stays in host history.
                 }],
             )
             .await;
@@ -6005,6 +6027,7 @@ impl Session {
             Some(&metadata.extension_data),
         )
         .await;
+        queue_review::acknowledge(self, turn_context, reviewed).await; // ALAB(queue-review): release only the finding named by the accepted input.
         self.ensure_rollout_materialized(persist_context).await;
     }
 

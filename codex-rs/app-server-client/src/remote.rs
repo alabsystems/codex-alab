@@ -1113,3 +1113,6 @@ mod tests {
             .expect("an in-flight event must not abort the worker during shutdown");
     }
 }
+
+#[path = "../../alab-core/glue/upgrade_remote_events.rs"]
+mod alab_upgrade_events; // ALAB(upgrade-events): keep remote startup and live event buffers on their original owner.

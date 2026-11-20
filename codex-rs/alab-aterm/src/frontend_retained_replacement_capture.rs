@@ -11,9 +11,17 @@ struct Data {
     input: Arc<[u8]>,
 }
 #[derive(Default)]
+enum WindowSlot {
+    #[default]
+    Waiting,
+    Available,
+    Held,
+    Provided(Arc<Data>),
+}
+
+#[derive(Default)]
 struct Progress {
-    connected: bool,
-    data: Option<Arc<Data>>,
+    window: WindowSlot,
     result: Option<ReplacementObservation>,
 }
 #[derive(Default)]
@@ -22,6 +30,68 @@ struct State {
     changed: tokio::sync::Notify,
 }
 impl State {
+    fn settings_connected(&self) -> io::Result<()> {
+        let mut progress = self.progress.lock().map_err(|_| unavailable())?;
+        if progress.result.is_some() || !matches!(progress.window, WindowSlot::Waiting) {
+            return Err(unavailable());
+        }
+        progress.window = WindowSlot::Available;
+        drop(progress);
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    async fn claim_window(self: &Arc<Self>) -> io::Result<WindowLease> {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            {
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match progress.result {
+                    Some(ReplacementObservation::Unresolved(kind)) => {
+                        return Err(io::Error::new(
+                            kind,
+                            "same Native replacement capture remains unresolved",
+                        ));
+                    }
+                    Some(ReplacementObservation::Granted) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "same Native replacement capture is complete",
+                        ));
+                    }
+                    None => {}
+                }
+                match progress.window {
+                    WindowSlot::Waiting => {}
+                    WindowSlot::Available => {
+                        progress.window = WindowSlot::Held;
+                        return Ok(WindowLease {
+                            state: Arc::clone(self),
+                        });
+                    }
+                    WindowSlot::Held => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "same Native replacement already has a capture window",
+                        ));
+                    }
+                    WindowSlot::Provided(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "same Native replacement already has its capture data",
+                        ));
+                    }
+                }
+            }
+            notified.await;
+        }
+    }
+
     fn completed(&self, result: ReplacementObservation) {
         let mut progress = self
             .progress
@@ -46,14 +116,52 @@ impl State {
                 if matches!(progress.result, Some(ReplacementObservation::Unresolved(_))) {
                     return Err(unavailable());
                 }
-                if let Some(data) = &progress.data {
+                if let WindowSlot::Provided(data) = &progress.window {
                     return Ok(data.clone());
+                }
+                if progress.result.is_some() {
+                    return Err(unavailable());
                 }
             }
             notified.await;
         }
     }
 }
+// The only path to Held owns one lease. Dropping it before submission makes
+// the same operation available again; a submitted or terminal operation stays closed.
+struct WindowLease {
+    state: Arc<State>,
+}
+impl WindowLease {
+    fn provide(self, data: Arc<Data>) -> io::Result<()> {
+        let mut progress = self
+            .state
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.result.is_some() || !matches!(progress.window, WindowSlot::Held) {
+            return Err(unavailable());
+        }
+        progress.window = WindowSlot::Provided(data);
+        drop(progress);
+        self.state.changed.notify_waiters();
+        Ok(())
+    }
+}
+
+impl Drop for WindowLease {
+    fn drop(&mut self) {
+        let mut progress = self
+            .state
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if progress.result.is_none() && matches!(progress.window, WindowSlot::Held) {
+            progress.window = WindowSlot::Available;
+        }
+    }
+}
+
 struct CaptureGuard {
     state: Arc<State>,
     complete: bool,
@@ -91,7 +199,7 @@ pub struct FrontendCaptureWindow {
     context: Arc<Context>,
     operation: String,
     service: String,
-    state: Arc<State>,
+    lease: WindowLease,
 }
 impl Controller {
     pub fn prepare_frontend_capture(
@@ -143,22 +251,10 @@ impl FrontendCaptureWindow {
         if input.is_empty() || input.len() > MAX_BODY {
             return Err(unavailable());
         }
-        let data = Arc::new(Data {
+        self.lease.provide(Arc::new(Data {
             settings,
             input: input.into(),
-        });
-        let mut progress = self
-            .state
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !progress.connected || progress.result.is_some() || progress.data.is_some() {
-            return Err(unavailable());
-        }
-        progress.data = Some(data);
-        drop(progress);
-        self.state.changed.notify_waiters();
-        Ok(())
+        }))
     }
 }
 impl FrontendCapture {
@@ -233,14 +329,7 @@ impl FrontendCapture {
                     if context.transport.server_pid()? != context.peer {
                         return Err(unavailable());
                     }
-                    {
-                        let mut progress = state.progress.lock().map_err(|_| unavailable())?;
-                        if progress.connected || progress.result.is_some() {
-                            return Err(unavailable());
-                        }
-                        progress.connected = true;
-                    }
-                    state.changed.notify_waiters();
+                    state.settings_connected()?;
                     let data = state.data().await?;
                     if context.transport.server_pid()? != context.peer {
                         return Err(unavailable());
@@ -293,35 +382,17 @@ impl FrontendCapture {
         }));
         Ok(())
     }
+    /// Dropping an unprovided window permits reacquisition on this operation.
+    /// A concurrent holder, accepted data or terminal outcome prevents another capture.
     pub async fn capture_window(&mut self) -> io::Result<FrontendCaptureWindow> {
         self.start()?;
-        loop {
-            let notified = self.state.changed.notified();
-            tokio::pin!(notified);
-            let _ = notified.as_mut().enable();
-            {
-                let progress = self
-                    .state
-                    .progress
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(ReplacementObservation::Unresolved(kind)) = progress.result {
-                    return Err(io::Error::new(
-                        kind,
-                        "same Native replacement capture remains unresolved",
-                    ));
-                }
-                if progress.connected {
-                    return Ok(FrontendCaptureWindow {
-                        context: self.context.clone(),
-                        operation: self.operation.clone(),
-                        service: self.service.clone(),
-                        state: self.state.clone(),
-                    });
-                }
-            }
-            notified.await;
-        }
+        let lease = self.state.claim_window().await?;
+        Ok(FrontendCaptureWindow {
+            context: self.context.clone(),
+            operation: self.operation.clone(),
+            service: self.service.clone(),
+            lease,
+        })
     }
     pub async fn observe(&mut self) -> ReplacementObservation {
         if let Some(observed) = self.observed {

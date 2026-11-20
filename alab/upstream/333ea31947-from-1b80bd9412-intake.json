@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "base": "1b80bd94127640438a78bd348e0f985fdb272766",
+  "target": "333ea3194740c2e19edb215e7c8867170e013e13",
+  "frontier": "1b80bd94127640438a78bd348e0f985fdb272766",
+  "commits": [
+    {
+      "sha": "333ea3194740c2e19edb215e7c8867170e013e13",
+      "subject": "Make sidebar file preview errors easier to act on (#62362)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_document/open_error.rs",
+        "codex-rs/tui/src/app/sidebar_document_tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session/fs.rs",
+        "codex-rs/tui/src/app_server_session/fs_preview_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "native-ui",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Show the attempted filename and a recovery hint when a sidebar preview fails. Strip the server’s diagnostic payload before a typed error reaches the TUI.",
+      "evidence": [
+        "The unchanged upstream patch applies to all seven files in the combined source. Existing ALab event dispatch and retained sidebar handling stay in place. ALab-owned code has no additional constructor that expects the old string error type.",
+        "Only fs/readFile server errors receive file-specific classifications. The upstream regression sends a private diagnostic marker in the RPC payload and requires the typed error to preserve the public message while discarding the payload. The narrow-pane case keeps the filename visible and wraps the directory separately.",
+        "The native UI campaign targets these cases alongside the fork’s historical saved-layout decoder, covering the sidebar and retained session surfaces in the same compiled test binary."
+      ],
+      "revisit": ""
+    }
+  ]
+}

@@ -4,10 +4,13 @@
 //! Actual model-spawned helpers cross the production native tree recovery API.
 use super::*;
 use base64::Engine as _;
+use codex_core::StartThreadOptions;
+use codex_core::ThreadShutdownReport;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::openai_models::ModelAccessPrograms;
 use codex_protocol::turn_input::CyberAccessProgram;
+use core_test_support::test_codex::TestCodex;
 use serde_json::json;
 
 #[test]
@@ -68,6 +71,24 @@ fn contains_helper_input(body: &serde_json::Value) -> bool {
     })
 }
 
+async fn dedicated_exec_options(fixture: &TestCodex) -> StartThreadOptions {
+    let options = fixture.start_thread_options().await;
+    // The builder's default root supplied the environment. The exec owner must
+    // have only its transferred root and descendants in the native manager.
+    let report = fixture
+        .thread_manager
+        .shutdown_all_threads_bounded(Duration::from_secs(15))
+        .await;
+    assert_eq!(
+        report,
+        ThreadShutdownReport {
+            completed: vec![fixture.codex.exec_thread_id()],
+            ..Default::default()
+        }
+    );
+    options
+}
+
 async fn helper_tree(other_account: bool, explicit: bool) -> anyhow::Result<()> {
     let (_root_release, root_gate) = oneshot::channel();
     let (_child_release, child_gate) = oneshot::channel();
@@ -126,7 +147,7 @@ async fn helper_tree(other_account: bool, explicit: bool) -> anyhow::Result<()> 
         .with_config(configure_helper)
         .build_with_auto_env(&mock)
         .await?;
-    let mut options = fixture.start_thread_options().await;
+    let mut options = dedicated_exec_options(&fixture).await;
     options.config.model_provider.base_url = Some(format!("{}/v1", source.uri()));
     options.thread_extension_init.insert(HeadlessExec);
     options.turn_extension_init.insert(HeadlessExec);
@@ -230,7 +251,7 @@ async fn helper_tree(other_account: bool, explicit: bool) -> anyhow::Result<()> 
             include_archived: false,
         })
         .await?;
-    let mut options = replacement.start_thread_options().await;
+    let mut options = dedicated_exec_options(&replacement).await;
     options.config = config;
     options.environments = environments;
     options.initial_history = InitialHistory::Resumed(ResumedHistory {

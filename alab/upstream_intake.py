@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -25,10 +26,68 @@ def git_environment(*, index_file=None):
     return env
 
 
-def git(repo, *args, index_file=None):
-    return subprocess.check_output(
+def git(repo, *args, index_file=None, input_bytes=None):
+    output = subprocess.check_output(
         ['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args],
-        env=git_environment(index_file=index_file), stderr=subprocess.PIPE).decode('utf-8', errors='surrogateescape').rstrip('\n')
+        env=git_environment(index_file=index_file), input=input_bytes, stderr=subprocess.PIPE)
+    return output.decode('utf-8', errors='surrogateescape').rstrip('\n')
+
+
+RELEASE_DESCRIPTOR = 'alab/upstream-release'
+UPSTREAM_MAIN = 'refs/remotes/upstream/main'
+
+
+def unique_frontier(repo, source, upstream):
+    bases = git(repo, 'merge-base', '--all', source, upstream).splitlines()
+    if len(bases) != 1:
+        raise ValueError('candidate has no unambiguous integrated upstream frontier')
+    return bases[0]
+
+
+def pinned_release(repo, source):
+    """A marked release leaf qualifies against its committed official annotated tag."""
+    entry = git(repo, 'ls-tree', '-z', source, '--', RELEASE_DESCRIPTOR)
+    if not entry:
+        return None
+    blob = re.fullmatch(r'100644 blob ([a-f0-9]+)\t' + re.escape(RELEASE_DESCRIPTOR) + r'\x00', entry)
+    if not blob:
+        raise ValueError('upstream release descriptor must be a regular committed file')
+    size = int(git(repo, 'cat-file', '-s', blob[1]))
+    if size > 256:
+        raise ValueError('invalid committed upstream release descriptor')
+    data = git(repo, 'cat-file', 'blob', blob[1])
+    version = r'(?:0|[1-9][0-9]*)'
+    oid = r'([0-9a-f]{40}|[0-9a-f]{64})'
+    fields = re.fullmatch(r'(rust-v' + r'\.'.join([version] * 3) + ') ' + oid + ' ' + oid, data)
+    if not fields or len(data) + 1 != size:
+        raise ValueError('invalid committed upstream release descriptor')
+    tag, annotation, commit = fields.groups()
+    ref = 'refs/upstream-tags/' + tag
+    fmt = '%(refname) %(objecttype) %(objectname) %(*objecttype) %(*objectname) %(tag)'
+    if git(repo, 'for-each-ref', '--format=' + fmt, ref) != f'{ref} tag {annotation} commit {commit} {tag}':
+        raise ValueError('official release tag missing or changed: ' + ref)
+    main = git(repo, 'rev-parse', '--verify', UPSTREAM_MAIN + '^{commit}')
+    if unique_frontier(repo, source, commit) != commit:
+        raise ValueError('candidate does not contain its pinned upstream release')
+    if unique_frontier(repo, source, main) != unique_frontier(repo, commit, main):
+        raise ValueError('candidate mainline frontier differs from its pinned release branch point')
+    return tag, commit
+
+
+def upstream_target(repo, source, requested=None):
+    release = pinned_release(repo, source)
+    if release is None:
+        return requested or UPSTREAM_MAIN
+    _, commit = release
+    if requested is not None:
+        actual = git(repo, 'rev-parse', '--verify', '--end-of-options', requested + '^{commit}')
+        if actual != commit:
+            raise ValueError('requested upstream differs from the pinned release')
+    return commit
+
+
+def integrated_upstream(repo, source, requested=None):
+    return unique_frontier(repo, source, upstream_target(repo, source, requested))
 
 
 def snapshot(repo, base, target):
@@ -37,17 +96,37 @@ def snapshot(repo, base, target):
     frontier = git(repo, 'merge-base', base, target)
     # The export is linear today; explicitly refuse a future divergent history.
     previous = frontier
-    entries = []
-    for oid in git(repo, 'rev-list', '--reverse', base + '..' + target).splitlines():
-        parents = git(repo, 'show', '-s', '--format=%P', oid).split()
+    oids = []
+    for line in git(repo, 'rev-list', '--reverse', '--parents', base + '..' + target).splitlines():
+        oid, *parents = line.split()
         if parents != [previous]:
             raise ValueError('upstream range is not linear from its merge base')
-        paths = git(repo, 'diff-tree', '--no-commit-id', '--name-only', '-r', '-z', oid)
-        entries.append({'sha': oid, 'subject': git(repo, 'show', '-s', '--format=%s', oid),
-                        'paths': paths.rstrip('\0').split('\0') if paths else [],
-                        'classes': [], 'features': [], 'decision': None,
-                        'reason': '', 'evidence': [], 'revisit': ''})
+        oids.append(oid)
         previous = oid
+
+    entries = []
+    if oids:
+        # Each header starts with NUL. Files are nonempty NUL-terminated names, so
+        # two consecutive NULs separate commits even with empty subjects or diffs.
+        changes = git(repo, 'diff-tree', '--stdin', '--always', '--format=tformat:%x00%H%x20%s',
+                      '--name-only', '-r', '-z', input_bytes=('\n'.join(oids) + '\n').encode('ascii'))
+        if not changes.startswith('\0') or not changes.endswith('\0'):
+            raise ValueError('incomplete upstream diff-tree output')
+        blocks = changes[1:-1].split('\0\0')
+        if len(blocks) != len(oids):
+            raise ValueError('incomplete upstream diff-tree commit list')
+        for oid, block in zip(oids, blocks):
+            header, *paths = block.split('\0')
+            actual, separator, subject = header.partition(' ')
+            if actual != oid or not separator:
+                raise ValueError('unexpected upstream diff-tree header')
+            if paths:
+                # Git puts one formatting newline before the first filename.
+                if not paths[0].startswith('\n') or len(paths[0]) == 1:
+                    raise ValueError('invalid upstream diff-tree path framing')
+                paths[0] = paths[0][1:]
+            entries.append({'sha': oid, 'subject': subject, 'paths': paths, 'classes': [],
+                            'features': [], 'decision': None, 'reason': '', 'evidence': [], 'revisit': ''})
     return {'schema': 1, 'base': base, 'target': target, 'frontier': frontier,
             'commits': entries}
 
@@ -114,16 +193,24 @@ def catalog_feature_ids(inventory):
 
 
 def main():
-    import tomllib
-
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['snapshot', 'validate'])
+    parser.add_argument('operation', choices=['snapshot', 'validate', 'frontier', 'pinned-release'])
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument('--base', required=True, help='ALab integration base, resolved again on validation')
-    parser.add_argument('--target', required=True, help='fetched upstream target, resolved again on validation')
-    parser.add_argument('--record', required=True, type=Path)
+    parser.add_argument('--source', default='HEAD')
+    parser.add_argument('--base', help='ALab integration base, resolved again on validation')
+    parser.add_argument('--target', help='fetched upstream target, resolved again on validation')
+    parser.add_argument('--record', type=Path)
     args = parser.parse_args()
     try:
+        if args.operation in ('frontier', 'pinned-release'):
+            source = git(args.repo, 'rev-parse', '--verify', '--end-of-options', args.source + '^{commit}')
+            if args.operation == 'frontier':
+                print(integrated_upstream(args.repo, source))
+            elif release := pinned_release(args.repo, source):
+                print(*release)
+            return 0
+        if not (args.base and args.target and args.record):
+            parser.error('--base, --target and --record are required for ' + args.operation)
         expected = snapshot(args.repo, args.base, args.target)
         if args.operation == 'snapshot':
             # Refuse overwriting a resolver's review decisions.
@@ -132,6 +219,8 @@ def main():
                 output.write('\n')
             print(f"snapshotted {len(expected['commits'])} commits; review pending")
         else:
+            import tomllib
+
             record = json.loads(args.record.read_text())
             if not isinstance(record, dict):
                 raise ValueError('record must be an object')

@@ -36,6 +36,7 @@ const VIEW_ID: &str = "alab-account";
 
 struct AccountDetailsHeader {
     clock_format: ClockFormat,
+    show_account_pool: bool,
 }
 
 fn quota_line(label: &str, meter: Option<&str>, reset: Option<&str>, stale: bool) -> String {
@@ -62,6 +63,10 @@ impl AccountDetailsHeader {
             five_hour_stale,
             quota,
             reset_credits,
+            credit_balance,
+            individual_credit_limit,
+            thread_credit_usage,
+            thread_credit_notice,
             ..
         } = status;
         let mut lines = Vec::new();
@@ -78,6 +83,70 @@ impl AccountDetailsHeader {
                 "Plan: {}",
                 plan.as_deref().unwrap_or("Unavailable")
             )),
+        ]);
+        if credit_balance.is_some()
+            || individual_credit_limit.is_some()
+            || thread_credit_usage.is_some()
+            || thread_credit_notice.is_some()
+            || status.local_subscription
+            || status.credit_history.is_some()
+        {
+            lines.push(Line::default());
+            lines.push(Line::from("Usage credits"));
+            lines.push(Line::from(
+                credit_balance
+                    .as_ref()
+                    .map_or("Balance unreported", interface::CreditBalance::label)
+                    .to_owned(),
+            ));
+            if let Some(limit) = individual_credit_limit {
+                lines.push(match limit {
+                    interface::IndividualCreditLimit::Current(label) => Line::from(label),
+                    interface::IndividualCreditLimit::AwaitingRefresh => {
+                        Line::from("Your monthly credit limit · refresh needed")
+                    }
+                });
+            }
+            if let Some(report) = thread_credit_usage {
+                lines.push(Line::from(report.label().into_owned()));
+                if let Some(comparison) = report.summary.limit_comparison {
+                    lines.push(Line::from(format!(
+                        "Chat usage vs. current limits · {comparison}"
+                    )));
+                }
+                if let Some(as_of) = report
+                    .as_of
+                    .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+                {
+                    let local = as_of.with_timezone(&chrono::Local);
+                    lines.push(Line::from(format!(
+                        "Chat usage reported through {}",
+                        local.format(self.clock_format.date_time_format())
+                    )));
+                }
+            } else if let Some(notice) = thread_credit_notice {
+                lines.push(Line::from(notice));
+            } else if status.credit_history == Some(interface::CreditHistory::PersonalChats) {
+                lines.push(Line::from(interface::UNREPORTED_CHAT_SPENDING));
+            }
+            if let Some(history) = status.credit_history {
+                lines.push(Line::from(match history {
+                    interface::CreditHistory::PersonalChats => {
+                        "Chat spending in /usage → View analytics → Chats"
+                    }
+                    interface::CreditHistory::WorkspaceCredits => {
+                        "Workspace spending in /usage → View analytics → Credits"
+                    }
+                }));
+            }
+            lines.push(Line::default());
+        }
+        if self.show_account_pool {
+            lines.push(Line::from(
+                "Use /accounts to view aterm's subscription accounts.",
+            ));
+        }
+        lines.extend([
             Line::default(),
             Line::from(quota_line(
                 "Weekly",
@@ -155,24 +224,32 @@ impl AccountDetailsHeader {
                     };
                     lines.push(Line::from(format!("{label}: {expiry}")));
                 }
-                if !resets.details_known {
+                if resets.available_count > 0 && !resets.details_known {
                     lines.push(Line::from(if resets.next_expiry.is_some() {
                         "Other reset credit expiry: unavailable"
                     } else {
                         "Reset credit expiry: unavailable"
                     }));
                 }
+                let mut expirations = Vec::new();
                 if resets.expiring_count > 0 {
-                    let qualifier = if resets.details_known { "" } else { "known " };
-                    lines.push(Line::from(format!(
-                        "{} {qualifier}reset credits expire within 24 hours. Open /usage to review them.",
+                    let minimum = if resets.details_known {
+                        ""
+                    } else {
+                        "At least "
+                    };
+                    expirations.push(format!(
+                        "{minimum}{} expiring within 24 hours",
                         resets.expiring_count
-                    )));
+                    ));
                 }
                 if resets.expired_count > 0 {
+                    expirations.push(format!("{} expired", resets.expired_count));
+                }
+                if !expirations.is_empty() {
                     lines.push(Line::from(format!(
-                        "{} reset credits have expired. Open /usage for current reset options.",
-                        resets.expired_count
+                        "{} · Review resets in /usage",
+                        expirations.join(" · ")
                     )));
                 }
             }
@@ -196,8 +273,15 @@ impl Renderable for AccountDetailsHeader {
     }
 }
 
-fn account_view(keymap: ListKeymap, clock_format: ClockFormat) -> DetailsView {
-    let header = AccountDetailsHeader { clock_format };
+fn account_view(
+    keymap: ListKeymap,
+    clock_format: ClockFormat,
+    show_account_pool: bool,
+) -> DetailsView {
+    let header = AccountDetailsHeader {
+        clock_format,
+        show_account_pool,
+    };
     DetailsView::new(
         VIEW_ID,
         "Account details",
@@ -214,13 +298,13 @@ fn account_view(keymap: ListKeymap, clock_format: ClockFormat) -> DetailsView {
 }
 
 impl ChatWidget {
-    #[cfg(test)]
-    pub(crate) fn alab_account_details_is_open(&self) -> bool {
-        interface::enabled()
-            && self
-                .bottom_pane
-                .selected_index_for_present_view(VIEW_ID)
-                .is_some()
+    #[cfg(unix)]
+    fn alab_show_account_pool_hint(&self, aterm_session: bool) -> bool {
+        aterm_session && self.alab_local_account_server()
+    }
+
+    pub(in crate::chatwidget) fn alab_account_details_is_active(&self) -> bool {
+        self.bottom_pane.active_view_id() == Some(VIEW_ID)
     }
 
     pub(in crate::chatwidget) fn alab_open_account_details(&mut self) {
@@ -235,9 +319,15 @@ impl ChatWidget {
         {
             return;
         }
+        #[cfg(unix)]
+        let show_account_pool =
+            self.alab_show_account_pool_hint(codex_alab_tui::frontend_control::requested());
+        #[cfg(not(unix))]
+        let show_account_pool = false;
         self.show_bottom_pane_view(Box::new(account_view(
             self.bottom_pane.list_keymap(),
             self.clock_format,
+            show_account_pool,
         )));
         if self.should_prefetch_rate_limits() {
             self.alab_request_reset_details();

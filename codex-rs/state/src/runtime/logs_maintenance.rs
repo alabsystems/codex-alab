@@ -74,18 +74,19 @@ async fn prune_by_age_and_size(
     now: i64,
     budget_bytes: i64,
 ) -> anyhow::Result<()> {
+    let mut writer = crate::sqlite::alab_diagnostic_wal::cleanup_writer(pool).await?; // ALAB(diagnostic-storage): keep the configured legacy or current connection throughout its writes.
     let mut retention_seconds = LOG_RETENTION_SECONDS;
     loop {
         sqlx::query("DELETE FROM logs WHERE ts < ?")
             .bind(now.saturating_sub(retention_seconds))
-            .execute(pool)
+            .execute(&mut *writer) // ALAB(diagnostic-storage): the limit belongs to this physical writer.
             .await?;
         // Exclude free pages: SQLite reuses them without shrinking the file.
         let occupied_bytes: i64 = sqlx::query_scalar(
             "SELECT (page_count - freelist_count) * page_size \
              FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()",
         )
-        .fetch_one(pool)
+        .fetch_one(&mut *writer) // ALAB(diagnostic-storage): the legacy cleanup pool has one connection.
         .await?;
         if occupied_bytes <= budget_bytes || retention_seconds == 1 {
             return Ok(());

@@ -4,6 +4,7 @@
 //! The pure decider, point by point (each rule with its negative control), FOREVER CRUISE /
 //! FOREVER LAND's included (aterm owner direction 2026-10-19).
 
+use codex_alab_core::wall_kind::LimitClass;
 #[path = "go_ahead_decide_tests.rs"]
 mod go_ahead_decide_tests;
 #[path = "land_held_tests.rs"]
@@ -474,6 +475,7 @@ fn every_automatic_prompt_keeps_the_policy_exclusion_including_an_owed_act() {
                 point: Some(walled(
                     now,
                     Wall::Usage {
+                        limit_class: LimitClass::Ordinary,
                         reset_at: Some(now),
                         reset_label: None,
                     },
@@ -1410,6 +1412,44 @@ fn prose_questions_are_answered_by_the_policy_words() {
         typed(&decide(&s, &policy(), &t, now, NO_JITTER)).map(|(r, _)| r),
         Some(words::RULE_ANSWER)
     );
+}
+
+#[test]
+fn cruise_distinguishes_a_compiler_dependency_from_permission_to_publish() {
+    let now = Instant::now();
+    let timing = Timing::default();
+    let status = "The newer release is still blocked on Trust compiler certification.";
+    for (report, expected_rule) in [
+        (status.to_string(), words::RULE_CONTINUE),
+        (
+            format!("{status} Give me permission to publish."),
+            words::RULE_ANSWER,
+        ),
+        (format!("{status} Authorize it."), words::RULE_ANSWER),
+        (
+            format!("Wait for the owner before rolling out. {status}"),
+            words::RULE_ANSWER,
+        ),
+        (
+            format!("{status} The owner asked us to hold the rollout."),
+            words::RULE_ANSWER,
+        ),
+        (
+            "- The release is blocked on **CI checks**.".to_string(),
+            words::RULE_CONTINUE,
+        ),
+    ] {
+        let mut state = ThreadState::default();
+        state.observe_turn_end(end(now, &report, 5 * MIN), &timing);
+        let decision = decide(&state, &policy(), &timing, now, NO_JITTER);
+        let Some((rule, text)) = typed(&decision) else {
+            panic!("expected Cruise to type a decision for {report}: {decision:?}");
+        };
+        assert_eq!(rule, expected_rule, "{report}");
+        if rule == words::RULE_ANSWER {
+            assert!(text.starts_with(words::REVERSIBLE_ANSWER), "{report}");
+        }
+    }
 }
 
 #[test]
@@ -2564,6 +2604,7 @@ fn every_walls_ladder_counts_from_the_appearance_that_answered_its_try() {
         (
             "usage",
             Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: None,
                 reset_label: None,
             },
@@ -2679,6 +2720,7 @@ fn a_usage_wall_naming_no_reset_first_waits_the_longest_back_off() {
     let start = Instant::now();
     let p = policy();
     let unnamed = || Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: None,
         reset_label: None,
     };
@@ -2704,6 +2746,7 @@ fn a_usage_wall_naming_no_reset_first_waits_the_longest_back_off() {
         walled(
             start,
             Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: Some(start + 2 * MIN),
                 reset_label: None,
             },
@@ -2735,6 +2778,7 @@ fn a_usage_resumes_short_yield_is_continued_at_once() {
         walled(
             start,
             Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: Some(reset),
                 reset_label: None,
             },
@@ -2925,6 +2969,7 @@ fn a_walls_try_owed_at_rest_is_typed_by_the_relaunch_at_its_rung() {
     assert_eq!(relaunched(paced, Mode::Land).owed, None);
     // THE USAGE WINDOW'S RESUME: carried as the resume, in the words of the mode read now.
     let unnamed = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: None,
         reset_label: None,
     };
@@ -2943,6 +2988,28 @@ fn a_walls_try_owed_at_rest_is_typed_by_the_relaunch_at_its_rung() {
         resume_goal: true,
         ..owed
     };
+    let saved = relaunched(resume.clone(), Mode::Cruise);
+    assert!(
+        saved
+            .point
+            .as_ref()
+            .is_some_and(|point| point.wall.is_none())
+    );
+    let mut waiting = decide(&saved, &p, &t, answer + MIN, NO_JITTER);
+    assert_eq!(waiting.not_before, Some(due));
+    assert!(waiting.can_park_usage_resume(&saved));
+    let notice = waiting
+        .shown_wait
+        .as_deref()
+        .expect("the saved retry is visible");
+    assert!(
+        notice.starts_with("usage limit · automatic retry at "),
+        "{notice}"
+    );
+    assert_eq!(words::without_clock(notice), "usage limit");
+    assert!(notice.len() <= WAITING_ROW);
+    waiting.not_before = Some(due + MIN);
+    assert!(!waiting.can_park_usage_resume(&saved));
     let d = decide(
         &relaunched(resume.clone(), Mode::Cruise),
         &p,
@@ -3530,6 +3597,7 @@ fn a_usage_window_waits_for_its_reset_then_backs_off() {
     let mut s = ThreadState::default();
     s.observe_person_turn();
     let wall = || Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(reset),
         reset_label: Some("14:05".to_string()),
     };
@@ -3540,7 +3608,7 @@ fn a_usage_window_waits_for_its_reset_then_backs_off() {
     assert!(matches!(d.act, Act::ResumeLimit { .. }));
     assert_eq!(
         d.shown_wait.as_deref(),
-        Some("waiting for the usage reset at 14:05")
+        Some("usage reset at 14:05 · automatic retry follows")
     );
     let tried = reset + 2 * MIN;
     s.acted(&d.act, tried, &t);
@@ -3569,6 +3637,7 @@ fn fresh_restoration_can_resume_before_reset_without_erasing_retry_pacing() {
     let mut state = ThreadState::default();
     state.observe_person_turn();
     let wall = || Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(reset),
         reset_label: None,
     };
@@ -3625,6 +3694,7 @@ fn a_restored_wall_on_another_login_climbs_its_own_ladder() {
     let now = Instant::now();
     let reset = now + 3 * 24 * 60 * MIN;
     let wall = || Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(reset),
         reset_label: None,
     };
@@ -3691,6 +3761,7 @@ fn a_usage_wall_met_again_waits_for_the_reset_it_names_now() {
     let session_reset = start + 5 * MIN;
     let weekly_reset = start + 3 * 24 * 60 * MIN;
     let usage = |reset: Instant| Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(reset),
         reset_label: Some("14:05".to_string()),
     };
@@ -3919,6 +3990,7 @@ fn a_usage_goal_resumed_in_place_of_lands_words_gives_no_instruction() {
     s.observe_turn_end(ours(now, need, 10 * MIN), &t);
     assert!(s.needs.ack_owed());
     let usage = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(now + 30 * MIN),
         reset_label: None,
     };
@@ -4235,6 +4307,7 @@ fn an_attention_leaves_its_point_standing_and_a_typed_act_answers_it() {
             walled(
                 now,
                 Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: None,
                     reset_label: None,
                 },
@@ -5934,6 +6007,7 @@ fn needs_clear_at_a_persons_turns_point_never_at_its_start() {
     s.observe_turn_end(
         TurnEnd {
             wall: Some(Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: None,
                 reset_label: None,
             }),
@@ -6771,6 +6845,7 @@ fn land_walls_deliver_the_land_act_again_and_their_yields_land() {
             ..walled(
                 now,
                 Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: Some(reset),
                     reset_label: None,
                 },
@@ -7289,6 +7364,7 @@ fn a_landed_tasks_own_wake_keeps_the_landing() {
     let p = land();
     let wake_at = now + 60 * MIN;
     let usage = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(wake_at + 60 * MIN),
         reset_label: None,
     };
@@ -7607,6 +7683,7 @@ fn a_landing_stands_through_a_wall_whether_restored_or_live() {
         s.observe_turn_end(
             TurnEnd {
                 wall: Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: Some(reset),
                     reset_label: None,
                 }),
@@ -7648,6 +7725,7 @@ fn a_wall_resume_under_land_types_lands_instruction_with_the_ack_until_it_was_gi
     let t = Timing::default();
     let now = Instant::now();
     let usage = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(now + 30 * MIN),
         reset_label: None,
     };
@@ -7746,10 +7824,12 @@ fn a_usage_limits_resume_types_its_one_cleared_line() {
     let t = Timing::default();
     let now = Instant::now();
     let named = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(now + 30 * MIN),
         reset_label: None,
     };
     let unnamed = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: None,
         reset_label: None,
     };
@@ -7839,6 +7919,7 @@ fn under_land_a_usage_reset_goes_on_with_a_persons_opening_exchange() {
     for (wall, want) in [
         (
             Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: Some(now + 30 * MIN),
                 reset_label: None,
             },
@@ -8058,6 +8139,7 @@ fn slept_at_usage(start: Instant, reset: Duration) -> ThreadState {
         walled(
             start,
             Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: Some(start + reset),
                 reset_label: Some("12:00".to_string()),
             },
@@ -8181,6 +8263,67 @@ fn a_restored_owed_deadline_counts_sleep_once() {
     );
 }
 
+#[test]
+fn a_usage_wait_names_the_effective_retry_after_its_provider_reset() {
+    let start = Instant::now();
+    let reset = start + 60 * MIN;
+    let now = reset + Duration::from_secs(5);
+    let jitter = Duration::from_secs(17);
+    let mut s = slept_at_usage(start, 60 * MIN);
+    let timing = Timing::default();
+    // A wake before the provider reset keeps that reset's time on screen.
+    s.woke = Some(start);
+    assert_eq!(
+        decide(&s, &policy(), &timing, start, jitter)
+            .shown_wait
+            .as_deref(),
+        Some("usage reset at 12:00 · automatic retry follows")
+    );
+
+    let check = |state: &ThreadState, timing: &Timing, at: Instant, reason: &str| {
+        let expected = || {
+            let local = chrono::Local::now();
+            let retry = local + chrono::Duration::from_std(at - now).unwrap();
+            let format = if retry.date_naive() == local.date_naive() {
+                "%H:%M"
+            } else {
+                "%H:%M on %Y-%m-%d"
+            };
+            format!("{reason} · automatic retry at {}", retry.format(format))
+        };
+        let before = expected();
+        let decision = decide(state, &policy(), timing, now, jitter);
+        let after = expected();
+        assert_eq!(decision.not_before, Some(at));
+        let row = decision.shown_wait.expect("the pending retry is visible");
+        assert!(
+            row == before || row == after,
+            "actual {row:?}; expected {before:?} or {after:?}"
+        );
+        assert!(row.len() <= WAITING_ROW, "aterm's row cuts {row:?}");
+    };
+    check(
+        &s,
+        &timing,
+        reset + timing.reset_grace + jitter,
+        "usage limit",
+    );
+
+    // Sleep has consumed the reset. A later wake floor, including one past
+    // midnight, now determines the retry shown in the same Waiting row.
+    s.woke = Some(now);
+    let timing = Timing {
+        wake_settle: 2 * 24 * 60 * MIN,
+        ..timing
+    };
+    check(
+        &s,
+        &timing,
+        now + timing.wake_settle + jitter,
+        "the host just woke",
+    );
+}
+
 /// AFTER A WAKE THE HOST SETTLES BEFORE ANY ACT (aterm's `settle_wake`; 2026-10-24, a resume
 /// typed inside a 19 s dark wake with the network down): a resume due at a wake waits until
 /// the host has been awake [`Timing::wake_settle`] and this thread's share of the jitter, and
@@ -8208,6 +8351,13 @@ fn an_act_waits_for_the_host_to_settle_after_a_wake() {
         d.shown_wait
             .as_deref()
             .is_some_and(|w| w.contains("the host just woke")),
+        "{d:?}"
+    );
+    assert!(
+        !d.shown_wait
+            .as_deref()
+            .unwrap()
+            .contains("waiting for the usage reset at 12:00"),
         "{d:?}"
     );
     // The dark wake ended at 19 s; the next wake (the lid opened) settles again, from it.

@@ -13,8 +13,10 @@ pub mod banner;
 
 /// Native account observation used by the ALab-owned TUI glue.
 pub use codex_alab_aterm as aterm;
+pub use codex_thread_store::LocalThreadStore;
 
 use codex_alab_core::active;
+use std::sync::OnceLock;
 
 pub mod accounts_ui;
 pub mod boxes;
@@ -30,9 +32,11 @@ pub mod identity;
 #[cfg(unix)]
 pub mod input;
 pub mod interface;
+pub mod landing;
 pub mod life;
 pub mod login;
 pub mod mail;
+mod model_layout;
 pub mod motion;
 #[cfg(unix)]
 mod native_source;
@@ -42,6 +46,10 @@ pub mod notices;
 pub mod pets;
 pub mod progress;
 pub mod quota;
+#[cfg(unix)]
+pub mod model_policy;
+#[cfg(unix)]
+pub mod model_homes;
 pub mod record;
 pub mod resume_argv;
 pub mod service_tier;
@@ -51,7 +59,7 @@ mod snapshot_fixtures;
 pub mod terminal_modes;
 #[cfg(feature = "test-support")]
 pub mod test_diagnostics;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_paths;
 #[cfg(all(unix, any(test, feature = "test-support")))]
 pub mod test_pty;
@@ -69,6 +77,7 @@ pub mod upgrade_editor_graph_scope;
 #[cfg(unix)]
 pub mod upgrade_editor_startup;
 pub mod upgrade_exec_custody;
+pub mod upgrade_frame;
 mod upgrade_host;
 #[cfg(unix)]
 mod upgrade_native_command;
@@ -82,6 +91,26 @@ pub mod upgrade_target;
 #[cfg(unix)]
 pub mod upgrade_terminal;
 pub mod waiting;
+
+/// Whether the current renderer is aterm with no terminal multiplexer in between.
+fn direct_aterm() -> bool {
+    static DIRECT: OnceLock<bool> = OnceLock::new();
+    *DIRECT.get_or_init(|| {
+        let multiplexed = [
+            "TMUX",
+            "TMUX_PANE",
+            "STY",
+            "ZELLIJ",
+            "ZELLIJ_SESSION_NAME",
+            "ZELLIJ_VERSION",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+            || std::env::var("TERM")
+                .is_ok_and(|term| term.starts_with("screen") || term.starts_with("tmux"));
+        codex_alab_core::inside_aterm() && !multiplexed
+    })
+}
 
 /// Whether the TUI fetches OpenAI's announcement feed (`tui/src/tooltips.rs`): a GET to
 /// raw.githubusercontent.com at every launch, made even with tips hidden. Not in codex-alab.
@@ -111,6 +140,9 @@ pub fn use_config_permissions_on_resume() -> bool {
 /// a shared `$CODEX_HOME` daemon runs under one process environment and would mix per-account
 /// credential files across tabs even if `features.daemon_auto_start = true` is set in config.
 pub fn auth_path_daemon_exclusion() -> Option<&'static str> {
+    if codex_alab_core::bound_picker::expected().is_some() {
+        return Some("this session requires its confirmed local subscription");
+    }
     auth_path_daemon_exclusion_with(
         codex_alab_core::is_alab_binary(),
         std::env::var_os(codex_alab_core::home::AUTH_PATH_ENV).as_deref(),

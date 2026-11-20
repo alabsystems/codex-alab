@@ -23,6 +23,7 @@ use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_runtime_agent_instance::RuntimeAuthManager;
 
@@ -218,6 +219,9 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     fn map_api_error(&self, error: ApiError) -> CodexErr {
         codex_alab_kimi::map_api_error(codex_alab_core::active(), self.info(), error) // ALAB(kimi): provider-specific quota and transient-limit semantics
     }
+
+    /// Normalizes a completed output item before it enters model history.
+    fn normalize_completed_output_item(&self, _item: &mut ResponseItem) {}
 
     /// Returns provider configuration adapted for the API client.
     fn api_provider(&self) -> ModelProviderFuture<'_, codex_protocol::error::Result<Provider>> {
@@ -724,6 +728,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 self.auth_manager.clone(),
                 self.gateway_auth_manager.clone(),
             )
+            .alab_registered_api(settings.alab_registered_openai_api, &self.info) // ALAB(defaults): retain the configured provider ID with the endpoint.
             .with_runtime_auth(self.catalog_runtime_auth.clone()),
         );
         let auth_manager = self.auth_manager.clone();

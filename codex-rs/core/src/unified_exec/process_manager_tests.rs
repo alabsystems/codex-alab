@@ -582,6 +582,8 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
     .prepare(ExecCommandLifetime::Interactive)
     .expect("prepare command");
     let request = ExecCommandRequest {
+        source: crate::tools::context::ToolCallSource::Direct, // ALAB(shell-output): original tool surface.
+        _number_lease: Arc::new(()), // ALAB(shell-invocation): this event-only fixture never enters a manager.
         prepared,
         process_id: 123,
         network: None,
@@ -603,6 +605,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         output_buffer,
         "PRE_DENIAL_MARKER".to_string(),
         "Network access denied".to_string(),
+        /*observed_exit*/ None,
         Duration::from_millis(7),
     )
     .await;
@@ -626,7 +629,8 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         item.status,
         codex_protocol::items::CommandExecutionStatus::Failed
     );
-    assert_eq!(item.exit_code, Some(-1));
+    assert_eq!(item.exit_code, None);
+    assert_eq!(item.duration, Some(Duration::from_millis(7)));
     assert_eq!(item.process_id.as_deref(), Some("123"));
     assert_eq!(
         item.aggregated_output.as_deref(),

@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Redeem earned resets for the original in-flight request, never purchased credits.
+//! Recover the original request with an earned reset or existing usage credits.
 use codex_alab_core::quota::SpentWall;
 use codex_alab_core::quota::SpentWindow;
 use codex_backend_client::Client;
@@ -9,6 +9,7 @@ use codex_backend_client::ConsumeRateLimitResetCreditCode;
 use codex_backend_client::RateLimitsWithResetCredits;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
+use codex_protocol::protocol::CreditsSnapshot;
 use sha2::Digest;
 use sha2::Sha256;
 use std::path::Path;
@@ -98,11 +99,14 @@ fn decline_reason(
     format!("Reset not used: {reason}.")
 }
 
-/// A policy refusal is meaningful only for a complete, authenticated ordinary
-/// reading. In particular, a high valid window cannot hide another invalid one.
+/// An authenticated spending restriction settles a passive check on its own.
+/// Otherwise the decision requires a complete set of ordinary window percentages.
 fn preserves_preflight(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
-    if !matches(read, owner) || explicit_denial(read) || read.ordinary_usage_allowed.is_none() {
+    if !matches(read, owner) || read.ordinary_usage_allowed.is_none() {
         return false;
+    }
+    if explicit_denial(read) {
+        return true;
     }
     let mut high = false;
     for window in read
@@ -244,15 +248,26 @@ fn matches(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> 
 }
 
 fn explicit_denial(read: &RateLimitsWithResetCredits) -> bool {
-    use codex_protocol::protocol::RateLimitReachedType;
+    credit_restriction(read).is_some()
+}
+
+fn credit_restriction(read: &RateLimitsWithResetCredits) -> Option<&'static str> {
+    use codex_protocol::protocol::RateLimitReachedType::*;
     read.rate_limits
         .iter()
         .filter(|snapshot| snapshot.limit_id.as_deref().is_none_or(|id| id == "codex"))
-        .any(|snapshot| {
-            snapshot.spend_control_reached == Some(true)
-                || snapshot
-                    .rate_limit_reached_type
-                    .is_some_and(|reason| reason != RateLimitReachedType::RateLimitReached)
+        .find_map(|snapshot| match snapshot.rate_limit_reached_type {
+            Some(WorkspaceOwnerCreditsDepleted | WorkspaceMemberCreditsDepleted) => {
+                Some("The workspace is out of credits.")
+            }
+            Some(WorkspaceOwnerUsageLimitReached) => {
+                Some("The workspace spending limit was reached.")
+            }
+            Some(WorkspaceMemberUsageLimitReached) => {
+                Some("Your workspace spending limit was reached.")
+            }
+            Some(RateLimitReached) | None => (snapshot.spend_control_reached == Some(true))
+                .then_some("The account spending limit was reached."),
         })
 }
 
@@ -344,6 +359,70 @@ fn spent_wall(
     })
 }
 
+/// The backend can report an ordinary rate limit while existing usage credits
+/// are available. A workspace limit, spend control or upsell prevents retry.
+fn usable_usage_credits<'a>(
+    read: &'a RateLimitsWithResetCredits,
+    owner: &(String, String, u64),
+) -> Option<&'a CreditsSnapshot> {
+    if !matches(read, owner)
+        || read.ordinary_usage_allowed.is_none()
+        || read.rate_limit_upsell.is_some()
+        || explicit_denial(read)
+    {
+        return None;
+    }
+    let ordinary = read
+        .rate_limits
+        .iter()
+        .find(|s| s.limit_id.as_deref() == Some("codex"))?;
+    if ordinary
+        .individual_limit
+        .as_ref()
+        .is_some_and(|limit| limit.remaining_percent <= 0)
+    {
+        return None;
+    }
+    ordinary
+        .credits
+        .as_ref()
+        .filter(|credits| credits.has_credits || credits.unlimited)
+}
+
+fn paid_retry_notice(credits: &CreditsSnapshot) -> String {
+    if credits.unlimited {
+        return "Retrying this request once with unlimited usage credits.".into();
+    }
+    match codex_alab_core::quota::reported_credit_amount(credits.balance.as_deref()) {
+        Some(amount) => {
+            format!("Retrying this request once with usage credits (reported balance {amount}).")
+        }
+        None => "Retrying this request once with available usage credits.".into(),
+    }
+}
+
+fn usage_credit_marker(turn_id: &str) -> String {
+    format!("turn-{}.usage-credits", digest(turn_id))
+}
+
+/// Retrying sends the original model request. Only server billing can say that
+/// credits were actually used. This marker never settles an earned-reset receipt.
+fn try_usage_credits(
+    dir: &Path,
+    marker: &str,
+    credits: &CreditsSnapshot,
+    state: Option<&State>,
+) -> Recovery {
+    let outcome = retry_marker(dir, marker);
+    if outcome != Recovery::Restored {
+        return outcome;
+    }
+    if let Some(state) = state {
+        state.notice(NoticeKind::Credits, paid_retry_notice(credits));
+    }
+    Recovery::RetryWithUsageCredits
+}
+
 fn restored(read: &RateLimitsWithResetCredits, owner: &(String, String, u64)) -> bool {
     usage_below(read, owner, 100.0)
 }
@@ -360,12 +439,23 @@ pub struct State {
     /// sessions or written to the custody ledger.
     clear: std::sync::Mutex<Option<Clear>>,
     notices: std::sync::Mutex<Notices>,
+    /// Distinguish a timed-out redemption from a passive preflight lookup.
+    redemption_attempts: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NoticeKind {
+    Credits,
+    Decision,
+    Inventory,
+    Result,
+    Status,
 }
 
 #[derive(Default)]
 struct Notices {
     sender: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    last: std::collections::BTreeMap<&'static str, String>,
+    last: std::collections::BTreeMap<NoticeKind, String>,
 }
 
 impl State {
@@ -385,19 +475,26 @@ impl State {
             .is_some()
     }
 
-    fn notice(&self, kind: &'static str, message: impl Into<String>) {
+    fn notice(&self, kind: NoticeKind, message: impl Into<String>) {
         let message = message.into();
         let mut notices = self
             .notices
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if notices.last.get(kind) == Some(&message) {
+        if notices.last.get(&kind) == Some(&message) {
             return;
         }
+        let prefix = match kind {
+            NoticeKind::Credits => codex_alab_core::quota::USAGE_CREDIT_NOTICE,
+            NoticeKind::Decision
+            | NoticeKind::Inventory
+            | NoticeKind::Result
+            | NoticeKind::Status => codex_alab_core::quota::EARNED_RESET_NOTICE,
+        };
         if notices
             .sender
             .as_ref()
-            .is_some_and(|sender| sender.send(message.clone()).is_ok())
+            .is_some_and(|sender| sender.send(format!("{prefix}{message}")).is_ok())
         {
             notices.last.insert(kind, message);
         }
@@ -494,8 +591,8 @@ struct Credit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Recovery {
     Stop,
-    /// Authenticated preflight usage is below the redemption threshold. This
-    /// does not grant clearance to reuse the reading at the next request.
+    /// No reset or additional retry is needed. Return to native scheduling
+    /// without caching the reading or reporting a failed verification.
     NotNeeded,
     /// A checked ordinary preflight preserves earned resets under the policy;
     /// this is neither clearance nor a verification failure.
@@ -513,6 +610,7 @@ enum Recovery {
     },
     Spent,
     Restored,
+    RetryWithUsageCredits,
 }
 
 #[cfg(test)]
@@ -565,7 +663,7 @@ async fn wait_for_reset_observed(
         let looked = tokio::time::Instant::now();
         if !codex_alab_core::active() || identity(manager).as_ref() != Some(owner) {
             if let Some(state) = state {
-                state.notice("status", "Reset recovery stopped: the authenticated account changed or ALab recovery was disabled; no further reset is authorized by this request.");
+                state.notice(NoticeKind::Status, "Reset recovery stopped: the authenticated account changed or ALab recovery was disabled; no further reset is authorized by this request.");
             }
             return false;
         }
@@ -574,7 +672,7 @@ async fn wait_for_reset_observed(
         let attempt = reset_at.map_or(max_attempt, until_reset).min(max_attempt);
         if attempt.is_zero() {
             if let Some(state) = state {
-                state.notice("status", "Reset not used: the provider refresh deadline has arrived; returning to the ordinary usage retry path.");
+                state.notice(NoticeKind::Status, "Reset not used: the provider refresh deadline has arrived; returning to the ordinary usage retry path.");
             }
             return false;
         }
@@ -615,7 +713,7 @@ async fn wait_for_reset_observed(
             }
         };
         match outcome {
-            Ok(Recovery::Restored) => return true,
+            Ok(Recovery::Restored | Recovery::RetryWithUsageCredits) => return true,
             Ok(Recovery::Stop | Recovery::NotNeeded | Recovery::Preserved) => return false,
             Ok(Recovery::Spent) if reset_at.is_none() => return false,
             Ok(Recovery::NoCredit { wall, conclusive }) if conclusive || outage => {
@@ -649,7 +747,7 @@ async fn wait_for_reset_observed(
             }
             Err(_) => {
                 if let Some(state) = state {
-                    state.notice("status", "Reset recovery check timed out; availability, expiry or restored allowance could not be confirmed. Retrying without replacing any unconfirmed reset operation.");
+                    state.notice(NoticeKind::Status, "Reset recovery check timed out; availability, expiry or restored allowance could not be confirmed. Retrying without replacing any unconfirmed reset operation.");
                 }
             }
             Ok(Recovery::Spent | Recovery::Wait | Recovery::NoCredit { .. }) => {}
@@ -716,7 +814,7 @@ pub async fn recover_weekly(
         .clone()
         .filter(|owner| identity(manager).as_ref() == Some(owner))
     else {
-        state.notice("decision", "Considered earned usage reset: available count and expiry unknown because authentication changed or is unavailable. No reset used.");
+        state.notice(NoticeKind::Decision, "Considered earned usage reset: available count and expiry unknown because authentication changed or is unavailable. No reset used.");
         return false;
     };
     let config = Settings {
@@ -724,7 +822,6 @@ pub async fn recover_weekly(
         base: base.to_owned(),
         factory,
     };
-    state.notice("consideration", "Considered earned usage reset; checking available resets and expiry before stopping for the usage limit.");
     wait_for_reset_observed(
         manager,
         &config,
@@ -781,6 +878,9 @@ pub async fn preflight(
         base: base.to_owned(),
         factory,
     };
+    let attempts = state
+        .redemption_attempts
+        .load(std::sync::atomic::Ordering::Relaxed);
     if tokio::time::timeout(
         Duration::from_secs(45),
         recover_with(
@@ -794,8 +894,12 @@ pub async fn preflight(
     )
     .await
     .is_err()
+        && state
+            .redemption_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != attempts
     {
-        state.notice("status", "Reset preflight check timed out; no new reset decision can be confirmed. Any unconfirmed operation retains its original key for reconciliation.");
+        state.notice(NoticeKind::Status, "Earned reset confirmation timed out. The next check will reconcile the recorded operation.");
     }
 }
 
@@ -829,7 +933,7 @@ async fn recover_with(
         && let Some(state) = clearing
         && (purpose == Purpose::Recover || state.clear().is_none())
     {
-        state.notice("status", "Reset recovery stopped: account identity, quota eligibility or the redemption ledger could not authorize continuing safely. Any earlier unconfirmed reset remains recorded. No further reset will be spent until that operation is reconciled.");
+        state.notice(NoticeKind::Status, "Reset recovery stopped: account identity, quota eligibility or the redemption ledger could not authorize continuing safely. Any earlier unconfirmed reset remains recorded. No further reset will be spent until that operation is reconciled.");
     }
     outcome
 }
@@ -881,8 +985,8 @@ async fn recover_with_clocks(
     // Native reassignment drains this bounded attempt, including its receipts.
     // This lease ends before wait_for_reset sleeps between attempts.
     let Ok(_account_resource) = manager.alab_account_resource() else {
-        if let Some(state) = clearing {
-            state.notice("decision", "Reset not used: the active account is being reassigned; waiting for stable authentication.");
+        if let Some(state) = clearing.filter(|_| purpose == Purpose::Recover) {
+            state.notice(NoticeKind::Decision, "Reset not used: the active account is being reassigned; waiting for stable authentication.");
         }
         return Recovery::Wait;
     };
@@ -898,8 +1002,8 @@ async fn recover_with_clocks(
     let Ok(Some(_guard)) =
         codex_alab_core::auth_lock::AuthLock::take(&lock, Duration::from_secs(5)).await
     else {
-        if let Some(state) = clearing {
-            state.notice("decision", "Reset not used: another process holds the account reset lock; waiting to avoid spending twice.");
+        if let Some(state) = clearing.filter(|_| purpose == Purpose::Recover) {
+            state.notice(NoticeKind::Decision, "Reset not used: the account reset lock could not be acquired; waiting to avoid spending twice.");
         }
         return Recovery::Wait;
     };
@@ -907,7 +1011,7 @@ async fn recover_with_clocks(
     if private_dir(&dir).is_err() {
         if let Some(state) = clearing {
             state.notice(
-                "decision",
+                NoticeKind::Decision,
                 "Reset not used: a private redemption ledger could not be opened safely.",
             );
         }
@@ -954,29 +1058,33 @@ async fn recover_with_clocks(
     let read_at = (clocks.quota)();
     let read_started = std::time::Instant::now();
     let Ok(mut read) = client.get_rate_limits_with_reset_credits().await else {
-        if let Some(state) = clearing {
-            state.notice("decision", "Reset not used: current account usage could not be verified; available count and expiry remain unknown until the backend can be read.");
+        if let Some(state) = clearing.filter(|_| {
+            purpose == Purpose::Recover
+                || ledger
+                    .current
+                    .as_ref()
+                    .is_some_and(|op| op.outcome.pending())
+        }) {
+            state.notice(NoticeKind::Decision, "Reset not used: current account usage could not be verified; available count and expiry remain unknown until the backend can be read.");
         }
         return Recovery::Wait;
     };
     if !current() {
         return Recovery::Stop;
     }
-    let allowed = match purpose {
-        Purpose::Preflight => permitted_after_preflight(&read, owner),
-        Purpose::Recover => restored(&read, owner),
-    };
-    if allowed
-        && remember_restoration(
-            &state_path,
+    if purpose == Purpose::Recover && restored(&read, owner) {
+        return resume_on_allowance(
+            &dir,
             &mut ledger,
+            turn_id,
             permitted_after_preflight(&read, owner),
-        )
-        .is_none()
-    {
-        return Recovery::Stop;
+            clearing,
+        );
     }
-    if purpose == Purpose::Preflight && allowed {
+    if purpose == Purpose::Preflight && permitted_after_preflight(&read, owner) {
+        if remember_restoration(&state_path, &mut ledger, true).is_none() {
+            return Recovery::Stop;
+        }
         // The credit receipt is committed before the ledger ACK. A crash in
         // between must not hide that proof from a successful preflight.
         if committed_credit {
@@ -999,34 +1107,7 @@ async fn recover_with_clocks(
         }
         return Recovery::Stop;
     }
-    if purpose == Purpose::Recover && allowed {
-        let outcome = release(
-            &dir,
-            ledger.current.as_ref().map(|op| op.credit.as_str()),
-            turn_id,
-        );
-        if let Some(state) = clearing {
-            state.notice("inventory", "Considered earned usage reset: allowance already restored; no new reset needed, so available count and expiry were not queried.");
-            state.notice("result", if outcome == Recovery::Restored {
-                "Allowance restored; continuing the original request without spending another reset."
-            } else {
-                "Allowance restored; the recorded retry could not be released, so no additional reset will be spent."
-            });
-        }
-        return outcome;
-    }
     let mut tried = std::collections::BTreeSet::new();
-    if let Some(state) = clearing.filter(|state| {
-        state.reports()
-            && (purpose == Purpose::Recover
-                || ordinary_used(&read).is_some_and(|used| used >= REDEMPTION_USED_PERCENT))
-    }) {
-        let now = (clocks.quota)();
-        if redemption_cycle(&read, owner, now).is_none() {
-            let _ = available_observed(&client, &dir, &tried, expiry_now, Some(state)).await;
-            state.notice("decision", decline_reason(&read, owner, now));
-        }
-    }
     loop {
         if purpose == Purpose::Preflight
             && ledger.current.as_ref().is_some_and(|op| {
@@ -1062,23 +1143,65 @@ async fn recover_with_clocks(
                 if stale_exhaustion(&read, owner, now) {
                     return Recovery::Wait;
                 }
-                if let Some(wall) = spent_wall(&read, owner, now) {
-                    // Policy can forbid spending a credit without invalidating
-                    // an ordinary quota wall. Keep polling or offer the host
-                    // that wall, unless an unresolved operation holds custody.
-                    let held = ledger.current.as_ref().is_some_and(|op| {
-                        op.outcome.pending()
-                            || (op.outcome == Outcome::Consumed
-                                && credit_at(&dir, &op.credit)
-                                    .is_none_or(|credit| !credit.retry_released))
-                    });
-                    return if held {
-                        Recovery::Wait
-                    } else {
+                let wall = spent_wall(&read, owner, now);
+                let held = ledger.current.as_ref().is_some_and(|op| {
+                    op.outcome.pending()
+                        || (op.outcome == Outcome::Consumed
+                            && credit_at(&dir, &op.credit)
+                                .is_none_or(|credit| !credit.retry_released))
+                });
+                if !held && current() {
+                    if matches(&read, owner)
+                        && read.ordinary_usage_allowed.is_some()
+                        && let Some(reason) = credit_restriction(&read)
+                    {
+                        if let Some(state) = clearing {
+                            state.notice(
+                                NoticeKind::Credits,
+                                format!("Credit retry skipped. {reason}"),
+                            );
+                        }
+                        return Recovery::NotNeeded;
+                    }
+                    if let Some(credits) = usable_usage_credits(&read, owner) {
+                        let retry = try_usage_credits(
+                            &dir,
+                            &usage_credit_marker(turn_id),
+                            credits,
+                            clearing,
+                        );
+                        if retry != Recovery::Spent {
+                            return retry;
+                        }
+                        if wall.is_none() {
+                            return Recovery::NotNeeded;
+                        }
+                    }
+                }
+                if let Some(wall) = wall {
+                    if held {
+                        return Recovery::Wait;
+                    }
+                    if let Some(state) = clearing.filter(|state| state.reports())
+                        && let Ok(Some(_)) = available_observed(
+                            &client,
+                            &dir,
+                            &tried,
+                            expiry_now,
+                            purpose,
+                            Some(state),
+                        )
+                        .await
+                    {
+                        state.notice(NoticeKind::Decision, decline_reason(&read, owner, now));
+                    }
+                    return if current() {
                         Recovery::NoCredit {
                             wall,
                             conclusive: true,
                         }
+                    } else {
+                        Recovery::Stop
                     };
                 }
             }
@@ -1091,7 +1214,7 @@ async fn recover_with_clocks(
                 && credit_at(&dir, &op.credit).is_some_and(|credit| !credit.retry_released)
         }) {
             if let Some(state) = clearing {
-                state.notice("decision", "A reset was already consumed; waiting for restored allowance before considering another reset.");
+                state.notice(NoticeKind::Decision, "A reset was already consumed; waiting for restored allowance before considering another reset.");
             }
             return Recovery::Wait;
         }
@@ -1102,7 +1225,7 @@ async fn recover_with_clocks(
             .cloned();
         let (op, selected) = if let Some(op) = pending {
             if let Some(state) = clearing {
-                state.notice("inventory", "Considered earned usage reset: available count and expiry are not re-listed while reconciling an earlier reset. Retaining its operation key to avoid spending twice.");
+                state.notice(NoticeKind::Inventory, "Considered earned usage reset: available count and expiry are not re-listed while reconciling an earlier reset. Retaining its operation key to avoid spending twice.");
             }
             // A committed per-credit proof can survive a crash before state.json.
             let Some(credit) = credit_at(&dir, &op.credit) else {
@@ -1120,12 +1243,50 @@ async fn recover_with_clocks(
             }
             (op, None)
         } else {
-            let listed = available_observed(&client, &dir, &tried, expiry_now, clearing).await;
+            let listed =
+                available_observed(&client, &dir, &tried, expiry_now, purpose, clearing).await;
+            if !current() {
+                return Recovery::Stop;
+            }
             let Ok(Some(selected)) = listed else {
-                if listed.is_ok()
-                    && let Some(state) = clearing
+                if purpose == Purpose::Recover
+                    && listed.is_ok()
+                    && tried.is_empty()
+                    && usable_usage_credits(&read, owner).is_some()
                 {
-                    state.notice("decision", "Reset not used: no usable, unexpired earned reset is available; waiting for allowance or another account.");
+                    // A resumed turn may have spent its one paid retry. Only an
+                    // unused retry needs another credit authorization after listing.
+                    let marker = usage_credit_marker(turn_id);
+                    let retry = if let Some(existing) = existing_retry(&dir.join(&marker)) {
+                        Some(existing)
+                    } else {
+                        let Ok(fresh) = client.get_rate_limits_with_reset_credits().await else {
+                            return Recovery::Wait;
+                        };
+                        if !current() {
+                            return Recovery::Stop;
+                        }
+                        read = fresh;
+                        if restored(&read, owner) {
+                            return resume_on_allowance(
+                                &dir,
+                                &mut ledger,
+                                turn_id,
+                                permitted_after_preflight(&read, owner),
+                                clearing,
+                            );
+                        }
+                        usable_usage_credits(&read, owner)
+                            .map(|credits| try_usage_credits(&dir, &marker, credits, clearing))
+                    };
+                    if let Some(outcome) = retry {
+                        if outcome != Recovery::Spent {
+                            return outcome;
+                        }
+                        if spent_wall(&read, owner, (clocks.quota)()).is_none() {
+                            return Recovery::NotNeeded;
+                        }
+                    }
                 }
                 // Nothing is in custody here: a consumed credit awaiting
                 // propagation returned above, and a pending operation never
@@ -1142,7 +1303,7 @@ async fn recover_with_clocks(
                 };
             };
             if let Some(state) = clearing {
-                state.notice("decision", format!("Using an earned usage reset automatically: the weekly allowance refreshes at {}, more than 24 hours away. Choosing the earliest-expiring usable reset.", timestamp(cycle)));
+                state.notice(NoticeKind::Decision, format!("Using an earned usage reset automatically: the weekly allowance refreshes at {}, more than 24 hours away. Choosing the earliest-expiring usable reset.", timestamp(cycle)));
             }
             let Some(op) = begin(&dir, &account, &mut ledger, cycle, &selected.id) else {
                 return Recovery::Stop;
@@ -1173,7 +1334,7 @@ async fn recover_with_clocks(
         // A window that qualified before that wait cannot authorize a POST now.
         if redemption_cycle(&read, owner, (clocks.quota)()) != Some(cycle) {
             if let Some(state) = clearing {
-                state.notice("decision", "Reset not used: the weekly allowance is now within 24 hours of its refresh; preserving the earned reset.");
+                state.notice(NoticeKind::Decision, "Reset not used: the weekly allowance is now within 24 hours of its refresh; preserving the earned reset.");
             }
             return Recovery::Wait;
         }
@@ -1182,7 +1343,7 @@ async fn recover_with_clocks(
         // a fresh read of the same owner's ordinary quota window.
         let Ok(before_post) = client.get_rate_limits_with_reset_credits().await else {
             if let Some(state) = clearing {
-                state.notice("decision", "Reset not used: the final account usage check failed; waiting for a verified reading.");
+                state.notice(NoticeKind::Decision, "Reset not used: the final account usage check failed; waiting for a verified reading.");
             }
             return Recovery::Wait;
         };
@@ -1197,7 +1358,7 @@ async fn recover_with_clocks(
         if fresh_cycle != Some(cycle) {
             if let Some(state) = clearing {
                 state.notice(
-                    "decision",
+                    NoticeKind::Decision,
                     format!(
                         "Reset not used: quota changed before redemption. {}",
                         decline_reason(&before_post, owner, now)
@@ -1213,19 +1374,24 @@ async fn recover_with_clocks(
         if selected.is_some_and(|credit| !credit.unexpired(expiry_now())) {
             if let Some(state) = clearing {
                 state.notice(
-                    "decision",
+                    NoticeKind::Decision,
                     "Reset not used: the selected earned reset expired before redemption.",
                 );
             }
             return Recovery::Wait;
         }
         tried.insert(op.credit.clone());
+        if let Some(state) = clearing {
+            state
+                .redemption_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let reply = client
             .consume_rate_limit_reset_credit_by_id(&op.key, &op.credit)
             .await;
         let code = reply.ok().map(|reply| reply.code);
         if let Some(state) = clearing {
-            state.notice("result", match code {
+            state.notice(NoticeKind::Result, match code {
                 Some(ConsumeRateLimitResetCreditCode::Reset) => "Earned usage reset applied; checking that allowance is restored.",
                 Some(ConsumeRateLimitResetCreditCode::AlreadyRedeemed) => "The earned usage reset was already redeemed; checking restored allowance without spending another.",
                 Some(ConsumeRateLimitResetCreditCode::NothingToReset) => "Reset not used: the backend reports nothing to reset.",
@@ -1288,10 +1454,10 @@ async fn recover_with_clocks(
             }
             let outcome = release(&dir, Some(&op.credit), turn_id);
             if let Some(state) = clearing {
-                state.notice("result", if outcome == Recovery::Restored {
+                state.notice(NoticeKind::Result, if outcome == Recovery::Restored {
                     "Usage allowance restored after the earned reset; continuing the original request."
                 } else {
-                    "Usage allowance restored; this request's retry is already accounted for, so no additional reset will be spent."
+                    "Usage allowance restored; the recorded retry could not be released, so no additional reset will be spent."
                 });
             }
             return outcome;
@@ -1385,7 +1551,7 @@ async fn available(
     tried: &std::collections::BTreeSet<String>,
     expiry_now: impl FnOnce() -> i64,
 ) -> Result<Option<AvailableCredit>, Unlisted> {
-    available_observed(client, dir, tried, expiry_now, None).await
+    available_observed(client, dir, tried, expiry_now, Purpose::Recover, None).await
 }
 
 async fn available_observed(
@@ -1393,44 +1559,18 @@ async fn available_observed(
     dir: &Path,
     tried: &std::collections::BTreeSet<String>,
     expiry_now: impl FnOnce() -> i64,
+    purpose: Purpose,
     state: Option<&State>,
 ) -> Result<Option<AvailableCredit>, Unlisted> {
     let details = match client.list_rate_limit_reset_credits().await {
         Ok(details) => details,
         Err(_) => {
-            if let Some(state) = state {
-                state.notice("inventory", "Considered earned usage reset: available count and expiry unknown because the reset list could not be read. No new reset will be used until availability is confirmed.");
+            if let Some(state) = state.filter(|_| purpose == Purpose::Recover) {
+                state.notice(NoticeKind::Inventory, "Considered earned usage reset: available count and expiry unknown because the reset list could not be read. No new reset will be used until availability is confirmed.");
             }
             return Err(Unlisted);
         }
     };
-    if let Some(state) = state {
-        let expiries = details
-            .credits
-            .iter()
-            .filter(|credit| {
-                credit.status == "available" && credit.reset_type == "codex_rate_limits"
-            })
-            .map(|credit| match credit.expires_at.as_deref() {
-                Some(expiry) => chrono::DateTime::parse_from_rfc3339(expiry)
-                    .map(|time| time.to_rfc3339())
-                    .unwrap_or_else(|_| "unknown expiry (invalid server timestamp)".into()),
-                None => "expiry not provided".into(),
-            })
-            .collect::<Vec<_>>();
-        state.notice(
-            "inventory",
-            format!(
-                "Considered earned usage reset: {} available; expirations: {}.",
-                details.available_count.max(0),
-                if expiries.is_empty() {
-                    "none provided".into()
-                } else {
-                    expiries.join(", ")
-                }
-            ),
-        );
-    }
     if details.available_count <= 0 {
         return Ok(None);
     }
@@ -1468,7 +1608,59 @@ async fn available_observed(
                     .map(|expiry| expiry.timestamp())
             }),
         });
+    if let Some(state) = state.filter(|_| next.is_some()) {
+        let mut expiries = details
+            .credits
+            .iter()
+            .filter(|credit| {
+                credit.status == "available" && credit.reset_type == "codex_rate_limits"
+            })
+            .map(|credit| match credit.expires_at.as_deref() {
+                Some(expiry) => chrono::DateTime::parse_from_rfc3339(expiry)
+                    .map(|time| time.to_utc().to_rfc3339())
+                    .unwrap_or_else(|_| "unknown expiry (invalid server timestamp)".into()),
+                None => "expiry not provided".into(),
+            })
+            .collect::<Vec<_>>();
+        // The provider can reorder unchanged grants between polls.
+        expiries.sort_unstable();
+        state.notice(
+            NoticeKind::Inventory,
+            format!(
+                "Considered earned usage reset: {} available; expirations: {}.",
+                details.available_count,
+                expiries.join(", ")
+            ),
+        );
+    }
     Ok(next)
+}
+
+/// A confirmed ordinary allowance uses its own retry receipt, including when
+/// it returns during the final check before a paid retry.
+fn resume_on_allowance(
+    dir: &Path,
+    ledger: &mut Ledger,
+    turn_id: &str,
+    preflight_clear: bool,
+    state: Option<&State>,
+) -> Recovery {
+    if remember_restoration(&dir.join("state.json"), ledger, preflight_clear).is_none() {
+        return Recovery::Stop;
+    }
+    let outcome = release(
+        dir,
+        ledger.current.as_ref().map(|op| op.credit.as_str()),
+        turn_id,
+    );
+    if let Some(state) = state {
+        state.notice(NoticeKind::Result, if outcome == Recovery::Restored {
+            "Allowance restored; continuing the original request without spending another reset."
+        } else {
+            "Allowance restored; the recorded retry could not be released, so no additional reset will be spent."
+        });
+    }
+    outcome
 }
 
 fn release(dir: &Path, id: Option<&str>, turn: &str) -> Recovery {
@@ -1500,12 +1692,17 @@ fn release(dir: &Path, id: Option<&str>, turn: &str) -> Recovery {
         &format!("turn-{}.credit-{}.retry", digest(turn), digest(id)),
     )
 }
+fn existing_retry(path: &Path) -> Option<Recovery> {
+    match read_receipt(path) {
+        Ok(Some(bytes)) if bytes.is_empty() => Some(Recovery::Spent),
+        Ok(None) => None,
+        _ => Some(Recovery::Stop),
+    }
+}
 fn retry_marker(dir: &Path, name: &str) -> Recovery {
     let path = dir.join(name);
-    match read_receipt(&path) {
-        Ok(Some(bytes)) if bytes.is_empty() => return Recovery::Spent,
-        Ok(None) => {}
-        _ => return Recovery::Stop,
+    if let Some(outcome) = existing_retry(&path) {
+        return outcome;
     }
     use std::os::unix::fs::OpenOptionsExt;
     let Ok(file) = std::fs::OpenOptions::new()
@@ -1628,7 +1825,7 @@ impl State {
         Self {
             owner: identity(manager),
             clear: std::sync::Mutex::new(None),
-            notices: std::sync::Mutex::default(),
+            ..Default::default()
         }
     }
 }
@@ -1654,6 +1851,88 @@ mod tests {
             rate_limit_upsell: None,
         }
     }
+    #[test]
+    fn paid_retry_reports_only_requested_account_credit_facts() {
+        for (unlimited, balance, expected) in [
+            (
+                true,
+                Some("1234"),
+                "Retrying this request once with unlimited usage credits.",
+            ),
+            (
+                false,
+                Some(" 0.0001200 "),
+                "Retrying this request once with usage credits (reported balance 0.0001200).",
+            ),
+            (
+                false,
+                None,
+                "Retrying this request once with available usage credits.",
+            ),
+            (
+                false,
+                Some("NaN"),
+                "Retrying this request once with available usage credits.",
+            ),
+            (
+                false,
+                Some("12\nnotice"),
+                "Retrying this request once with available usage credits.",
+            ),
+        ] {
+            let credits = CreditsSnapshot {
+                has_credits: true,
+                unlimited,
+                balance: balance.map(str::to_owned),
+            };
+            assert_eq!(paid_retry_notice(&credits), expected);
+        }
+    }
+
+    #[test]
+    fn credit_retry_requires_authenticated_usable_ordinary_credits() {
+        use codex_protocol::protocol::CreditsSnapshot;
+        use codex_protocol::protocol::RateLimitReachedType;
+
+        let owner = ("account".to_string(), "user".to_string(), 1);
+        let mut read = reading(100.0, 10080, 200_000);
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limits[0].credits = Some(CreditsSnapshot {
+            has_credits: false,
+            unlimited: false,
+            balance: Some("1234".into()),
+        });
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limits[0].credits.as_mut().unwrap().unlimited = true;
+        assert!(usable_usage_credits(&read, &owner).is_some());
+        read.rate_limits[0].rate_limit_reached_type =
+            Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached);
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limits[0].rate_limit_reached_type = Some(RateLimitReachedType::RateLimitReached);
+        assert!(usable_usage_credits(&read, &owner).is_some());
+        read.rate_limits[0].spend_control_reached = Some(false);
+        read.rate_limits[0].individual_limit =
+            Some(codex_protocol::protocol::SpendControlLimitSnapshot {
+                limit: "100".into(),
+                used: "100".into(),
+                remaining_percent: 0,
+                resets_at: 200_000,
+            });
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limits[0].individual_limit = None;
+        read.rate_limits[0].limit_id = Some("premium".into());
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limits[0].limit_id = Some("codex".into());
+        read.rate_limit_upsell = Some(serde_json::json!({"offer": "add_credits"}));
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.rate_limit_upsell = None;
+        read.ordinary_usage_allowed = None;
+        assert!(usable_usage_credits(&read, &owner).is_none());
+        read.ordinary_usage_allowed = Some(true);
+        read.user_id = Some("another-user".into());
+        assert!(usable_usage_credits(&read, &owner).is_none());
+    }
+
     #[test]
     fn recovery_accepts_distant_weekly_resets_and_rejects_unusable_inputs() {
         let owner = ("account".into(), "user".into(), 1);
@@ -1779,6 +2058,7 @@ mod tests {
                 (99.0, 24 * 3600 + 1, true),
                 (99.0, 25 * 3600, true),
                 (99.0, 48 * 3600, true),
+                (99.0, 49 * 3600, true),
                 (100.0, 7 * 24 * 3600, true),
                 (100.0, 0, false),
                 (100.0, -1, false),

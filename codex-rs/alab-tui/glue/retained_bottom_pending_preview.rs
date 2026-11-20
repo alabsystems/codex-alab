@@ -28,6 +28,7 @@ impl Data {
     }
     pub(crate) fn restore(self) -> io::Result<PendingInputPreview> {
         Ok(PendingInputPreview {
+            alab_recovery: alab_queue_review::Recovery::Unknown,
             pending_steers: self.pending,
             rejected_steers: self.rejected,
             queued_messages: self.queued,
@@ -44,6 +45,30 @@ fn required<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[cfg(test)]
 mod controls {
     use super::*;
+    #[test]
+    fn saved_preview_waits_for_the_authoritative_queue_to_supply_delivery_state() -> io::Result<()>
+    {
+        let saved = serde_json::json!({
+            "pending": ["unconfirmed text"],
+            "rejected": ["returned text"],
+            "queued": ["follow-up text"],
+            "edit": null,
+            "interrupt": null
+        });
+        let preview = serde_json::from_value::<Data>(saved.clone())?.restore()?;
+        assert_eq!(serde_json::to_value(Data::capture(&preview))?, saved);
+        let area = Rect::new(0, 0, 80, preview.desired_height(80));
+        let mut buffer = Buffer::empty(area);
+        preview.render(area, &mut buffer);
+        let text = format!("{buffer:?}");
+        for label in ["unconfirmed text", "returned text", "follow-up text"] {
+            assert!(text.contains(label), "{text}");
+        }
+        assert!(!text.contains("to be submitted"));
+        assert!(!text.contains("automatic sending paused"));
+        assert!(!text.contains("send immediately"));
+        Ok(())
+    }
     #[test]
     fn original_pending_rejected_and_queued_sections_and_exact_keys_survive() -> io::Result<()> {
         let mut original = PendingInputPreview::new();

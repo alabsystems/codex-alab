@@ -129,6 +129,7 @@ fn resumed_native_stop_releases_only_the_exact_confirmed_consumed_custody() {
                 renewal: Some(AccountHandoff {
                     purpose: codex_alab_core::account_handoff::Purpose::Login,
                     destination: None,
+                    limit: None,
                     openai_scope: true,
                     local: false,
                     account: identity.account.clone(),

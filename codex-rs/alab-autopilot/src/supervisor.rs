@@ -337,6 +337,14 @@ pub(crate) struct AdmissionFence {
     tui_generation: codex_alab_core::session::AdmissionGeneration,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpgradeNoticeClaim {
+    tenure: u64,
+    change: u64,
+    policy: Option<u64>,
+    event_epoch: u64,
+}
+
 /// A claim sealed for an account handoff ([`Supervisor::seal_claim_for_handoff`]).
 #[derive(Debug)]
 struct HandoffSeal {
@@ -1368,6 +1376,40 @@ impl Supervisor {
             return None;
         }
         state.client.clone().filter(Client::holds_claim)
+    }
+
+    /// The current connection and claim tenure for the cooperative update notice.
+    pub(crate) fn upgrade_notice_client(
+        &self,
+        policy: &Policy,
+    ) -> Option<(UpgradeNoticeClaim, Client)> {
+        let state = self.lock();
+        if !state.acting()
+            || state.hold
+            || state.hold_met
+            || state.policy.as_ref() != Some(policy)
+            || state
+                .queued_claim_events
+                .admission_pending
+                .load(Ordering::SeqCst)
+                != 0
+        {
+            return None;
+        }
+        let client = state
+            .client
+            .as_ref()
+            .filter(|client| client.holds_claim())?;
+        let claim = UpgradeNoticeClaim {
+            tenure: state.claims_taken,
+            change: *self.claims.borrow(),
+            policy: state.generation,
+            event_epoch: state
+                .queued_claim_events
+                .admission_epoch
+                .load(Ordering::SeqCst),
+        };
+        Some((claim, client.clone()))
     }
 
     /// The claim's connection, while connected (tests drive the transitions on it).
@@ -4697,6 +4739,25 @@ impl Supervisor {
         text: Option<String>,
     ) -> Option<Client> {
         self.want_attention_owned(Some(thread), key, text)
+    }
+
+    /// Raise a decision's reason under the policy and Off epoch that decided it.
+    /// The caller holds the native registration fence through this insertion.
+    pub(crate) fn want_attention_for_at_policy(
+        &self,
+        thread: &str,
+        key: &'static str,
+        text: String,
+        policy: &crate::decide::Policy,
+        offs: u64,
+    ) -> Option<Client> {
+        let mut st = self.lock();
+        if !st.acting() || st.policy.as_ref() != Some(policy) || self.offs() != offs {
+            return None;
+        }
+        st.attention
+            .insert(AttentionReason::new(key, Some(thread)), text.into());
+        st.client.clone()
     }
 
     /// Whether thread `thread`'s attention reason `key` stands as this process wants it.

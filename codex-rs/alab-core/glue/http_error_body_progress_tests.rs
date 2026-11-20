@@ -160,12 +160,15 @@ fn held(prefix: Option<Bytes>) -> (reqwest::Body, oneshot::Receiver<()>, Arc<Ato
     (body, receiver, dropped)
 }
 
-async fn entered(future: Pin<&mut impl Future>, receiver: oneshot::Receiver<()>) {
+async fn entered(mut future: Pin<&mut impl Future>, receiver: oneshot::Receiver<()>) {
     tokio::select! {
         biased;
         result = receiver => result.expect("collector reached its next pending body poll"),
-        _ = future => panic!("held capture completed before its body-poll acknowledgement"),
+        _ = future.as_mut() => panic!("held capture completed before its body-poll acknowledgement"),
     }
+    let pending =
+        std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await;
+    assert!(pending, "the held body must still be waiting");
 }
 
 async fn healthy(capture: &Capture) {
@@ -186,7 +189,6 @@ async fn read_progress_survives_body_timeout_and_counts_complete_entities() {
         let (body, receiver, dropped) = held(prefix);
         let mut future = Box::pin(read(response(body, &NetworkPolicy::unmanaged())));
         entered(future.as_mut(), receiver).await;
-        assert!(futures::poll!(&mut future).is_pending());
         tokio::time::advance(BODY_WAIT + Duration::from_millis(1)).await;
         assert!(matches!((&mut future).await, Err(HttpError::Timeout)));
         drop(future);
@@ -259,7 +261,6 @@ async fn read_progress_survives_policy_denial_without_logging_owner_drop() {
     let (body, receiver, dropped) = held(Some(Bytes::from_static(PRIVATE)));
     let mut future = Box::pin(read(response(body, &policy)));
     entered(future.as_mut(), receiver).await;
-    assert!(futures::poll!(&mut future).is_pending());
     policy.invalidate();
     assert!(matches!(
         (&mut future).await,
@@ -294,7 +295,6 @@ async fn read_progress_survives_policy_denial_without_logging_owner_drop() {
     let (body, receiver, dropped) = held(Some(Bytes::from_static(PRIVATE)));
     let mut future = Box::pin(read(response(body, &NetworkPolicy::unmanaged())));
     entered(future.as_mut(), receiver).await;
-    assert!(futures::poll!(&mut future).is_pending());
     drop(future);
     assert!(
         dropped.load(Ordering::SeqCst),

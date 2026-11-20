@@ -1,0 +1,7 @@
+In the enhanced local interface, plain `codex resume` lists active conversations
+across all local logins and projects, including sessions started by `codex exec`.
+You can narrow the login and project filters in the picker.
+
+`codex resume --last` selects from the current login. Use --all to search other
+projects and --include-non-interactive to include exec sessions with --last or
+in the vanilla picker.

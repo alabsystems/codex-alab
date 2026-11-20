@@ -4,6 +4,40 @@
 //! Session semantics follow the selected target, independently of wire client.
 use super::*;
 
+/// A callback can acknowledge only the original result delivered to that callback.
+pub(crate) struct SideCloseAck {
+    #[cfg(unix)]
+    target: crate::owned_local_frontend::OwnedLocalTarget,
+    #[cfg(unix)]
+    thread: ThreadId,
+    #[cfg(unix)]
+    operation: codex_app_server_client::SideViewCloseOperation,
+    #[cfg(unix)]
+    handle: codex_app_server_client::AppServerRequestHandle,
+}
+
+impl std::fmt::Debug for SideCloseAck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SideCloseAck")
+    }
+}
+
+impl SideCloseAck {
+    pub(crate) async fn after_application(ack: Option<Self>) {
+        #[cfg(unix)]
+        if let Some(ack) = ack
+            && let Err(error) = ack
+                .target
+                .observe_side_close(ack.thread, &ack.operation, &ack.handle)
+                .await
+        {
+            tracing::warn!(%error, "Side close result observation retained");
+        }
+        #[cfg(not(unix))]
+        let _ = ack;
+    }
+}
+
 impl AppServerSession {
     #[cfg(unix)]
     pub(crate) fn with_selected_target(
@@ -54,10 +88,11 @@ impl AppServerSession {
     pub(crate) fn alab_unsubscribe_side_view(
         &mut self,
         thread: ThreadId,
-    ) -> impl std::future::Future<Output = Result<()>> + use<> {
-        self.thread_unsubscribe(thread)
-    }
-    pub(crate) async fn alab_observe_side_close(&self, _thread: ThreadId) -> Result<()> {
-        Ok(())
+    ) -> (
+        bool,
+        impl std::future::Future<Output = (Result<()>, Option<SideCloseAck>)> + use<>,
+    ) {
+        let original = self.thread_unsubscribe(thread);
+        (true, async move { (original.await, None) })
     }
 }

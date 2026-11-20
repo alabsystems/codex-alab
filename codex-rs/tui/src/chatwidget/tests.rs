@@ -262,6 +262,8 @@ mod luna_reserve_usage_tests;
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]
 mod misalignment_policy;
+#[path = "../../../alab-tui/glue/recovered_input_preview_tests.rs"]
+mod recovered_input_preview; // ALAB(queue-review): render a real terminal finding through the pane and configured queue editor.
 #[path = "tests/model_display_name_tests.rs"]
 mod model_display_name_tests;
 #[path = "tests/model_picker_tests.rs"]

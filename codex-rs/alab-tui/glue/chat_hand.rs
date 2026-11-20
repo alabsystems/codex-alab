@@ -34,7 +34,37 @@ mod turns_session_tests;
 #[path = "live_stream_replay_tests.rs"]
 mod live_stream_replay_tests;
 
+impl super::ThreadInputState {
+    /// The ordinary replacement frame carries the primary editor only. Provider,
+    /// navigation and collaboration settings by themselves own no submitted input.
+    pub(crate) fn alab_has_upgrade_input(&self) -> bool {
+        self.has_unsent_input()
+            || self.initial_user_message.is_some()
+            || self.startup_submission.is_some()
+            || !self.pending_steers.is_empty()
+            // The last submission's ID and safety retry copy can survive successful completion.
+            // Reconnect only treats that copy as unconfirmed work while start is pending.
+            || self.user_turn_pending_start
+            || self
+                .questions
+                .as_ref()
+                .is_some_and(crate::bottom_pane::QuestionState::alab_has_pending_questions)
+    }
+}
+
 impl ChatWidget {
+    /// Input held outside the primary editor cannot travel in its replacement frame.
+    pub(crate) fn alab_has_upgrade_input(&self) -> bool {
+        self.alab_queued_input()
+            || self.initial_user_message.is_some()
+            || self.alab_pending_user_turn()
+            || self
+                .bottom_pane
+                .questions
+                .as_ref()
+                .is_some_and(|questions| questions.unanswered_count() > 0)
+    }
+
     /// An active claimed root has no person available to settle a headless prompt.
     pub(crate) fn alab_autonomous_root_active(&self) -> bool {
         codex_alab_tui::boxes::tick_shared().is_some_and(|shared| {
@@ -280,6 +310,9 @@ impl ChatWidget {
         // The original invocation's initial message was already consumed by this runtime.
         self.initial_user_message = None;
         Ok(())
+    }
+    pub(crate) fn alab_clear_runtime_editor_layout(&self) {
+        self.bottom_pane.alab_clear_draft_layout();
     }
     pub(crate) fn alab_runtime_editor_has_layout(&self) -> bool {
         self.bottom_pane.alab_draft_has_layout()

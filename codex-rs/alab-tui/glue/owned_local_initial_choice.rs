@@ -33,6 +33,24 @@ pub(super) struct State {
     constructions: Vec<Arc<ConstructionRecord>>,
     admissions: std::collections::BTreeSet<String>,
 }
+impl State {
+    fn admission_full(&self) -> bool {
+        if self.constructions.len() + self.admissions.len() < MAX_CONSTRUCTIONS {
+            return false;
+        }
+        let active = self
+            .constructions
+            .iter()
+            .filter(|record| {
+                !matches!(
+                    *record.output.lock().unwrap_or_else(PoisonError::into_inner),
+                    Output::SavedResumeHistory
+                )
+            })
+            .count();
+        active + self.admissions.len() >= MAX_CONSTRUCTIONS
+    }
+}
 fn changed() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -176,8 +194,9 @@ use color_eyre::eyre::eyre;
 
 enum Output {
     Running,
-    Converted(AppServerStartedThread),
+    Converted(Box<AppServerStartedThread>),
     Failed,
+    SavedResumeHistory,
     Unknown,
     Applied,
 }
@@ -207,9 +226,16 @@ impl FrontendTenure {
         action: Action,
         presentation: ClientPresentation,
         prospective: Option<ThreadStartParams>,
+        saved: Option<(uuid::Uuid, ThreadId)>,
     ) -> io::Result<ConstructionObservation> {
         if self.delivery.closing() {
             return Err(unavailable());
+        }
+        if let Some((_, child)) = saved
+            && (presentation != ClientPresentation::SideConversation
+                || !matches!(&action, Action::Resume(id) if id == &child.to_string()))
+        {
+            return Err(changed());
         }
         let admission = ConstructionAdmission::reserve(&self.target.0)?;
         let initial = {
@@ -235,11 +261,20 @@ impl FrontendTenure {
             let operation = match action {
                 Action::Start => ClientConstructionOperation::for_start(),
                 Action::Fork(_) | Action::Resume(_) => {
-                    ClientConstructionOperation::new(ClientConstructionSelection {
+                    let selection = ClientConstructionSelection {
                         prospective_create: prospective.ok_or_else(changed)?,
                         presentation,
                         prepared: None,
-                    })?
+                    };
+                    if let Some((opening, child)) = saved {
+                        ClientConstructionOperation::for_saved_resume(
+                            selection,
+                            &opening.simple().to_string(),
+                            &child.to_string(),
+                        )?
+                    } else {
+                        ClientConstructionOperation::new(selection)?
+                    }
                 }
             };
             ConstructionOwner::Later(operation)
@@ -301,7 +336,8 @@ impl ConstructionRecord {
     #[cfg(test)]
     pub(crate) fn converted_cache_for_test(&self, mut original: AppServerStartedThread) {
         original.alab_construction = None;
-        *self.output.lock().unwrap_or_else(PoisonError::into_inner) = Output::Converted(original);
+        *self.output.lock().unwrap_or_else(PoisonError::into_inner) =
+            Output::Converted(Box::new(original));
     }
     pub(crate) fn reserve_existing_capture(&self) -> Result<ExistingCaptureReservation<'_>> {
         let slot = self
@@ -417,7 +453,7 @@ impl ConstructionRecord {
     }
     pub(crate) fn original_started(&self) -> Option<AppServerStartedThread> {
         match &*self.output.lock().unwrap_or_else(PoisonError::into_inner) {
-            Output::Converted(actual) => Some(actual.clone()),
+            Output::Converted(actual) => Some((**actual).clone()),
             _ => None,
         }
     }
@@ -427,6 +463,9 @@ pub(crate) struct ConstructionObservation {
     complete: bool,
 }
 impl ConstructionObservation {
+    pub(crate) fn saved_resume_record(&self) -> Arc<ConstructionRecord> {
+        self.actual.clone()
+    }
     pub(crate) async fn run(
         mut self,
         original: impl std::future::Future<Output = Result<AppServerStartedThread>>,
@@ -459,7 +498,7 @@ impl ConstructionObservation {
                 // Store the WHOLE original converted result before adding its
                 // ownership link. The stored clone has no back-reference.
                 *actual.output.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Output::Converted(started.clone());
+                    Output::Converted(Box::new(started.clone()));
                 started.alab_construction = Some(actual.clone());
                 self.complete = true;
                 Ok(started)
@@ -514,6 +553,34 @@ impl ConstructionRecord {
         }
         self.forget_local_record();
         Ok(())
+    }
+    pub(crate) fn saved_resume_query(
+        &self,
+        child: ThreadId,
+    ) -> Option<codex_app_server_client::SavedResumeQuery> {
+        let ConstructionOwner::Later(operation) = &self.owner else {
+            return None;
+        };
+        operation.saved_resume_query(&child.to_string()).ok()
+    }
+    /// The chooser retains this failed caller as historical data. It remains
+    /// present for handoff but can no longer run or consume live admission.
+    pub(crate) fn retain_saved_resume_history(&self) {
+        let mut output = self.output.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(*output, Output::Failed) {
+            *output = Output::SavedResumeHistory;
+        }
+    }
+    /// A terminal history read releases only this frontend record. It grants
+    /// no Native settlement, subscription effect or UI installation.
+    pub(crate) fn finish_saved_resume_history(self: &Arc<Self>) {
+        let historical = matches!(
+            *self.output.lock().unwrap_or_else(PoisonError::into_inner),
+            Output::SavedResumeHistory
+        );
+        if historical {
+            self.forget_local_record();
+        }
     }
     fn forget_local_record(self: &Arc<Self>) {
         if let Some(target) = self.target.upgrade() {
@@ -579,7 +646,7 @@ impl ConstructionAdmission {
             .initial_choice
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if state.constructions.len() + state.admissions.len() >= MAX_CONSTRUCTIONS {
+        if state.admission_full() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "original construction custody capacity unavailable",
@@ -745,7 +812,7 @@ impl FrontendTenure {
             .initial_choice
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if state.constructions.len() + state.admissions.len() >= MAX_CONSTRUCTIONS {
+        if state.admission_full() {
             bail!("original construction custody capacity unavailable")
         }
         if state
@@ -760,7 +827,7 @@ impl FrontendTenure {
             delivery: Arc::downgrade(&self.delivery),
             owner: ConstructionOwner::Later(operation.clone()),
             presentation: ClientPresentation::SideConversation,
-            output: Mutex::new(Output::Converted(original)),
+            output: Mutex::new(Output::Converted(Box::new(original))),
             existing_original: Mutex::new(None),
             rejected_primary: Mutex::new(None),
             side_creation: Mutex::new(None),

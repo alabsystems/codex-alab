@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "base": "3dbc6f86570ec10aaf1df2b1011912d47274622b",
+  "target": "9f80bb5957f0d863fdeaaff0ea193cac94c192d1",
+  "frontier": "3dbc6f86570ec10aaf1df2b1011912d47274622b",
+  "commits": [
+    {
+      "sha": "fc25d8f1203a152fe44d7a980edcab1a55f08fc9",
+      "subject": "Fix stale terminal dimensions in immediate TUI redraws (#62175)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agents_overview_actions.rs",
+        "codex-rs/tui/src/app/cloud_switch_wait.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/owned_transcript_tests.rs",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/tui.rs",
+        "codex-rs/tui/src/tui/screen_size.rs",
+        "codex-rs/tui/src/tui/screen_size_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Resolve current terminal geometry before an immediate paint and preserve the deferred resize recheck.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 8cf24fbcc4dd5617e27df443b5eb01a140eb35a294d4e48dfae59cac5e527802.",
+        "Immediate submit, fork, archive, startup, Cloud switch and shutdown paints use the prepared draw size, with the same geometry passed through resize handling and the frame. Drawing consumes the reserved size and keeps the already scheduled settled-size recheck.",
+        "Existing ALab transcript and Side layouts also depend on consistent reserved geometry. Preserve the actual frontend owner and its reflow scheduling when adapting immediate paints."
+      ],
+      "revisit": "Run the shrink-before-submit and shrink-before-archive regressions, plus retained transcript and Side geometry through resize and the following recheck."
+    },
+    {
+      "sha": "9f80bb5957f0d863fdeaaff0ea193cac94c192d1",
+      "subject": "Expose `bioPolicy` errors in app-server v2 (#62176)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ErrorNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRevertResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadSearchPartialNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadTurnsListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/CodexErrorInfo.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/shared.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "protocol",
+        "fix"
+      ],
+      "features": [
+        "security-notices",
+        "provider-recovery",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the existing biological safety policy refusal through the typed app-server v2 error.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 ae61808c5c8a5f9bbe61983512c233d673a2d8091bdec38652f3d650594da7cd.",
+        "Core already emits the typed refusal. The v2 conversion preserves its category, and the Rust conversion case, generated JSON, TypeScript, and Python schema agree on the wire spelling. Provider policy and error handling remain governed by the existing controls."
+      ],
+      "revisit": "Check generated v2 parity and typed refusal propagation through ALab's managed app-server and native TUI."
+    }
+  ]
+}

@@ -116,6 +116,9 @@ impl Parser {
         if buffer.is_empty() {
             return Ok(());
         }
+        // A resumed reader can already have new bytes waiting when the saved
+        // Escape deadline has elapsed. Emit that key before parsing the bytes.
+        self.flush_escape()?;
         self.escape = None;
         for byte in buffer {
             if let Some(discarded_sequence) = self.discarded_sequence {
@@ -194,11 +197,14 @@ impl Parser {
                 };
                 continue;
             }
-            let more = true;
-
+            // A second Escape starts a new sequence. Keep its prefix available
+            // for the following key, mouse report, or bracketed paste.
+            if *byte == b'\x1b' && self.buffer.as_slice() == b"\x1b" {
+                self.queue_escape(raw_mode)?;
+            }
             self.buffer.push(*byte);
 
-            match parse_event(&self.buffer, more, raw_mode) {
+            match parse_event(&self.buffer, true, raw_mode) {
                 Ok(Some(ie)) => {
                     self.ready.push_back(Ready {
                         event: ie,
@@ -289,13 +295,16 @@ impl Parser {
         if self.buffer.as_slice() != b"\x1b" {
             return Err(invalid("escape clock without a pending Escape"));
         }
-        let event = parse_event(&self.buffer, false, true)?
+        self.queue_escape(true)
+    }
+    fn queue_escape(&mut self, raw_mode: bool) -> io::Result<()> {
+        let event = parse_event(&self.buffer, false, raw_mode)?
             .ok_or_else(|| invalid("pending Escape is incomplete"))?;
         self.ready.push_back(Ready {
             event,
             wire: Frame::Input {
                 bytes: std::mem::take(&mut self.buffer),
-                raw_mode: true,
+                raw_mode,
             },
         });
         self.escape = None;
@@ -376,7 +385,9 @@ impl Parser {
         for frame in snapshot.ready {
             let event = match &frame {
                 Frame::Input { bytes, raw_mode } => {
-                    if bytes.as_slice() == b"\x1b" {
+                    // An older reader could already have decoded two Escapes as one
+                    // key. Reproduce that queued event exactly when resuming it.
+                    if matches!(bytes.as_slice(), b"\x1b" | b"\x1b\x1b") {
                         parse_event(bytes, false, *raw_mode)?
                             .ok_or_else(|| invalid("queued Escape is incomplete"))?
                     } else {

@@ -132,6 +132,7 @@ mod fs_watch;
 mod fuzzy_file_search;
 mod gateway_oauth_notifications;
 mod image_url;
+#[cfg(unix)] #[path = "../../alab-core/glue/fleet_model_defaults.rs"] pub mod alab_model_defaults; // ALAB(fleet-model): scoped local settings through the app-server config manager.
 pub mod in_process;
 mod log_write_warning;
 #[cfg(unix)]

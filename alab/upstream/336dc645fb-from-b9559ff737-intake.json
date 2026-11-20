@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "base": "b9559ff737000a4fcf7a0e12c3353cca1ea4d008",
+  "target": "336dc645fbaf00b3f0b56f598aa872b244f687b5",
+  "frontier": "b9559ff737000a4fcf7a0e12c3353cca1ea4d008",
+  "commits": [
+    {
+      "sha": "083bf59b6b01582f62171249f6a6ff0686928229",
+      "subject": "Send authorized connector results over Responses WebSockets (#62474)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/codex-api/Cargo.toml",
+        "codex-rs/codex-api/tests/responses_websocket_logging.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/tests/suite/code_mode.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "model-discovery",
+        "build-and-adoption"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt upstream's per-request connector result selection and redaction over WebSockets. Preserve ALab's revocation of an active connection when the credential source changes. A new client can resume the saved thread under the destination account.",
+      "evidence": [
+        "Core re-evaluates the sampling destination from the actual client setup and request headers for that attempt. It selects bodies against the final WebSocket input after incremental request preparation. Prewarm requests omit private bodies.",
+        "The new upstream transport test captures both a real loopback WebSocket request and client logs. The Core regression covers a custom provider and a retry after an account change with results from Code Mode exec and wait. These are specific runtime checks to retain during qualification.",
+        "The fork already observes model retirement and credential ownership around the same client. The merge retains the existing ALab hooks. Both exact WebSocket dependency revisions were fetched from the official forks and the integrated Cargo.lock changes match the upstream dependency delta.",
+        "On reviewed source 1065c63abf the same-owner connector WebSocket log test passed and a new client authenticated both requests of each resumed turn as B. In a separate running-turn test, replacing the external auth source on the existing manager revoked its network permission after two connections. The pristine 6271f35f52 control opened the third connection and passed twice. See alab/reviews/openai-0.170-alignment-plan-2026-11-18.md."
+      ],
+      "revisit": "Keep the live custom-provider retry gap visible. Any automatic continuation under the new account must obtain its own permission and omit the preceding account's private connector results. Exercise this path again independently of ordinary fresh-client resume."
+    },
+    {
+      "sha": "336dc645fbaf00b3f0b56f598aa872b244f687b5",
+      "subject": "Use gRPC for all code-mode host connections (#62476)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/code-mode-host/Cargo.toml",
+        "codex-rs/code-mode-host/src/delegate.rs",
+        "codex-rs/code-mode-host/src/grpc/mod.rs",
+        "codex-rs/code-mode-host/src/grpc/service_tests.rs",
+        "codex-rs/code-mode-host/src/host_tests.rs",
+        "codex-rs/code-mode-host/src/lib.rs",
+        "codex-rs/code-mode-host/src/main.rs",
+        "codex-rs/code-mode-host/src/peer.rs",
+        "codex-rs/code-mode-host/src/peer_tests.rs",
+        "codex-rs/code-mode-host/src/transport.rs",
+        "codex-rs/code-mode-host/src/transport_tests.rs",
+        "codex-rs/code-mode-host/tests/capacity.rs",
+        "codex-rs/code-mode-host/tests/grpc_timing.rs",
+        "codex-rs/code-mode-host/tests/settled.rs",
+        "codex-rs/code-mode-host/tests/stdio.rs",
+        "codex-rs/code-mode-protocol/Cargo.toml",
+        "codex-rs/code-mode-protocol/src/host.rs",
+        "codex-rs/code-mode-protocol/src/host/codec.rs",
+        "codex-rs/code-mode-protocol/src/host/codec_tests.rs",
+        "codex-rs/code-mode-protocol/src/host/error.rs",
+        "codex-rs/code-mode-protocol/src/host/host_tests.rs",
+        "codex-rs/code-mode-protocol/src/host/message.rs",
+        "codex-rs/code-mode-protocol/src/host/mod.rs",
+        "codex-rs/code-mode-protocol/src/host/payload.rs",
+        "codex-rs/code-mode-protocol/src/host/types.rs",
+        "codex-rs/code-mode-protocol/src/runtime_tests.rs",
+        "codex-rs/code-mode/Cargo.toml",
+        "codex-rs/code-mode/src/disabled.rs",
+        "codex-rs/code-mode/src/grpc_session/callbacks.rs",
+        "codex-rs/code-mode/src/grpc_session/callbacks_tests.rs",
+        "codex-rs/code-mode/src/grpc_session/mod.rs",
+        "codex-rs/code-mode/src/grpc_session/operations.rs",
+        "codex-rs/code-mode/src/grpc_session/reconnect.rs",
+        "codex-rs/code-mode/src/grpc_session/state.rs",
+        "codex-rs/code-mode/src/grpc_session/state_tests.rs",
+        "codex-rs/code-mode/src/lib.rs",
+        "codex-rs/code-mode/src/remote_session.rs",
+        "codex-rs/code-mode/src/remote_session/connection.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/cell_ids.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/cleanup.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/commands.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/delegate_runtime.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/request_tracker.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/responses.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/session_registry.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver/types.rs",
+        "codex-rs/code-mode/src/remote_session/connection/driver_tests.rs",
+        "codex-rs/code-mode/src/remote_session/connection/reader.rs",
+        "codex-rs/code-mode/src/remote_session/delegate.rs",
+        "codex-rs/code-mode/src/remote_session_tests.rs",
+        "codex-rs/core/src/code_mode_host.rs",
+        "codex-rs/core/src/code_mode_host_tests.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/code_mode_tracing.rs",
+        "codex-rs/core/tests/common/code_mode_host.rs",
+        "codex-rs/core/tests/suite/code_mode.rs",
+        "codex-rs/core/tests/suite/code_mode_agent_message_tests.rs",
+        "codex-rs/core/tests/suite/code_mode_host_recovery_tests.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/features/src/tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "protocol",
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "native-session",
+        "exec-handoff",
+        "model-discovery",
+        "product-policy",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream’s single gRPC transport for local Code Mode. Keep the fork’s host entry points, child ownership and live-turn recovery around the upstream provider.",
+      "evidence": [
+        "Local host construction now always selects the gRPC provider. The two stdio aliases select the same gRPC transport. Both values of the removed feature are ignored. The host retains ALab’s version and UI plugin process entry points.",
+        "The client checks encoded execute size before sending. The new gRPC callbacks carry trace context and upstream tests exercise cancellation, yielded cells and preload failure isolation. ALab’s model retry still checks for active Code Mode cells before resubmitting input.",
+        "The previous integration and merge candidate have the same 79 ALab hook lines across the full two-commit change. No removed upstream path contains an ALab hook. The existing removed-paths entry covers the Bazel lock. The merged Rust lockfile changes match upstream’s changes, including the Code Mode crate dependencies."
+      ],
+      "revisit": "Exercise the gRPC host with its default listener and stdio alias, including cancellation and independent sessions. Recheck model continuation while tools are active, and native child handoff before signing."
+    }
+  ]
+}

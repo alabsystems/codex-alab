@@ -106,8 +106,12 @@ pub async fn rows(client: &Client) -> Result<(u64, Vec<Row>), Error> {
     let seen = seen_watermark(&reply.status)
         .ok_or_else(|| Error::Malformed(format!("inbox header: {}", reply.status)))?;
     let mut rows = Vec::new();
+    let mut row_ids = std::collections::HashSet::new();
     for line in &reply.lines {
         if let Some(row) = Row::parse(line) {
+            if !row_ids.insert(row.id) {
+                return Err(Error::Malformed(format!("duplicate inbox row id {}", row.id)));
+            }
             rows.push(row);
         } else if line.starts_with("post ")
             || line
@@ -139,10 +143,14 @@ pub async fn read(
     given: &(dyn Fn(u64) -> Option<Verdict> + Send + Sync),
 ) -> Result<InboxMail, Error> {
     let (seen, rows) = rows(client).await?;
-    let row = rows
-        .into_iter()
-        .find(|r| r.off == Some(off))
+    // A replaced broker log can reuse an offset while its old row is still in the ring.
+    let mut matches = rows.into_iter().filter(|row| row.off == Some(off));
+    let row = matches
+        .next()
         .ok_or_else(|| Error::Refused(format!("no inbox row at @{off}")))?;
+    if matches.next().is_some() {
+        return Err(Error::Refused(format!("multiple inbox rows at @{off}")));
+    }
     if row.kind != kind.word() {
         return Err(Error::Refused(format!(
             "the row at @{off} is a {}, not a {}",

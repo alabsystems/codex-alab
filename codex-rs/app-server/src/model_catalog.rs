@@ -16,6 +16,8 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio::sync::Mutex;
 
+#[path = "../../alab-core/glue/shared_model_poll.rs"] mod alab_shared_model_poll; // ALAB(model-poll): confirm a successor observed by another tab through this provider.
+
 use crate::config_manager::ConfigManager;
 use crate::config_manager::StartupConfig;
 
@@ -126,6 +128,7 @@ impl ModelCatalog {
                 refresh_strategy,
             )
             .await?;
+        let models = self.confirm_followed_models(&config, &models_manager, refresh_strategy, models).await?; // ALAB(model-poll): wake existing following threads when the shared cache moves.
         // The periodic worker also refreshes retained Work catalogs. Picker RPCs use
         // list_models_from_snapshot directly and do not wait on other originators.
         if matches!(refresh_strategy, RefreshStrategy::Online | RefreshStrategy::OnlineIfUncached) { // ALAB(model-poll): a fresh default cache must not suppress retained originator refreshes.
@@ -170,6 +173,7 @@ impl ModelCatalog {
             .map(|entry| Arc::unwrap_or_clone(entry.model))
             .collect();
         let mut presets = models_manager.build_available_models(models);
+        config.alab_mark_family_default(&mut presets); // ALAB(defaults): expose the same resolved default to clients.
         if let Some(positions) = positions {
             // The manager has filtered the models and marked the default using priority.
             presets.sort_by_key(|preset| positions[&preset.model]);

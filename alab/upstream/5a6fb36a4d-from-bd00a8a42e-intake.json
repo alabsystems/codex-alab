@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "bd00a8a42ece6ea9d22d406b2e6923218c02e282",
+  "target": "5a6fb36a4d92473a9a792ba4a5952c7183506304",
+  "frontier": "bd00a8a42ece6ea9d22d406b2e6923218c02e282",
+  "commits": [
+    {
+      "sha": "5a6fb36a4d92473a9a792ba4a5952c7183506304",
+      "subject": "Route local MCP board notifications through response item injection (#62302)",
+      "paths": [
+        "codex-rs/agent-message-board-host/src/lib.rs",
+        "codex-rs/core/tests/suite/scenarios_agent_message_board_http.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the local MCP board\u2019s opted-in delivery through the same native receiver queue used for ordinary plaintext agent mail. Keep board membership, backend ownership and the fork\u2019s manager-wide admission in their existing owners.",
+      "evidence": [
+        "LocalBoardHost chooses injection only when the MCP feature provisions the board and there is no explicit LocalBoardConnection. It requires an already loaded receiver reporting Multi-Agent v2 and enabled native tools. Other modes keep direct InterAgentCommunication submission. The local_board_host constructor remains native.",
+        "The host resolves the recipient through its exact board connection or tree, then resolves its registered agent path. It builds one queue-only notice from the original post author, that path and the post preview text. The remote-notification wrapper retains the existing size bound. A missing receiver is skipped without starting or reloading a thread.",
+        "The feature HTTP scenario now compares the entire list of matching notices with one item from /root/worker to /root carrying the canonical channel-post text. The same run checks the stored board read and author. An accepted notification reports Core submission, independently of durable post storage.",
+        "Core\u2019s preceding plaintext-injection change owns conversion, delivery-phase handling and the interaction with manager handoff. The board sends exactly one item and does not create a sender publication or terminal-result writer. Explicit-retention RPC and retained Side remain on their separate typed entry point.",
+        "Four native Core HTTP scenarios passed on f1d3274f0c02313a9b769927193d25af3eaafc05 using Trust 15698 and the source-built message-board executable. The feature route delivered exactly one canonical /root/worker to /root post notification and the durable read retained its author. Configured, plugin and in-memory boards also passed. The test image SHA-256 was 3175686c47e87addb5450cd9caae3883a84a4a0832284aa004d91512f460fb6f."
+      ],
+      "revisit": "Repeat the actual child-post and root-read HTTP scenarios across feature-provisioned and explicitly configured backends when board routing or receiver identity changes. Recheck inactive receivers and the remote notification budget if delivery policy changes."
+    }
+  ]
+}

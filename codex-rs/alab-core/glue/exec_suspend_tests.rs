@@ -15,8 +15,7 @@ use core_test_support::test_codex::run_test_with_large_stack;
 use core_test_support::test_codex::test_codex;
 use std::time::Duration;
 
-#[path = "exec_test_process.rs"]
-mod test_process;
+use core_test_support::alab_test_process as test_process;
 
 #[test]
 fn exec_quota_observation_tracks_a_real_authenticated_request() {
@@ -32,8 +31,7 @@ fn check_quota_observation(tree: bool) {
     let (_, module) = module_path!().split_once("::").unwrap();
     let exact = format!("{module}::exec_quota_observation_child");
     let root = tempfile::tempdir().unwrap();
-    let guard =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../alab/command_guard.py");
+    let guard = test_process::command_guard().expect("runtime process guardian");
     let output = std::process::Command::new("/usr/bin/python3")
         .arg(&guard)
         .args(["--", "/usr/bin/python3"])
@@ -117,6 +115,7 @@ fn exec_quota_observation_child() -> anyhow::Result<()> {
         }
         options.thread_extension_init.insert(HeadlessExec);
         options.turn_extension_init.insert(HeadlessExec);
+        let invocation = ExecConfiguration::capture(&options.config, &Default::default())?;
         let started = fixture.thread_manager.start_thread(options).await?;
         let mut watch = started.thread.watch_exec_quota().expect("exec observer");
         let TurnInputSubmission::Started { turn_id, .. } = started
@@ -183,8 +182,75 @@ fn exec_quota_observation_child() -> anyhow::Result<()> {
             matches!(observed.source(), Some(codex_alab_core::renewal::RequestAuth::ChatGpt { account, user })
             if account == "account" && user == "user")
         );
+        let handling = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drain = codex_core::ExecQuotaDrain::new(
+            std::sync::Arc::clone(&observed),
+            std::sync::Arc::clone(&handling),
+        );
+        let admission = crate::turn_admission::TurnAdmission::default();
+        let mut state = State::default();
         if let Some((child, _)) = child {
+            // The request is live when its suspend is queued. Retire it while a prior
+            // turn admission holds the drain, before Core can complete its preflight.
+            let permit = admission.admit().unwrap();
+            let pending = state.suspend_if_observed(
+                &fixture.thread_manager,
+                &admission,
+                started.thread_id,
+                &turn_id,
+                &invocation,
+                Some(&drain),
+            );
+            tokio::pin!(pending);
+            assert!(futures::poll!(&mut pending).is_pending());
             child.thread.shutdown_and_wait().await?;
+            drop(permit);
+            assert!(pending.await.map_err(anyhow::Error::msg)?.is_none());
+            assert!(admission.admit().is_ok(), "stale child left the root open");
+            assert!(!handling.load(std::sync::atomic::Ordering::Acquire));
+            assert!(watch.root_options().await.is_some());
+        } else {
+            let completed = state
+                .suspend_if_observed(
+                    &fixture.thread_manager,
+                    &admission,
+                    started.thread_id,
+                    &turn_id,
+                    &invocation,
+                    Some(&drain),
+                )
+                .await
+                .map_err(anyhow::Error::msg)?
+                .expect("live quota drain");
+            assert_eq!(completed.turn(), turn_id);
+            assert!(handling.load(std::sync::atomic::Ordering::Acquire));
+            assert!(admission.admit().is_err());
+            assert!(
+                state
+                    .suspend_if_observed(
+                        &fixture.thread_manager,
+                        &admission,
+                        started.thread_id,
+                        &turn_id,
+                        &invocation,
+                        Some(&drain)
+                    )
+                    .await
+                    .map_err(anyhow::Error::msg)?
+                    .is_some()
+            );
+            assert!(
+                state
+                    .suspend(
+                        &fixture.thread_manager,
+                        &admission,
+                        started.thread_id,
+                        &turn_id,
+                        &invocation
+                    )
+                    .await
+                    .is_err()
+            );
         }
         started.thread.shutdown_and_wait().await?;
         assert!(watch.root_options().await.is_none());
@@ -378,7 +444,8 @@ fn exec_suspension_refuses_an_unmarked_runtime() -> anyhow::Result<()> {
                 &admission,
                 started.thread_id,
                 "turn",
-                &ExecConfiguration::capture(&fixture.config, &Default::default())?
+                &ExecConfiguration::capture(&fixture.config, &Default::default())?,
+                None,
             )
             .await
             .is_err()

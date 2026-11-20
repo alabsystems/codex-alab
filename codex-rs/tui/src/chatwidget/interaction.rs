@@ -84,7 +84,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
-        let contexts = self.bottom_pane.keymap_contexts();
+        let contexts = self.bottom_pane.keymap_contexts().with_autopilot(self.alab_autopilot_shortcut_available()); // ALAB(interface): expose the picker to chords only while this composer owns input.
         if self.visible_new_backend_control().is_some() {
             contexts.with_backend_cycling()
         } else {
@@ -157,6 +157,7 @@ impl ChatWidget {
         key_event: KeyEvent,
         activation_key: Option<crate::key_hint::KeyBinding>,
     ) -> KeyEventAction {
+        if self.alab_handle_autopilot_key(key_event, activation_key) { return KeyEventAction::None; } // ALAB(interface): open local session controls without submitting the draft.
         if self.handle_quick_dial_menu(key_event) {
             return KeyEventAction::None;
         }

@@ -35,6 +35,7 @@ use hyperlinks::wrap_two_column_row;
 /// into `name`, and `wrap_indent` is interpreted in terminal cell columns.
 #[derive(Default)]
 pub(crate) struct GenericDisplayRow {
+    pub(super) alab_picker_rect: Option<std::cell::Cell<Rect>>, // ALAB(interface): enabled Autopilot choices record the cells the native renderer paints.
     pub name: String,
     /// Rich label already laid out at the picker width, including its gutter and links.
     pub wrapped_name: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
@@ -337,7 +338,7 @@ fn is_selected_visible_in_wrapped_viewport(
     false
 }
 
-fn adjust_start_for_wrapped_selection_visibility(
+pub(super) fn adjust_start_for_wrapped_selection_visibility( // ALAB(interface): wheel and keyboard share the renderer's wrapped viewport.
     rows_all: &[GenericDisplayRow],
     state: &ScrollState,
     max_items: usize,
@@ -449,6 +450,7 @@ fn render_rows_inner(
 
         let mut wrapped =
             wrap_row_lines(row, desc_col, area.width, column_width.description_layout);
+        row.alab_record_picker_rect(area, buf.area, cur_y, wrapped.len()); // ALAB(interface): share the actual wrapped and clipped choice with mouse input.
         clipped |= wrapped.len() > usize::from(area.bottom().saturating_sub(cur_y));
         for line in &mut wrapped {
             apply_row_state_style(

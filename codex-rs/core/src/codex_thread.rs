@@ -595,7 +595,9 @@ impl CodexThread {
 
     /// Starts a new internal continuation turn when idle, including in Plan mode.
     /// Rejects if a newer task has started, even if it has already finished.
-    /// The input must be a response item; it is never treated as user authorization.
+    /// Supply an internal response item, or empty input to wake on a result already
+    /// saved in history. An empty wake inherits the preceding turn's attribution
+    /// and adds no message or user authorization.
     pub async fn continue_turn_if_idle(
         &self,
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
@@ -677,6 +679,10 @@ impl CodexThread {
     /// is closed. It does not wait for descendant cleanup. Before transferring ownership,
     /// callers must also finish tree shutdown or fence and terminate the tree's persistence writers.
     pub async fn suspend_turn_and_shutdown(&self) -> CodexResult<SuspendTurnOutcome> {
+        self.suspend_turn_with_result_owner(None).await // ALAB(exec-input): ordinary suspension retains the native queue admission rule.
+    }
+
+    pub(crate) async fn suspend_turn_with_result_owner(&self, owner: Option<&crate::session::input_queue::exec_input_state::results::CommittedResults>) -> CodexResult<SuspendTurnOutcome> { // ALAB(exec-input): private queue custody may stop exactly its already committed root.
         if self.session_source.is_non_root_agent() {
             return Err(CodexErr::UnsupportedOperation(
                 "turn suspension requires the owning root thread".to_string(),
@@ -688,7 +694,7 @@ impl CodexThread {
         let (reply, result) = oneshot::channel();
         self.io
             .tx_sub
-            .send(Submission {
+            .send_suspension(self, owner, Submission { // ALAB(exec-input): bind the control message to its source root and manager.
                 alab_upgrade: Vec::new(), // ALAB(upgrade): the native sender supplies admission.
                 id: new_submission_id(),
                 op: Op::SuspendTurnAndShutdown { reply },

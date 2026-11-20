@@ -22,6 +22,7 @@ pub(super) struct PendingInputPreview {
 
 #[derive(Debug, Default)]
 pub(super) struct InputQueueState {
+    pub(super) alab_snapshot_input_held: bool, // ALAB(retained-ui): a replaying widget retains input until its own writable attachment.
     /// The visible draft confirmed during startup, awaiting the protected-input handoff.
     pub(super) startup_submission: Option<crate::bottom_pane::ComposerDraftSnapshot>,
     /// User inputs queued while a turn is in progress.
@@ -67,7 +68,7 @@ impl InputQueueState {
     }
 
     pub(super) fn submissions_paused(&self) -> bool {
-        self.suppress_queue_autosend || self.transcript_copy.strong_count() > 0
+        self.alab_snapshot_input_held || self.suppress_queue_autosend || self.transcript_copy.strong_count() > 0 // ALAB(retained-ui): independent picker or copy completion cannot release read-only input.
     }
 
     pub(super) fn has_unconfirmed_messages(&self) -> bool {

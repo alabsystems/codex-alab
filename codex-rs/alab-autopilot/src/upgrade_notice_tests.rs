@@ -8,6 +8,7 @@
 //! never at a wall's point or one a person, a landing, a compaction or an owed act holds; and as
 //! the host's turn it spends none of the hour's budget. Each with its negative control.
 
+use codex_alab_core::wall_kind::LimitClass;
 use pretty_assertions::assert_eq;
 
 use super::*;
@@ -85,6 +86,7 @@ fn no_notice_at_a_wall_or_where_the_point_is_held() {
                 walled(
                     at,
                     Wall::Usage {
+                        limit_class: LimitClass::Ordinary,
                         reset_at: None,
                         reset_label: None,
                     },

@@ -21,6 +21,7 @@ workspace = true
 chrono = { workspace = true }
 codex-alab-aterm = { path = "../alab-aterm" }
 codex-alab-core = { path = "../alab-core" }
+codex-alab-quota-recovery = { path = "../alab-quota-recovery" }
 codex-alab-tui = { path = "../alab-tui" }
 codex-analytics = { workspace = true }
 codex-config = { workspace = true }

@@ -5,6 +5,7 @@
 //! the mandatory whole-UI decoder. This owns DATA/custody, never UI application,
 //! Native permission, a Core, or a model/Goal release.
 use super::owned_local_ui_transfer::DecodedUiTransfer;
+use super::owned_local_ui_transfer::SavedResumeHandoff;
 use codex_alab_tui::frontend_control::EnteredRetainedFrontend;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigRequirementsToml;
@@ -92,35 +93,74 @@ fn active() -> io::Result<Option<Arc<RetainedFrontendReaders>>> {
 pub(crate) fn startup_target(
     original: crate::AppServerTarget,
 ) -> io::Result<crate::AppServerTarget> {
-    let Some(actual) = active()? else {
+    let Some(entered) = active()? else {
         return Ok(original);
     };
+    validate_target(&original, &entered.target)?;
+    Ok(crate::AppServerTarget::OwnedLocal {
+        target: entered.target.clone(),
+    })
+}
+
+/// Only the authenticated successor of the captured backend receives the saved
+/// checkpoints and reads their disposition on its own physical handle.
+pub(crate) fn saved_resume_queries(
+    server: &crate::app_server_session::AppServerSession,
+) -> io::Result<Vec<SavedResumeHandoff>> {
+    let Some(readers) = active()? else {
+        return Ok(Vec::new());
+    };
+    let queries = readers.decoded().saved_resume_queries()?;
+    if queries.is_empty() {
+        return Ok(queries);
+    }
+    if server
+        .retained_frontend()
+        .is_none_or(|tenure| tenure.target != readers.target)
+    {
+        return Err(io::Error::other(
+            "saved openings belong to another retained backend",
+        ));
+    }
+    Ok(queries)
+}
+
+pub(super) fn validate_target(
+    original: &crate::AppServerTarget,
+    entered: &super::owned_local_frontend::OwnedLocalTarget,
+) -> io::Result<()> {
+    if matches!(original, crate::AppServerTarget::OwnedLocal { target } if target != entered) {
+        return Err(io::Error::other(
+            "entered retained frontend belongs to a different backend",
+        ));
+    }
     if original.uses_remote_workspace() {
         return Err(io::Error::other(
             "entered retained local frontend conflicts with original remote selection",
         ));
     }
-    Ok(crate::AppServerTarget::OwnedLocal {
-        target: actual.target.clone(),
-    })
+    Ok(())
 }
 pub(crate) fn has_entered_target() -> io::Result<bool> {
     Ok(active()?.is_some())
 }
-pub(crate) fn frozen_cloud_loader() -> io::Result<Option<CloudConfigBundleLoader>> {
-    Ok(active()?.map(|actual| actual.decoded().snapshot().ui_cloud_loader()))
+pub(crate) fn frozen_cloud_loader(
+    original: &crate::AppServerTarget,
+) -> io::Result<Option<CloudConfigBundleLoader>> {
+    let Some(entered) = active()? else {
+        return Ok(None);
+    };
+    validate_target(original, &entered.target)?;
+    entered.target.managed_cloud_loader().map(Some)
 }
 pub(crate) async fn ensure_config_server_login(
     original_auth: impl FnOnce() -> io::Result<codex_login::AuthConfig>,
     requirements: &ConfigRequirementsToml,
 ) -> io::Result<()> {
-    let actual = active()?;
-    ensure_with_snapshot(
-        actual.as_ref().map(|actual| actual.decoded().snapshot()),
-        original_auth,
-        requirements,
-    )
-    .await
+    let snapshot = active()?
+        .map(|readers| readers.target.snapshot_for_transfer())
+        .transpose()?;
+    ensure_with_snapshot(snapshot.as_ref(), original_auth, requirements).await
 }
 async fn ensure_with_snapshot(
     actual: Option<&super::owned_local_ui_snapshot::UiSnapshot>,

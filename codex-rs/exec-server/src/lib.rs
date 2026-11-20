@@ -150,6 +150,9 @@ pub use process::ExecProcess;
 pub use process::ExecProcessEvent;
 pub use process::ExecProcessEventReceiver;
 pub use process::ExecProcessFuture;
+pub use process::LocalCaptureObserver; // ALAB(shell-output): native EOF-aware capture hook.
+pub use process::LocalOutput; // ALAB(shell-output): local capture event.
+pub use process::LocalOutputObserver; // ALAB(shell-output): local raw output tap.
 pub use process::StartedExecProcess;
 pub use protocol::ByteChunk;
 pub use protocol::CAPABILITIES_DISCOVER_V2_METHOD;

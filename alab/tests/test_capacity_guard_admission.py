@@ -35,7 +35,7 @@ class CapacityGuardAdmissionTests(unittest.TestCase):
         return root, self.probe.fresh_environment(root)
 
     def producer(self, change=None, *, payload=None, raw_bytes=False, missing=False,
-                 actual_exit=0, observe_child=None):
+                 actual_exit=0, observe_child=None, interact=None):
         """Call the real runner against a separate, deliberately untrusted producer."""
         root, env = self.fixture()
         executable = Path("/never-executed-codex-admission-fixture")
@@ -75,7 +75,7 @@ raise SystemExit({actual_exit!r})
         try:
             with mock.patch.object(self.probe, "GUARD_PATH", guardian), \
                     mock.patch.object(self.probe.subprocess, "Popen", side_effect=observe_spawn):
-                return self.probe.run(executable, arguments, root, env, "admission")
+                return self.probe.run(executable, arguments, root, env, "admission", interact=interact)
         finally:
             # A refusal is meaningful only if our adversarial producer actually
             # ran, exited as configured, and was reaped by the real runner.
@@ -142,6 +142,28 @@ raise SystemExit({actual_exit!r})
             self.producer({"returncode": None, "timed_out": True}, actual_exit=124)
         self.assertEqual(stopped.exception.timeout, self.probe.COMMAND_TIMEOUT_SECONDS)
         self.assertEqual(stopped.exception.cmd[0], "/never-executed-codex-admission-fixture")
+
+    def test_eof_exposes_a_confirmed_timeout_and_still_fails_on_client_exit(self):
+        missing = self.probe.MissingProtocolReply("reply missing")
+
+        def wait_for_reply(child, _output):
+            self.assertEqual(child.stdout.read(), b"")
+            raise missing
+
+        with self.assertRaises(subprocess.TimeoutExpired) as stopped:
+            self.producer({"returncode": None, "timed_out": True}, actual_exit=124, interact=wait_for_reply)
+        self.assertIs(stopped.exception.__cause__, missing)
+        for raw in (0, 124):
+            with self.subTest(raw=raw), self.assertRaises(self.probe.MissingProtocolReply) as exited:
+                self.producer({"returncode": raw}, actual_exit=raw, interact=wait_for_reply)
+            self.assertIs(exited.exception, missing)
+
+    def test_timeout_record_requires_an_explicit_null_client_exit(self):
+        payload = json.dumps({"schema": 1, "argv": [
+            "/never-executed-codex-admission-fixture", "--fixture-marker", "retained input"],
+            "timeout_seconds": self.probe.COMMAND_TIMEOUT_SECONDS, "timed_out": True}).encode()
+        with self.assertRaisesRegex(RuntimeError, "invalid guardian command evidence"):
+            self.producer(payload=payload, raw_bytes=True, actual_exit=124)
 
     def test_preexisting_result_refuses_before_starting_any_guardian(self):
         root, env = self.fixture()

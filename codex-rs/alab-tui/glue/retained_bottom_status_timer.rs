@@ -52,9 +52,11 @@ mod controls {
     #[test]
     fn original_pause_resume_and_distinct_phase_clock_keep_accounted_elapsed() -> io::Result<()> {
         let now = Instant::now();
-        let mut original = StatusTimer::default();
-        original.last_resume_at = now - Duration::from_secs(4);
-        original.display_started_at = Some(now - Duration::from_secs(1));
+        let mut original = StatusTimer {
+            last_resume_at: now - Duration::from_secs(4),
+            display_started_at: Some(now - Duration::from_secs(1)),
+            ..StatusTimer::default()
+        };
         original.pause_at(now);
         let mut restored = Data::capture(&original)?.restore()?;
         assert_eq!(restored.elapsed_at(now), original.elapsed_at(now));

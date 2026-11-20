@@ -515,6 +515,9 @@ impl StaticOverlay {
     }
 }
 
+#[cfg(unix)]
+pub(crate) use transcript::alab_retained as alab_retained_transcript; // ALAB(retained-ui): expose overlay codec without widening native implementation modules.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,6 +617,3 @@ mod tests {
         assert_eq!(pv.content_height(/*width*/ 80), 5);
     }
 }
-
-#[cfg(unix)]
-pub(crate) use transcript::alab_retained as alab_retained_transcript; // ALAB(retained-ui): expose overlay codec without widening native implementation modules.

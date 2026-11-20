@@ -15,7 +15,7 @@ const LIVE_COMMAND_OUTPUT_LINE_TAIL_BYTES: usize =
 /// All output is retained until the byte budget is exceeded. Once truncated, the first and last
 /// 50 completed lines and any in-progress line are retained, and each line independently keeps a
 /// prefix and suffix so commands that never emit a newline cannot grow the active cell without bound.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)] // ALAB(misalignment-review): preserve bounded observed output when the exit omits its aggregate.
 pub(super) struct LiveCommandOutput {
     full_output: String,
     truncated: bool,
@@ -170,7 +170,7 @@ impl LiveCommandOutput {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)] // ALAB(misalignment-review): preserve bounded observed output when the exit omits its aggregate.
 struct LiveCommandOutputLine {
     head: String,
     tail: String,

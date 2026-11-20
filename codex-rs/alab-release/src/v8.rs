@@ -8,35 +8,18 @@
 
 use crate::Release;
 use crate::Result;
+use crate::lease::Lease;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
 const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-struct Lease(File);
-
-impl Drop for Lease {
-    fn drop(&mut self) {
-        // CLOEXEC does not prevent a forked child from retaining the open file
-        // description before exec. Release the owner's lock before closing it.
-        loop {
-            // SAFETY: self owns a live, locked descriptor until this drop ends.
-            if unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) } == 0
-                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-            {
-                break;
-            }
-        }
-    }
-}
 
 pub struct Artifacts {
     pub version: String,
@@ -152,6 +135,7 @@ fn ensure(
     directory: &Path,
     name: &str,
     expected: &str,
+    before_write: &impl Fn(&Path) -> Result<()>,
     fetch: &mut impl FnMut(&str, &Path) -> Result<()>,
 ) -> Result<PathBuf> {
     let path = directory.join(name);
@@ -167,6 +151,7 @@ fn ensure(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    before_write(directory)?;
     let staging = tempfile::Builder::new()
         .prefix(".v8-download-")
         .tempdir_in(directory)?;
@@ -186,6 +171,7 @@ fn resolve_pair(
     target: &str,
     pins: &str,
     cache: &Path,
+    before_write: impl Fn(&Path) -> Result<()>,
     mut fetch: impl FnMut(&str, &Path) -> Result<()>,
 ) -> Result<Artifacts> {
     if !crate::core(version) || target != "aarch64-apple-darwin" {
@@ -212,12 +198,7 @@ fn resolve_pair(
     if !info.is_file() || info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o022 != 0 {
         return Err("invalid V8 cache lease file".into());
     }
-    // SAFETY: lease owns a live descriptor. A busy lease is a resource wait, not
-    // permission to replace data while another compiler reads it.
-    if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let lease = Lease(lease);
+    let lease = Lease::acquire(lease)?;
     let profile = format!("ptrcomp_sandbox_release_{target}");
     let manifest_name = format!("rusty_v8_{profile}.sha256");
     let archive_name = format!("librusty_v8_{profile}.a.gz");
@@ -226,7 +207,9 @@ fn resolve_pair(
     let pin = pins
         .get(&manifest_name)
         .ok_or("source has no V8 manifest pin for this target")?;
-    let manifest = ensure(&directory, &manifest_name, pin, &mut fetch)?;
+    let mut artifact =
+        |name: &str, digest: &str| ensure(&directory, name, digest, &before_write, &mut fetch);
+    let manifest = artifact(&manifest_name, pin)?;
     let mut text = String::new();
     regular(&manifest)?
         .take(64 * 1024 + 1)
@@ -238,18 +221,8 @@ fn resolve_pair(
     {
         return Err("V8 manifest must cover exactly the archive and binding".into());
     }
-    let archive = ensure(
-        &directory,
-        &archive_name,
-        &entries[&archive_name],
-        &mut fetch,
-    )?;
-    let binding = ensure(
-        &directory,
-        &binding_name,
-        &entries[&binding_name],
-        &mut fetch,
-    )?;
+    let archive = artifact(&archive_name, &entries[&archive_name])?;
+    let binding = artifact(&binding_name, &entries[&binding_name])?;
     Ok(Artifacts {
         version: version.to_owned(),
         archive,
@@ -294,6 +267,7 @@ pub fn resolve(repo: &Path, release: &Release, cache: &Path) -> Result<Artifacts
         &release.target,
         &pins,
         cache,
+        crate::space::before_output_write,
         |name, destination| {
             let output = std::process::Command::new("agh")
                 .args([
@@ -319,6 +293,8 @@ pub fn resolve(repo: &Path, release: &Release, cache: &Path) -> Result<Artifacts
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
     use std::time::Duration;
     use std::time::Instant;
@@ -412,6 +388,7 @@ mod tests {
                 "aarch64-apple-darwin",
                 &pins,
                 cache.path(),
+                |_| Ok(()),
                 |name, path| {
                     std::fs::write(
                         path,
@@ -426,7 +403,7 @@ mod tests {
             )
         };
         let owner = resolve()?;
-        let lease_fd = owner._lease.0.as_raw_fd();
+        let lease_fd = owner._lease.as_fd().as_raw_fd();
         // SAFETY: owner retains this descriptor. CLOEXEC still permits fork inheritance.
         assert_ne!(
             unsafe { libc::fcntl(lease_fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
@@ -537,58 +514,49 @@ mod tests {
             std::fs::write(path, files.get(name).ok_or("unexpected download")?)?;
             Ok(())
         };
-        let first = resolve_pair(
-            "152.2.0",
-            "aarch64-apple-darwin",
-            &pins,
-            cache.path(),
-            &mut fetch,
-        )?;
-        assert_eq!(calls.get(), 3);
-        assert!(
+        let room = std::cell::Cell::new(false);
+        let destination = cache.path().join("rusty-v8-152.2.0-aarch64-apple-darwin");
+        let mut resolve = || {
             resolve_pair(
                 "152.2.0",
                 "aarch64-apple-darwin",
                 &pins,
                 cache.path(),
-                &mut fetch
+                |directory| {
+                    assert_eq!(directory, destination.as_path());
+                    if room.get() {
+                        Ok(())
+                    } else {
+                        Err("disk admission refused".into())
+                    }
+                },
+                &mut fetch,
             )
-            .is_err()
-        );
+        };
+        assert!(matches!(resolve(), Err(error) if error.to_string() == "disk admission refused"));
+        assert_eq!(calls.get(), 0);
+        room.set(true);
+        let first = resolve()?;
+        assert_eq!(calls.get(), 3);
+        assert!(resolve().is_err());
         let archive_path = first.archive.clone();
         drop(first);
-        drop(resolve_pair(
-            "152.2.0",
-            "aarch64-apple-darwin",
-            &pins,
-            cache.path(),
-            &mut fetch,
-        )?);
+        room.set(false);
+        drop(resolve()?);
         assert_eq!(calls.get(), 3);
         std::fs::write(&archive_path, "corrupt fixture")?;
-        drop(resolve_pair(
-            "152.2.0",
-            "aarch64-apple-darwin",
-            &pins,
-            cache.path(),
-            &mut fetch,
-        )?);
+        assert!(matches!(resolve(), Err(error) if error.to_string() == "disk admission refused"));
+        assert_eq!(calls.get(), 3);
+        assert_eq!(std::fs::read(&archive_path)?, b"corrupt fixture");
+        room.set(true);
+        drop(resolve()?);
         assert_eq!(calls.get(), 4);
         assert_eq!(std::fs::read(&archive_path)?, b"archive fixture");
         std::fs::remove_file(&archive_path)?;
         let outside = cache.path().join("outside");
         std::fs::write(&outside, "outside fixture")?;
         std::os::unix::fs::symlink(&outside, &archive_path)?;
-        assert!(
-            resolve_pair(
-                "152.2.0",
-                "aarch64-apple-darwin",
-                &pins,
-                cache.path(),
-                &mut fetch
-            )
-            .is_err()
-        );
+        assert!(resolve().is_err());
         assert_eq!(calls.get(), 4);
         assert_eq!(std::fs::read(outside)?, b"outside fixture");
         Ok(())
@@ -613,6 +581,7 @@ mod tests {
                 "aarch64-apple-darwin",
                 &pins,
                 cache.path(),
+                |_| Ok(()),
                 fetch
             )
             .is_err()

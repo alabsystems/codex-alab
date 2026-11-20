@@ -1,0 +1,2298 @@
+{
+  "features": {
+    "provider-recovery": [
+      {
+        "scenario": "Advised and unadvised overload, invalid compaction and retry exhaustion, while preserving specific request refusals.",
+        "groups": [
+          "compaction",
+          "capacity",
+          "core-unadvised",
+          "misalignment-turn",
+          "misalignment-replay",
+          "misalignment-queue"
+        ],
+        "coverage": "Core loopback compaction retries, request budgets, terminal specific refusals, advice, cancellation and absent-advice exhaustion. A live misalignment refusal holds the provider request count at one until a person submits a correction. Replayed starts and sparse completions preserve the finding in native history."
+      },
+      {
+        "scenario": "Opaque HTTP and websocket-handshake 400 failures recover the original task without duplicating its input or completed tools; a repeated opaque HTTPS rejection is replayed without the turn routing token on the transport it arrived on, socket retries and the exhausted-budget HTTPS fallback honor provider deadlines, retries remain bounded, an HTTPS fallback that followed failed requests ends at a later request that is not a retry, a returned socket that fails that request is given up at once and a server-refused upgrade keeps the fallback, and local content-free request shape and failure records support diagnosis, including semantic HTTP stream failures with preserved request/thread context and successful supersession of deferred errors. Matching saved recovery records preserve provider deadlines across restart, using the same boot clock despite independent wall-clock steps; malformed or absent clock notes retain a pacing refusal and current retry policy still governs action.",
+        "groups": [
+          "opaque",
+          "durable",
+          "boot-clock",
+          "socket-return",
+          "deadlines",
+          "sse-api",
+          "sse-context",
+          "sse-terminal",
+          "sqlite-opaque",
+          "sqlite-endpoint",
+          "sqlite-upgrade"
+        ],
+        "coverage": "Native Core turns exercise both opaque transports, tool history, routing token, bounded retries and deadline. Dedicated wire upgrade tests cover fallback recovery/refusal, and retained recovery tests control boot/wall clocks and policy. Actual transport diagnostics and the persisted log are separately observable."
+      },
+      {
+        "scenario": "Persist actual request shapes and selected failures through the installed SQLite filter and writer, retaining original production thread/turn and process/attempt attribution, measured fields and safe IDs; inactive emitters stay off, unknown metrics are omitted, and completion supersedes deferred failures.",
+        "groups": [
+          "sqlite-endpoint",
+          "sqlite-opaque",
+          "sqlite-upgrade",
+          "sse-context",
+          "sse-terminal"
+        ],
+        "coverage": "Public APIs through real filters and SQLite writer observe request provenance, selected failure, safe IDs and deferred completion."
+      },
+      {
+        "scenario": "Real HTTP rejection capture persists phase/outcome, measured entity bytes or omitted unknown, typed advice presence and safe IDs without private requests, bodies or headers; disabled mode still writes a live INFO control.",
+        "groups": [
+          "sqlite-failure",
+          "response-errors"
+        ],
+        "coverage": "HTTP response capture through real persisted SQLite path includes measured bytes, safe header-time advice, disabled logging control."
+      },
+      {
+        "scenario": "Buffered image and search errors retain original HTTP status, IDs and header-time advice when diagnostic bytes are unavailable; disabled-429 retry policy remains authoritative, strict buffered decoding and successful or explicit-limit bodies preserve their contracts.",
+        "groups": [
+          "buffered"
+        ],
+        "coverage": "Loopback image/search payloads distinguish truncation from strict decoding, status, IDs, retry advice, explicit limits and success."
+      },
+      {
+        "scenario": "Revoking current-account policy during a held buffered rejection selects one nonretryable policy failure and one wire POST, with original safe capture context and real peer cleanup despite enabled retries.",
+        "groups": [
+          "buffered-revoke"
+        ],
+        "coverage": "Managed account/policy revocation while buffered peer remains open. Assert one POST, terminal failure attribution and peer release."
+      },
+      {
+        "scenario": "Dropping a pending buffered rejection closes real TCP while the client remains alive, with no selected failure telemetry or invented completed capture event.",
+        "groups": [
+          "buffered-drop"
+        ],
+        "coverage": "Drop active buffered caller and inspect peer EOF and emitted terminal event while keeping client alive."
+      },
+      {
+        "scenario": "Reject entries through real full and closed SQLite queues after healthy-write controls; inactive and vanilla losses stay unmarked on reenable, active loss remains sticky after enhanced mode turns off, and accepted writes and flushes retain their existing behavior.",
+        "groups": [
+          "queue"
+        ],
+        "coverage": "Production SQLite writer with a saturated and closed queue, healthy flushes, sticky active loss and inactive controls."
+      },
+      {
+        "scenario": "Correlate one prepared endpoint request across internal HTTP retries while per-send telemetry records every attempt; preserve encoded input and completed tools, select only the final failure and its IDs, and start a new logical ID for the next endpoint call.",
+        "groups": [
+          "endpoint-retry",
+          "wire-retry",
+          "op-retry"
+        ],
+        "coverage": "Wire POSTs and endpoint telemetry correlate retry attempts, encoded tool/input bytes, provider deadline and new operation identity."
+      },
+      {
+        "scenario": "Hold incomplete Responses HTTP error entities open, exceed declared/observed diagnostic budgets, retain complete terminal refusals and text decoding, and prove cancellation/policy revocation closes the connection while the client remains alive; inactive mode, explicit caller limits and large successful SSE retain their existing contracts.",
+        "groups": [
+          "response-errors"
+        ],
+        "coverage": "Full Responses HTTP loopback controls for incomplete, over-budget, policy-revoked, cancelled, exact budget, text and clean successful streams."
+      },
+      {
+        "scenario": "Split rejected upgrade headers and bodies across reads, decode entity framing, refuse partial opaque prefixes, preserve TLS/proxy and source custody, and retain the header receipt deadline after a delayed body; log upgrade-only evidence without fabricating model request metadata.",
+        "groups": [
+          "public-rejection",
+          "framing",
+          "tls",
+          "sqlite-upgrade"
+        ],
+        "coverage": "Headers and entities across reads, absolute deadlines, framing refusal, TLS verification, proxy-connect omission and real public logging."
+      },
+      {
+        "scenario": "Real proxy tunnels encode IPv6 HTTP CONNECT authorities and SOCKS5/5h address types correctly across default and explicit routes, preserving IPv4/DNS targets and proxy authentication.",
+        "groups": [
+          "proxy-ipv6"
+        ],
+        "coverage": "Capture CONNECT authority plus real SOCKS5/SOCKS5h address bytes across both proxy selection paths."
+      },
+      {
+        "scenario": "An IPv6 HTTPS proxy retains bracketed TCP authority while ordinary TLS verification accepts the matching IP certificate and rejects a trusted certificate for another IP.",
+        "groups": [
+          "proxy-ip-tls"
+        ],
+        "coverage": "IPv6 TLS proxy with a trusted correct or wrong IP certificate and real tunneled request."
+      },
+      {
+        "scenario": "Malformed environment proxy errors preserve their connector/API classifications without propagating raw credentials into error or connection telemetry text; valid proxy authentication and explicit-route redaction retain their behavior.",
+        "groups": [
+          "proxy-errors",
+          "proxy-privacy",
+          "proxy-ipv6"
+        ],
+        "coverage": "Malformed default and explicit proxy configuration and public error telemetry preserve safe classification. A positive tunnel validates authentication."
+      },
+      {
+        "scenario": "Successful WebSocket upgrades preserve negotiated permessage-deflate and plain fallback across repeated public model exchanges, with actual frame flags and exact Unicode completion data.",
+        "groups": [
+          "deflate"
+        ],
+        "coverage": "Two public repeated exchanges inspect actual compression bits and exact Unicode text with negotiated and declined deflate."
+      },
+      {
+        "scenario": "Selected typed transport failures retain fixed diagnostic categories without private messages; retries preserve encoded input, and policy/auth-build refusals stay unsent and unretried.",
+        "groups": [
+          "typed-transport"
+        ],
+        "coverage": "Production error telemetry discriminates timeout/network/policy/build without leaking private input. Wire/socket assertions distinguish sent and unsent work."
+      },
+      {
+        "scenario": "Selected semantic API errors retain exhaustive fixed categories for quota, capacity, validation and policy without parsing private text; original status, advice and selection remain authoritative, including content-filter EOF versus completion supersession.",
+        "groups": [
+          "sse-terminal"
+        ],
+        "coverage": "Production SSE classification for validation, quota, capacity, policy, EOF, and completion superseding the buffered failure."
+      },
+      {
+        "scenario": "Selected failures distinguish retained typed retry advice, represented absence and unknown without sampling clocks, reparsing headers or changing retry authority; expired advice remains a retained value.",
+        "groups": [
+          "http-advice",
+          "sse-advice"
+        ],
+        "coverage": "Typed slots test expiration, status and advice custody (present/absent/unknown); superseded errors emit nothing."
+      },
+      {
+        "scenario": "Structured WebSocket errors retain bounded nested request and ray IDs when valid outer correlation is absent; alias/case handling preserves existing normalization, private headers stay excluded, and terminal classification and captured advice remain unchanged.",
+        "groups": [
+          "nested-ids"
+        ],
+        "coverage": "Selected WS failure preserves safe outer/nested IDs, alias priority and bounds across native exchange."
+      },
+      {
+        "scenario": "Natural reset, earned reset, duplicate receipt, account switch and long-wait cancellation.",
+        "groups": [
+          "quota-unix",
+          "quota-cancel",
+          "quota-switch",
+          "core-reset",
+          "core-notices",
+          "native-goal-usage-reset",
+          "native-goal-reset-upgrade"
+        ],
+        "coverage": "Quota recovery through isolated real provider fixtures, including same-operation retry/receipt, natural release, earned spend, account switch, long-wait cancellation, real public Core compaction and notice delivery. Candidates requiring the native goal regression also verify that the same goal completes its resumed turn after the advertised reset without user input. Sources declaring the upgrade-deferral check must also preserve the saved goal and its pending retry deadline when an update is available."
+      },
+      {
+        "scenario": "Duplicate or cross-thread safety notices, revoked authority, capped retries, and fallback without repeating acknowledged effects.",
+        "groups": [
+          "safety-dispatch",
+          "safety-budget"
+        ],
+        "coverage": "Actual TUI event dispatch checks cross-thread/revoked authority and completed side-effect preservation. Chat tests deliver a duplicate notification and exhaust the two-retry budget."
+      },
+      {
+        "scenario": "Reject consumption below 99 percent, on five-hour-only windows, across mismatched windows, with a missing refresh or one within 24 hours, or after a delayed credit listing crosses that threshold; admit weekly refreshes more than 24 hours away and report inventory, expiry, preservation reasons and confirmed restoration.",
+        "groups": [
+          "quota-99",
+          "quota-late",
+          "quota-notice",
+          "core-notices",
+          "check_runtime",
+          "reset_notice_oracle",
+          "weekly-wire"
+        ],
+        "coverage": "Policy threshold and crossed-deadline controls plus real credit listing, confirmed redemption, inventory/expiration and visible notice handling. The same CLI sends zero consume requests at 24 hours and one at 25 hours on each path."
+      },
+      {
+        "scenario": "Kimi transient 429 recovery and terminal 5-hour, weekly, monthly and Extra Usage quota responses.",
+        "groups": [
+          "kimi",
+          "capacity",
+          "kimi-wire"
+        ],
+        "coverage": "Kimi tests pass registered provider response shapes into actual mapping and distinguish transient, subscription quota windows, extra usage and original advice. Autopilot exercises generic capacity recovery and terminal quota using the real Core client. The selected CLI exercises a transient response and all four quota categories on loopback."
+      }
+    ],
+    "build-and-adoption": [
+      {
+        "scenario": "Compiler/source identity mismatch, source race, hook loss and package rollback.",
+        "groups": [
+          "proof",
+          "package-inputs",
+          "qual",
+          "hook-controls",
+          "promotion"
+        ],
+        "coverage": "Actual gate, source race and compiler identity fixtures, positive/negative hook-loss execution and package selection rollback controls."
+      },
+      {
+        "scenario": "Reject missing, uncommitted, stale or ambiguous upstream reviews before compilation; allow only reviewed stepwise prefixes, independently of hook-loss exceptions.",
+        "groups": [
+          "intake",
+          "feature"
+        ],
+        "coverage": "Actual upstream review admission and scoped feature gate reject stale/changed/refused review, hook-loss exceptions, and admit reviewed stepwise prefixes."
+      },
+      {
+        "scenario": "Regular and development ALab versions retain atpkg update ownership; upstream binaries retain their updater behavior.",
+        "groups": [
+          "ownership",
+          "promotion",
+          "version-lines",
+          "package-version"
+        ],
+        "coverage": "Shared runtime updater ownership for regular/dev ALab and vanilla identity, package source identity and selector handling."
+      },
+      {
+        "scenario": "Reject compiler failures, stale reports, substituted source workspaces and caller overrides of the certified build policy.",
+        "groups": [
+          "proof",
+          "package-inputs"
+        ],
+        "coverage": "Live wrapper through controlled compiler fixtures rejects failed compiler, stale proof, wrong CWD and caller overrides. Positive fixture checks the required invocation."
+      }
+    ],
+    "history-pagination": [
+      {
+        "scenario": "Turn endings at page offsets 76 and 38 in reversed metadata order.",
+        "groups": [
+          "history-reversed-endings"
+        ],
+        "coverage": "The renderer groups 76 timeline items into two forward slices of 38 when the turn metadata arrives in reverse order."
+      },
+      {
+        "scenario": "Interleaved turns and reused item IDs across turns.",
+        "groups": [
+          "history-item-ownership"
+        ],
+        "coverage": "Interleaved turns complete in item order, even when two turns reuse an item ID."
+      },
+      {
+        "scenario": "Every metadata permutation and partial page preserves exact item coverage.",
+        "groups": [
+          "history-partial-pages"
+        ],
+        "coverage": "All six metadata orders and every nonempty contiguous subpage preserve each item and complete only its owning turn."
+      },
+      {
+        "scenario": "Leading and chained empty interruptions, absent endpoints and trailing items.",
+        "groups": [
+          "history-interruption-ownership"
+        ],
+        "coverage": "Leading, consecutive and unloaded interruptions stay with their page anchors while trailing items remain visible."
+      }
+    ],
+    "security-notices": [
+      {
+        "scenario": "Verified absence, present notice, old server, timeout and identity changes while a request is pending.",
+        "groups": [
+          "notice-request",
+          "notice-server",
+          "notice-identity"
+        ],
+        "coverage": "The TUI exercises authenticated notice reads, unsupported and timed-out responses, and identity or reminder changes while the read is pending. Only verified absence for the same observed entry settles it."
+      }
+    ],
+    "model-discovery": [
+      {
+        "scenario": "Catalog-only launch, source-dependent capability, stale cache and unavailable account.",
+        "groups": [
+          "model-readiness"
+        ],
+        "coverage": "A loopback catalog and the selected client exercise fresh discovery, stale cache, a source-dependent capability and an account refusal."
+      },
+      {
+        "scenario": "Fresh embedded/remote startup, profile precedence and cleared model selection.",
+        "groups": [
+          "model-startup"
+        ],
+        "coverage": "The TUI startup path records destination config reads and thread/start requests for embedded and remote clients, including explicit and cleared selections."
+      },
+      {
+        "scenario": "Catalog discovery failure with explicit Daybreak enabled or disabled.",
+        "groups": [
+          "daybreak-catalog"
+        ],
+        "coverage": "The exec client applies both explicit preferences to a failed model/list result and retains successful replies."
+      },
+      {
+        "scenario": "Kimi global and China profiles expose every documented model with subscription API-key authentication.",
+        "groups": [
+          "kimi-profiles",
+          "kimi-catalog",
+          "kimi-selection",
+          "kimi-model-wire"
+        ],
+        "coverage": "Both Kimi providers list their models. The CLI selects each documented model through its packaged profile and sends the subscription bearer credential."
+      },
+      {
+        "scenario": "Explicit shutdown before first poll or during pending preflight, and worker Drop during preflight, in enhanced and Vanilla modes.",
+        "groups": [
+          "model-worker"
+        ],
+        "coverage": "Native worker lifecycle tests observe release of provider preflight on shutdown and drop in both experience modes."
+      },
+      {
+        "scenario": "Cold-resume a saved family-following thread and poll a running Sol 6.1 thread at Ultra after another tab caches Sol 6.2. After the serving provider confirms the successor, inspect the next request on each original thread for the new model and the wire effort selected by its saved mode. With an older serving catalog or an explicit 6.1 pin, verify the next request keeps 6.1 and its effort.",
+        "groups": [
+          "model-cold",
+          "model-peer-cache",
+          "model-handoff-commands",
+          "model-resume-wire"
+        ],
+        "coverage": "Read the same thread after cold, loaded and archived resume. Inspect model and reasoning effort on requests after a peer cache refresh, with explicit pins and an older serving catalog. After an idle binary handoff the first ordinary turn, compaction and default review use the confirmed model. A separately pinned review uses its exact model while the parent keeps its successor and Ultra."
+      },
+      {
+        "scenario": "Deliver a Fleet request twice, replace a thread, cancel before dispatch, and apply across multiple registered config homes with explicit personal pins.",
+        "groups": [
+          "fleet-peer",
+          "fleet-dispatch",
+          "fleet-homes"
+        ],
+        "coverage": "The native peer, live TUI and CLI exercise replay, replacement, canceled delivery and application to independent registered homes with personal pins."
+      },
+      {
+        "scenario": "Withdraw the saved model from the serving account, then temporarily restrict its successor to Low while another provider advertises a newer family member. Inspect actual requests from the same resumed thread, including a retry with no picker refresh and another cold resume after Ultra returns. For custom remote catalogs, require the serving provider’s declared successor and ignore higher-numbered unlinked models.",
+        "groups": [
+          "model-withdrawal",
+          "model-withdrawal-wire"
+        ],
+        "coverage": "The original thread sends no inference when its serving catalog withdraws eligibility. A direct retry and another cold resume exercise restricted and restored effort while a second provider advertises a newer model."
+      }
+    ],
+    "skill-discovery": [
+      {
+        "scenario": "Missing root, root creation, vendor reinstall and actual skill edits.",
+        "groups": [
+          "skill-watch-roots",
+          "skill-watcher-wire"
+        ],
+        "coverage": "Check that a missing root cannot watch the whole home, then observe native creation and edit notifications, cached skill descriptions, and silent vendor replacement beside the installed ALab skills."
+      }
+    ],
+    "product-policy": [
+      {
+        "scenario": "Packaged/default/profile/project/CLI precedence inside and outside aterm.",
+        "groups": [
+          "product-defaults",
+          "product-config-wire"
+        ],
+        "coverage": "Read the effective terminal defaults inside and outside aterm. The public CLI sends eight actual provider requests across user config, a named profile, a trusted project and a command override."
+      },
+      {
+        "scenario": "Resume a completed Sol or Astra thread and keep its ID, history and effort. Refresh the catalog mid-conversation and use the successor on the next turn. Exercise hidden, retired and effort-incompatible releases, model pins and remote server ownership.",
+        "groups": [
+          "model-eligibility",
+          "model-start-authority",
+          "model-cold",
+          "model-peer-cache",
+          "model-resume-wire",
+          "model-withdrawal-wire"
+        ],
+        "coverage": "Inspect completed history, family, effort and exact pins after a resume. Verify provider ownership of successor selection, including hidden, retired, incompatible and undeclared entries."
+      },
+      {
+        "scenario": "Vanilla mode and live-experience changes during sleeping workers.",
+        "groups": [
+          "product-mode",
+          "model-live-mode",
+          "model-resume-mode"
+        ],
+        "coverage": "Switch a sleeping model worker between both modes, observe its next poll, and complete an in-flight resume while the process returns to Vanilla defaults."
+      }
+    ],
+    "qualification-fixtures": [
+      {
+        "scenario": "Backend drain failure, persistent child cleanup, native watcher delivery and decoding actual compressed request payloads.",
+        "groups": [
+          "fixture-startup",
+          "fixture-children",
+          "fixture-watcher",
+          "fixture-compression",
+          "fixture-helper-request",
+          "fixture-wire-body",
+          "fixture-comparison"
+        ],
+        "coverage": "Observe a backend shutdown error after attachment, child process group cleanup, real watcher delivery and actual request body decoding. Compare independent candidate and pristine test copies through the native adapter."
+      },
+      {
+        "scenario": "Real small and multi-megabyte stdout/stderr children retain both ends and final results without pipe backpressure; a held child is killed, reaped and drained with partial markers retained.",
+        "groups": [
+          "fixture-pipes"
+        ],
+        "coverage": "Drain both OS pipes of small, noisy and held children. Check bounded output, real EOFs, kill and reap, and the final exact libtest result."
+      },
+      {
+        "scenario": "Observe a completion marker discarded from both retained ends; reject missing or wrong markers, stderr-only evidence, invented retention-gap adjacency and a marked unsuccessful process exit.",
+        "groups": [
+          "fixture-markers"
+        ],
+        "coverage": "Stream a stdout marker between discarded ends and exercise missing, wrong, stderr-only, synthetic adjacency, unsuccessful exit, and cleanup cases."
+      },
+      {
+        "scenario": "Repeated shared inline assertions, aged overview timestamps, and long host temporary paths.",
+        "groups": [
+          "fixture-saved-chat",
+          "fixture-snapshots",
+          "fixture-overview",
+          "fixture-clock",
+          "fixture-paths"
+        ],
+        "coverage": "Run two saved-chat reopen cases through the shared exact inline assertion and both provider snapshot cases. Render aged overview rows under the test clock and exercise private short sockets and canonical long-path fallback."
+      },
+      {
+        "scenario": "Timeout state with buffered events, completed tasks, and busy or poisoned recorders.",
+        "groups": [
+          "fixture-timeout"
+        ],
+        "coverage": "Observe real pending buffered input, completed join handles and busy or poisoned request recorders, and retain a bounded diagnostic without request content."
+      },
+      {
+        "scenario": "Bound public HTTP and WebSocket opening and SSE fixture phases; an incomplete real request reaches its named body deadline and cancellation, including during finish, closes the observed TCP connection.",
+        "groups": [
+          "fixture-open",
+          "fixture-sse"
+        ],
+        "coverage": "Open the public HTTP and WebSocket endpoints against loopback, enforce the named incomplete request-body deadline, and observe TCP closure after fixture drop or cancellation during finish."
+      }
+    ],
+    "native-ui": [
+      {
+        "scenario": "Switch conversations with stashed structured drafts and parked backends.",
+        "groups": [
+          "ui-conversation-stash",
+          "ui-sidebar-wire"
+        ],
+        "coverage": "Native composer stashes preserve structured attachments, mentions and cursor offsets across a conversation switch. Parked completions remain bound to their backend and turn and leave the displayed draft intact. Fresh and resumed terminals open a side chat, edit separate drafts in both composers and submit the parent draft on its original thread."
+      },
+      {
+        "scenario": "Resize, hide overlays and disable pets with cached frames.",
+        "groups": [
+          "ui-pet-frames"
+        ],
+        "coverage": "The native renderer exercises narrow and short viewports, full-screen overlays, cached frames, and a queued disable while an overlay is open."
+      },
+      {
+        "scenario": "Paste multiple images, submit the prompt and scroll through it. Resume a conversation containing inline image data or an unavailable attachment.",
+        "groups": [
+          "ui-replayed-images",
+          "ui-image-wire"
+        ],
+        "coverage": "The real CLI receives two bracketed PNG path pastes, submits one turn and scrolls its transcript. Reopening the same thread with both files present restores the two thumbnail colors. Removing the files preserves the two labels. A separate turn saved with inline images restores both original colors after source deletion. The native renderer also exercises a broken inline payload and history reflow."
+      },
+      {
+        "scenario": "Toggle an active goal with an existing draft and verify the goal row, account click target and draft cursor.",
+        "groups": [
+          "ui-goal-row"
+        ],
+        "coverage": "The native composer retains the existing draft and cursor when the goal is set and cleared. The account click target follows its rendered row."
+      },
+      {
+        "scenario": "Exercise native status wrapping and constrained composer layouts with tall drafts, interactive hints and focus changes.",
+        "groups": [
+          "ui-status-layout"
+        ],
+        "coverage": "The composer exercises linked status wrapping at narrow widths, constrained footer and draft height, interactive hint rows, focused controls, and the account click target."
+      }
+    ],
+    "execution-continuity": [
+      {
+        "scenario": "Default, explicit-override and vanilla hook trust.",
+        "groups": [
+          "continuity-hook-policy"
+        ],
+        "coverage": "The actual CLI records a project hook only under its applicable default or explicit override. Ordinary terminal, aterm, vanilla and disabled-feature controls exercise the same submitted prompt."
+      },
+      {
+        "scenario": "Optional and forced model migration.",
+        "groups": [
+          "continuity-model-migration"
+        ],
+        "coverage": "A real terminal keeps an optional available model. When the saved model is retired, it uses the successor, shows the notice and persists the new selection."
+      },
+      {
+        "scenario": "Confirmation-only and schema-bearing MCP elicitations.",
+        "groups": [
+          "continuity-mcp-elicitation"
+        ],
+        "coverage": "The ordinary tool path accepts an empty confirmation and declines a schema-bearing form under ALab. A form-capable vanilla control accepts the user’s explicit value on the same plugin."
+      },
+      {
+        "scenario": "Automatic titles and explicit rename suggestions.",
+        "groups": [
+          "continuity-thread-titles"
+        ],
+        "coverage": "The enhanced CLI suppresses the automatic title. An explicit rename opens an editable suggestion, and the submitted edit is readable on the original thread after restart."
+      },
+      {
+        "scenario": "Recover clipped local shell output across exec and poll in text and code mode, including a partial log at the size limit. Run a local compiler whose first 8 MiB fill the prefix, omit a known middle, and recover its original last 4 KiB and exact byte interval in a replacement CLI. A one-shot failure and Code Mode disclose the same range, while EOF and authentic failure decide whether the evidence exists. Reopen a completed build diagnostic in the same thread after a graceful process replacement, then consume or delete the retained file. Start a waiting shell after a restart, present its session number with an earlier build’s invocation ID, recover the earlier observation and confirm only the correctly bound input reaches the waiting shell. Let another command exit between turns without polling it, then replace the CLI and read its observed exit code and original diagnostic without rerunning it. Inspect the first resumed model request, reject it, interrupt the next response, accept its follow-up and replace the CLI again. Only the uncollected exit is reported and the original tool outputs remain byte-identical. Start the same command in two different working directories, let each exit without a poll, and read both launches from the resumed model request. Release a quiet build to emit its first diagnostic and fail between turns. Recover and read its original bytes after replacement without running the build again. Let a short-lived failure return its exit on the first tool call before a helper writes to stderr. Recover the direct pipe and local exec-server diagnostics once after CLI replacement. Interrupt the watcher’s SQLite attachment after its diagnostic file is visible, kill the CLI, and resume twice. Only the first replacement recovers the original diagnostic, and the compiler command runs once. Hold stderr open in a helper until the terminal poll returns its exit. Release the helper, replace the CLI, and recover the newly emitted diagnostic without reusing the original input handle.",
+        "groups": [],
+        "coverage": "Pending an isolated executor for retained shell diagnostics and a genuine compiler check of the same bytes across text, Code Mode and replacement paths."
+      },
+      {
+        "scenario": "Fork and sample a running parent while its tool call is pending. Each child sees a missing result and the parent receives the actual result.",
+        "groups": [
+          "continuity-fork-history"
+        ],
+        "coverage": "An actual held tool, child fork and parent completion retain an unknown result only where no result exists. Process replacement exercises both legacy and paginated history."
+      },
+      {
+        "scenario": "Cancel the second shell snapshot during validation and verify the first remains usable until its owner releases it.",
+        "groups": [
+          "continuity-snapshot-owner"
+        ],
+        "coverage": "After cancellation of a competing snapshot the product replay command returns the first captured value. Releasing the original owner restores the fresh shell value."
+      },
+      {
+        "scenario": "Recover local TUI input awaiting delivery when interactive review is off.",
+        "groups": [
+          "continuity-finding-input",
+          "continuity-finding-wire"
+        ],
+        "coverage": "The live widget keeps its draft and queue, sends only the submitted correction, and recalls a held prompt on demand. Reattachment after replay retains saved input. Interactive review keeps its existing precaution. A steer bound to a running turn checks that turn’s outcome before starting another. In a PTY, the CLI keeps a prompt queued across a provider refusal and the completion of a fresh user turn. The loopback provider sees the fresh input only after submission. With interactive review enabled at launch, opening the quoted suggestion and leaving the confirmation unacknowledged produces only the original provider request."
+      }
+    ],
+    "account-isolation": [
+      {
+        "scenario": "Switch accounts during async budget checks and WebSocket reuse.",
+        "groups": [
+          "account-transport-switch"
+        ],
+        "coverage": "Core suspends generation in the budget callback during a runtime account change. The HTTP peer receives a single model request. The dual-header case verifies the destination bearer and the assertion-only case verifies assertion delivery. WebSocket peers observe the retired post-handshake connection receive zero requests and a new runtime receive the next request, with and without a gateway. A separate ChatGPT fixture keeps the old socket open, verifies both account IDs and bearers, and checks same-account reuse and reset of response and routing continuity within and across turns."
+      },
+      {
+        "scenario": "Race refresh and assignment; refuse unavailable source ownership.",
+        "groups": []
+      },
+      {
+        "scenario": "Retain a paired HTTP client across actual direct-reader replacement and Ready; refuse its next request without sending it.",
+        "groups": [
+          "account-direct-reader"
+        ],
+        "coverage": "The credential-paired HTTP client receives its first response from a loopback server. After the original direct reader replaces its loaded source and acknowledges Ready, the same client refuses its next request. The server receives exactly one request."
+      },
+      {
+        "scenario": "Retain Cloud clients across source retirement, reject incompatible credential/factory pairing, and preserve destination restrictions.",
+        "groups": [
+          "account-cloud-reader"
+        ],
+        "coverage": "Two independent readers of the same synthetic account reject mixed credential and transport ownership. The Cloud TLS/HTTP2 peer verifies the bearer and workspace on ListThreads calls. An empty destination allowlist prevents a send while the allowed client still works. After the first reader loses its native connection, its retained client cannot send and the other reader can still read its token. Both reader retirements complete after the clients are dropped."
+      },
+      {
+        "scenario": "Refuse credential output after source replacement, loss or policy withdrawal; hold account retirement until the admitted output is dropped.",
+        "groups": [
+          "account-credential-output"
+        ],
+        "coverage": "A live native source first writes its credential successfully. After source loss or policy withdrawal, an export with a staged bearer releases zero bytes, and an already prepared export refuses before rendering. Replacing the source manager also refuses delivery even with identical credential bytes and unchanged watch counters. The account retirement boundary stays pending while an admitted export is held and can freeze after it is dropped."
+      },
+      {
+        "scenario": "UNQUALIFIED retained-path requirement: stop or withdraw Input while Native origin observation is pending; refuse new backend credential reads, retain accepted cleanup and preserve typed auth/managed-loader failures across current, stale and foreign A.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-path requirement: use frozen same-backend account/managed policy on real C2 login/config/cloud/notices/preferences paths; join and retire all old reader/OAuth/catalog workers and unused seed with genuine Native closure while preserving original foreground interaction and user choices.",
+        "groups": []
+      }
+    ],
+    "diagnostic-storage": [
+      {
+        "scenario": "Release a diagnostic WAL burst after a reader finishes and a writer reuses the checkpointed journal.",
+        "groups": [
+          "diagnostic-wal"
+        ],
+        "coverage": "Open concurrent writers and a reader on disposable diagnostics databases. Verify that the reader keeps its snapshot through the burst and that a later write releases excess WAL space. Check the limits on other databases, journal modes and connections."
+      }
+    ],
+    "goal-storage-recovery": [
+      {
+        "scenario": "SQLite FULL with stranded SQLx rollback, followed by healthy borrowing; ordinary dropped transaction reuse.",
+        "groups": [
+          "sqlite-pool-recovery"
+        ],
+        "coverage": "A page-limited SQLite database reports SQLITE_FULL and rolls back the goal update while SQLx retains the failed transaction depth. The protected pool discards that connection and the next borrower commits exactly once. A pool without the release check reproduces the failure. An ordinary dropped transaction rolls back and the next borrower retains the same physical connection."
+      },
+      {
+        "scenario": "Cancelled dispatched accounting, failed zero-usage stop, typed noncommit versus lost acknowledgement and queued writer recheck.",
+        "groups": []
+      },
+      {
+        "scenario": "Retained older-turn, descendant and time usage across manual input, terminal edits, Plan and raw goal replacement.",
+        "groups": [
+          "goal-retained-turn-usage",
+          "goal-descendant-usage"
+        ],
+        "coverage": "Native manual turns, terminal mutations, delayed Plan input and raw goal replacement check exact persisted token and elapsed-time ownership. The goal extension also checks descendant usage stays attributed to its original goal after replacement."
+      },
+      {
+        "scenario": "Same-ID reactivation racing a delayed stop; acknowledged explicit recovery releases an eligible hold without replaying stop policy.",
+        "groups": [
+          "goal-reactivation"
+        ],
+        "coverage": "A delayed native stop cannot overwrite reactivation of the same goal. After a separate failed stop, reads and rejected writes preserve the hold until an acknowledged explicit mutation permits admission."
+      },
+      {
+        "scenario": "Ready/Writing/Held status during stalled goal reads and listener reattach, retaining the saved Active badge and real input/writer activity.",
+        "groups": []
+      },
+      {
+        "scenario": "Delayed or duplicate old-generation observations, cancelled output enqueue, bounded overflow reset/rearm, backend/thread switches and transport loss.",
+        "groups": [
+          "goal-status-cancel-and-reset",
+          "goal-status-widget-loss"
+        ],
+        "coverage": "The outgoing queue recovers a cancelled send without replaying stale state, retires obsolete generations, and sends a single reset before accepting fresh observations after bounded overflow. The selected widget rejects stale or duplicate updates across backend and thread switches. Closing the connected peer clears its Held observation while the saved goal stays Active."
+      },
+      {
+        "scenario": "Queue overlapping loaded and unloaded goal set/clear operations, cancel an observer after commit, retire the listener before or after enqueue, and exhaust then release per-thread and global reservations; preserve response-before-notification enqueue order and independent-thread progress.",
+        "groups": []
+      }
+    ],
+    "native-session": [
+      {
+        "scenario": "Missing or stale native claim, explicit hold, sign-in attention and crash restart.",
+        "groups": []
+      },
+      {
+        "scenario": "Release or synchronously revoke a claim while its proving reply is already buffered; reject stale publication across shared clients. Revoke an admitted reconfirmation, retain no native retake, preserve another holder, and permit a fresh explicit claim after cleanup. Concurrent policy reads preserve the newest recovery bound; forgetting policy refuses buffered answers but permits a subsequent fresh read, and closing keeps the cache empty.",
+        "groups": [
+          "native-claim-and-policy-order"
+        ],
+        "coverage": "A later reply on the same Unix socket witnesses an earlier claim proof or policy answer buffered by the native client. Client clones exercise release, synchronous loss and admitted reconfirmation. They preserve the foreign holder, give back a native retake, reject stale proof and obtain a fresh claim after cleanup. Concurrent reads retain the newest five-hour bound. Forgetting refuses the buffered answer and permits a fresh read. Closing refuses pending calls and leaves both clones’ policy empty."
+      },
+      {
+        "scenario": "Mix broker and fleet ring rows with outbound posts and legacy mailbox ids; preserve unread blockers and badge counts, reject malformed or ambiguous snapshots, and resume receipt eligibility only after older work is handled.",
+        "groups": [
+          "native-inbox-receipts"
+        ],
+        "coverage": "The native client reads broker and fleet rows over a Unix socket together with an outbound post and a legacy mailbox ID. An unread older task holds the later receipt until the handled watermark advances. Badges count distinct local rows. Colliding offsets refuse the ambiguous body read, duplicate local IDs and malformed rows refuse the snapshot, and a fresh valid listing restores eligibility for reads."
+      },
+      {
+        "scenario": "Exact aggregate control-reply budgets count UTF-8, malformed UTF-8, CRLF and empty lines; overflow bounds allocation, while status and byte framing retain their independent limits.",
+        "groups": [
+          "native-control-reply-framing"
+        ],
+        "coverage": "The production reader charges original wire bytes and bounds the prefix consumed on overflow. Status accepts its exact request limit without consuming a body. Status and Lines reject the first byte beyond 8 MiB, and Lines independently checks the announced line count. Bytes accepts a 1 MiB binary frame with zero Lines budget, leaves the next reply intact and rejects an oversized declaration before reading the body."
+      },
+      {
+        "scenario": "Replace canonical and temporary records during startup judgment, make a judged identity live, and republish future fields unknown to the reader; retire no replacement and deliver no displaced snapshot, including held sources and formerly unreadable candidates.",
+        "groups": [
+          "native-startup-record-sweep"
+        ],
+        "coverage": "The startup sweep encounters canonical and interrupted temporary replacements, an atomically republished unknown field, a valid replacement for malformed input and a competing writer during Hold restoration. The liveness observation changes after judgment under Hold, Take and Remove. The replacements survive without removal or a displaced handoff callback. A Hold conflict retains the old source once in quarantine. Separate controls use an actual child process identity and verify successful handoff and predecessor recovery through configured startup."
+      },
+      {
+        "scenario": "A prepared plan continues only its intended root after accepted input; failed or changed preparation cannot reclassify another session.",
+        "groups": [
+          "native-plan-preparation",
+          "native-plan-opening"
+        ],
+        "coverage": "The TUI prepares a fresh thread and submits the approved plan. The executor reads the saved plan, bounded inline fallback preserves it, and rejected oversized fallback leaves the source thread selected with zero model requests. Autopilot observes the original target's accepted user item before classifying it as continuing. Editing the input, stopping the target or starting an unrelated root cannot transfer the mark. Concurrent prepared roots each retain their own prompt. A real thread manager and loopback model observe one request only after the intended prompt is accepted."
+      },
+      {
+        "scenario": "Native direct and CodeMode goal calls reuse an observed ID in both callback orders, including failure before SQL and committed cancellation.",
+        "groups": [
+          "native-goal-call-id-collision"
+        ],
+        "coverage": "A native Code Mode goal call publishes its generated invocation ID to the loopback model, which reuses it for a direct call in the same turn. Native tool hooks hold and release each callback to exercise both finish orders. The remaining controls distinguish pre-SQL failure, a committed nested cancellation, and their overlap while checking the saved goal, subsequent recovery and usage."
+      },
+      {
+        "scenario": "Force sampling teardown after a native goal commit, preserve the original goal and usage, and recover once; normal release, explicit API pause and shutdown remain distinct.",
+        "groups": [
+          "native-model-goal-teardown"
+        ],
+        "coverage": "A loopback model issues the native goal update. After the original goal is durably blocked, the fixture holds the streamed item and post-tool callback, interrupts sampling, and observes the aborted tool finish. The next recovery adds one accepted goal turn with the original ID, objective, budget and token usage. Companion runs release the callback normally, pause the goal through the API before interrupt, or wait for shutdown to drain the committed source."
+      },
+      {
+        "scenario": "Sessions walled behind a usage wall's move follow its destination once the canary's resumed turn is reported served (codex-rotation complete), once per receipt after its confirmed consume at the stop, from a restored process's history or by a lost acknowledgment's retry; an errored resumed turn, one that ended past the canary hold, a renewal or lost-login receipt, and an old host's refusal send nothing more and leave the canary hold to lapse.",
+        "groups": []
+      },
+      {
+        "scenario": "Prepare a real model-block recovery, perform a native host or Enhanced/Vanilla round trip including during pending instruction recording, and reject stale goal reactivation and provider admission while accepting a genuinely fresh model block.",
+        "groups": [
+          "native-model-block-recovery"
+        ],
+        "coverage": "Native host and Enhanced/Vanilla round trips revoke a prepared recovery. A second mode change while the goal service is recording its instruction reaches the final authorization refusal before SQLite dispatch. The original blocked goal, accepted-turn count and provider request count stay unchanged. A fresh model stop on the same thread can resume its goal and open a new provider request."
+      },
+      {
+        "scenario": "Queue automatic goal work behind normal shutdown, local-tree shutdown, channel closure and successful suspension; verify native permit retirement and child-result persistence, and exercise inactive, unsupported and preterminally failed ordinary suspension with subsequent live admission.",
+        "groups": []
+      }
+    ],
+    "exec-handoff": [
+      {
+        "scenario": "Suspend with queued input, active review and nested children.",
+        "groups": [
+          "handoff-suspended-review-tree"
+        ],
+        "coverage": "Core suspends a live review while its original delegate and grandchild are active and a user message is queued on the grandchild. The snapshot ties the three stopped threads to their original parents and turns. Its prepared input contains exactly one matching message and client ID on the grandchild, and neither in-flight model request contained the queued message."
+      },
+      {
+        "scenario": "Restore sampling counters, audio metadata, ID allocation ordinals and review budgeting; reject malformed snapshots.",
+        "groups": [
+          "handoff-installed-context",
+          "handoff-checkpoint-ordinal",
+          "handoff-private-allocation"
+        ],
+        "coverage": "Core captures, prepares and installs the saved model context with a fresh destination ID generator. The installed sampling counters, file durations, rejected audio IDs, Elastic review budget, review checkpoint and saved allocation ordinal survive. The private rollout codec preserves the next item ordinal and window allocation without adding private fields to provider requests. Corrupt counters, audio metadata and orphaned allocation records are rejected."
+      },
+      {
+        "scenario": "Cancel before and after destination child registration.",
+        "groups": [
+          "handoff-child-registration",
+          "handoff-registered-tree"
+        ],
+        "coverage": "Cancel the first observer while a real residency gate holds child registration, then reconcile the original child in its destination runtime. After registration, cancel the activation observer during child admission and check success, refusal and deadline cleanup for every member before sampling."
+      },
+      {
+        "scenario": "Restore saved helper intent under current account/model authority without turning an implicit selection into an explicit override.",
+        "groups": [
+          "fixture-helper-request",
+          "exec-helper-restored-intent"
+        ],
+        "coverage": "A model-spawned helper's captured tree is decoded into a fresh thread manager. The original implicit turn completes with one matching request under the same account. Another account refuses it before sending the helper input and preserves the input in history. An explicit override survives the account change. Core separately rebinds the saved intent to a fresh owner, selects from the destination model's available programs, keeps future defaults independent, and honors disabled propagation."
+      },
+      {
+        "scenario": "Checkpoint native goal accounting and input, including partial paste, quarantine, and startup replay.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-path requirement: exercise genuine initial birth, replacement Go, reconnect and repeated fresh A/F1/App commits against the same backend; verify H1 before old-input/snapshot transitions and NoPrimary carrying the original hold until real Main/Core S2, while Side releases only its own ticket.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-path requirement: reconcile exact selected/candidate Core, original policy/settings/history/live prefixes and pending callback/editor/input owners through the ordered tail and successful draw/input/Native UI acknowledgment; reject legacy forest/default-Core substitution, override historical task-tool positives with current-tenure false/absence, and preserve unconfirmed human replies without resend.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-path requirement: cancel, unpoll or withdraw at acceptance, release, selection install and shutdown; retain exact workers/leases/input and Unknown custody, finish Source cleanup before Native withdrawal, and prove slot/hold overlap cannot open automatic admission or lose accepted work.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-ui/source-selection requirement: exercise first and later original Start/Fork/Resume, loaded and cold selection, passive Side and configured NoPrimary through actual FIFO replay End, successful draw/input witness and genuine Native/App/Source commit; cancel at every original installation await without losing the actual response, queue, settings, lease or accepted Source operation.",
+        "groups": []
+      },
+      {
+        "scenario": "UNQUALIFIED retained-ui/source-selection requirement: carry exact pending native view/request IDs, unconfirmed original human input and active editor ownership across repeated updates and Core termination/background switches; use actual endpoint and publication receipts rather than absence/transport success, and preserve held ownership when required consumers or Native qualification are unavailable.",
+        "groups": []
+      },
+      {
+        "scenario": "Defer a source update while the original external editor owns the terminal. Keep the returned draft and parked events, then capture fresh input and editor state on the same session after the draft clears.",
+        "groups": [
+          "original-editor-update-retry"
+        ],
+        "coverage": "A real App starts an external editor in a controlling PTY. Its first update request expires while the child owns the terminal. The App restores the returned document once, retains its parked event and refuses capture while the draft is present. After a frame is painted and the draft clears, the original callback offers a valid terminal and editor snapshot. The capture probe stops before SDK execution."
+      }
+    ]
+  },
+  "groups": {
+    "compaction": {
+      "stage": "autopilot-integration",
+      "tests": [
+        "compaction_capacity_recovers_in_place_without_ordinary_retries_or_autopilot",
+        "interrupt_cancels_compaction_capacity_wait_with_long_server_advice",
+        "invalid_compaction_stops_without_retry_even_with_server_advice",
+        "compaction_overload_label_does_not_retry_a_permanent_refusal",
+        "compaction_refusals_stop_the_autopilot_until_a_corrected_persons_turn",
+        "a_cyber_refusal_during_compaction_does_not_replay_it_as_an_independent_turn",
+        "a_compaction_deadline_survives_exhaustion_and_delays_native_recovery",
+        "native_pre_mid_and_post_turn_policy_refusals_preserve_the_compaction_boundary",
+        "compaction_retries_honor_advice_then_clear_it_on_the_next_failure",
+        "pre_turn_compaction_retains_provider_advice_before_any_sampling_error"
+      ]
+    },
+    "capacity": {
+      "stage": "autopilot-integration",
+      "tests": [
+        "capacity_twice_recovers_in_the_same_turn_with_zero_ordinary_retries",
+        "capacity_after_completed_work_honors_http_advice_without_repeating_the_tool",
+        "interrupt_cancels_a_capacity_wait_with_long_server_retry_advice",
+        "quota_exhaustion_remains_terminal",
+        "authentication_failure_remains_terminal"
+      ]
+    },
+    "misalignment-turn": {
+      "stage": "autopilot-turn",
+      "tests": [
+        "a_misalignment_finding_waits_for_the_person_before_another_request"
+      ]
+    },
+    "misalignment-replay": {
+      "stage": "autopilot-library",
+      "tests": [
+        "a_duplicate_start_cannot_reopen_a_terminal_misalignment_refusal",
+        "a_retired_duplicate_start_cannot_displace_a_running_turn_before_its_finding",
+        "misalignment_replay_requires_a_new_turn_even_when_the_start_is_missing",
+        "sparse_duplicate_completion_keeps_cruise_stopped_at_the_misalignment_finding"
+      ],
+      "prefix": "resume_history::tests::"
+    },
+    "misalignment-queue": {
+      "stage": "queue-review",
+      "select_if_required": "required_libtests",
+      "tests": [
+        "typed_provider_refusal_holds_queued_input_until_explicit_start",
+        "trigger_turn_mail_waits_for_review_and_reaches_the_explicit_queue_turn",
+        "relay_cannot_replace_the_finishing_turn_before_its_finding_is_published",
+        "observed_steer_fallback_cannot_answer_a_finding_after_a_missing_reply"
+      ]
+    },
+    "core-unadvised": {
+      "stage": "core-integration",
+      "tests": [
+        "compact_v2_stream_failure_without_retry_after_exhausts_stream_retries",
+        "compact_v2_overload_without_retry_after_exhausts_request_retries"
+      ],
+      "prefix": "suite::retry_after::"
+    },
+    "opaque": {
+      "stage": "autopilot-library",
+      "tests": [
+        "native_turn_retries_opaque_http_400_but_not_a_specific_refusal",
+        "native_websocket_handshake_retries_opaque_400_on_the_socket_before_http",
+        "native_opaque_handshake_retries_and_fallback_preserve_provider_deadline",
+        "native_repeated_opaque_http_400_exhausts_retries_without_repeating_completed_work",
+        "native_repeated_opaque_http_400_is_replayed_without_the_turn_routing_token",
+        "explicit_request_refusals_cannot_become_opaque_outage_recovery"
+      ],
+      "prefix": "recovery::tests::"
+    },
+    "durable": {
+      "stage": "autopilot-library",
+      "tests": [
+        "normalized_bad_request_keeps_provider_deadline_across_restart",
+        "a_forward_wall_clock_step_cannot_shorten_a_restored_provider_wait",
+        "an_existing_boot_anchor_keeps_a_republished_wait_stable_across_a_wall_step",
+        "matching_unverifiable_recovery_blocks_carried_actions_until_a_new_native_point",
+        "only_the_latest_matching_native_failure_can_restore_a_wait",
+        "restored_intents_do_not_override_live_retry_or_usage_switches",
+        "recorded_raw_bad_request_requires_its_pacing_record"
+      ],
+      "prefix": "recovery::tests::"
+    },
+    "boot-clock": {
+      "stage": "boot",
+      "tests": [
+        "elapsed_boot_time_preserves_a_relative_wait_without_wall_clock_input",
+        "different_boot_rewound_counter_and_epoch_overflow_refuse"
+      ],
+      "prefix": "recovery_clock::tests::"
+    },
+    "socket-return": {
+      "stage": "autopilot-integration",
+      "tests": [
+        "a_fallback_after_failed_requests_ends_at_the_next_request_that_is_not_a_retry",
+        "a_returned_socket_that_fails_its_first_request_gets_no_retry_budget",
+        "a_refused_return_is_replayed_over_https_instead_of_ending_the_turn",
+        "a_fallback_the_server_asked_for_stays"
+      ]
+    },
+    "deadlines": {
+      "stage": "autopilot-integration",
+      "tests": [
+        "http_429_advice_survives_zero_ordinary_retries_then_the_task_recovers",
+        "http_503_advice_survives_zero_ordinary_retries_then_the_task_recovers",
+        "opaque_http_400_advice_survives_zero_ordinary_retries_then_the_task_recovers"
+      ]
+    },
+    "sse-context": {
+      "stage": "transport",
+      "tests": [
+        "native_sse_failure_retains_real_parent_spans_after_caller_context_exits",
+        "native_websocket_failure_retains_request_dispatch_after_caller_context_exits",
+        "native_sse_repeated_correlation_fields_survive_immediate_semantic_failure",
+        "native_sse_repeated_correlation_fields_survive_deferred_eof_failure",
+        "native_sse_buffered_failure_cancellation_retires_http_body"
+      ],
+      "prefix": "sse_diagnostic_context_tests::"
+    },
+    "sse-terminal": {
+      "stage": "transport",
+      "tests": [
+        "terminal_provider_refusals_keep_safe_semantic_categories",
+        "advised_capacity_and_rate_failures_keep_safe_semantic_categories",
+        "selected_content_filter_eof_keeps_safe_category",
+        "completion_supersedes_deferred_content_filter_without_failure_category",
+        "existing_invalid_prompt_category_and_selected_error_stay_unchanged"
+      ],
+      "prefix": "sse_audio_rejection_tests::semantic_categories::"
+    },
+    "sse-api": {
+      "stage": "transport",
+      "tests": [
+        "http_sse_semantic_failures_retain_attempt_ids_and_captured_context"
+      ],
+      "prefix": "endpoint::alab_request_diagnostics::sse_tests::"
+    },
+    "sqlite-endpoint": {
+      "stage": "transport",
+      "tests": [
+        "public_responses_diagnostics_reach_sqlite_with_original_context"
+      ],
+      "prefix": "endpoint_diagnostic_tests::"
+    },
+    "sqlite-failure": {
+      "stage": "transport",
+      "tests": [
+        "public_http_capture_phase_reaches_sqlite_with_original_context"
+      ],
+      "prefix": "endpoint_diagnostic_tests::"
+    },
+    "sqlite-opaque": {
+      "stage": "transport",
+      "tests": [
+        "opaque_request_correlation_reaches_sqlite_without_unrelated_headers"
+      ],
+      "prefix": "recovery_diagnostic_tests::"
+    },
+    "sqlite-upgrade": {
+      "stage": "transport",
+      "tests": [
+        "public_websocket_handshake_diagnostics_reach_sqlite_with_original_context",
+        "proxy_connect_failure_does_not_persist_upgrade_diagnostics"
+      ],
+      "prefix": "websocket_handshake_diagnostic_tests::"
+    },
+    "queue": {
+      "stage": "transport",
+      "tests": [
+        "full_sqlite_queue_marks_shared_loss_after_successful_writes",
+        "closed_sqlite_queue_marks_loss_without_calling_the_batch_reporter"
+      ],
+      "prefix": "queue_loss_contract_tests::"
+    },
+    "buffered": {
+      "stage": "transport",
+      "tests": [
+        "truncated_buffered_rejection_retains_http_advice_and_imagegen_id",
+        "truncated_429_does_not_replay_images_when_only_transport_retries_are_enabled",
+        "buffered_http_capture_counts_entity_bytes_before_strict_utf8_conversion",
+        "complete_buffered_rejections_keep_strict_utf8_decoding_and_measured_bytes",
+        "buffered_success_inactive_errors_and_explicit_limits_keep_their_boundaries",
+        "held_buffered_rejection_ends_at_body_budget_without_restarting_advice"
+      ],
+      "prefix": "buffered_http_error_body_tests::"
+    },
+    "buffered-revoke": {
+      "stage": "transport",
+      "tests": [
+        "managed_policy_revocation_ends_buffered_rejection_without_retrying"
+      ],
+      "prefix": "buffered_http_error_body_tests::"
+    },
+    "buffered-drop": {
+      "stage": "transport",
+      "tests": [
+        "dropping_buffered_rejection_future_closes_socket_without_selecting_failure"
+      ],
+      "prefix": "buffered_http_error_body_tests::"
+    },
+    "endpoint-retry": {
+      "stage": "transport",
+      "tests": [
+        "internal_http_retries_share_one_endpoint_diagnostic_and_preserve_input"
+      ],
+      "prefix": "http_retry_diagnostic_tests::"
+    },
+    "wire-retry": {
+      "stage": "transport",
+      "tests": [
+        "real_http_retries_preserve_wire_body_and_provider_pacing"
+      ],
+      "prefix": "http_wire_retry_tests::"
+    },
+    "op-retry": {
+      "stage": "transport",
+      "tests": [
+        "http_operation_metadata_tracks_recovery_without_changing_delegate_callbacks",
+        "concurrent_http_operations_keep_request_contexts_and_attempts_separate",
+        "http_operation_metadata_respects_quiet_inactive_and_cancelled_boundaries",
+        "cancelled_http_retry_wait_keeps_only_completed_failure"
+      ],
+      "prefix": "http_operation_diagnostic_tests::"
+    },
+    "response-errors": {
+      "stage": "transport",
+      "tests": [
+        "default_http_error_body_times_out_without_selecting_an_opaque_prefix",
+        "incomplete_http_error_entities_preserve_metadata_without_opaque_recovery",
+        "oversized_default_http_errors_retain_status_ids_and_original_advice",
+        "inactive_explicit_limit_and_success_stream_boundaries_stay_unchanged",
+        "default_http_capture_counts_entity_bytes_including_the_rejected_chunk",
+        "complete_terminal_http_bodies_and_exact_capture_budget_keep_their_meaning",
+        "complete_default_http_capture_preserves_charset_bom_and_replacement_text",
+        "repeated_http_retry_after_is_captured_before_delayed_opaque_body",
+        "repeated_http_correlation_fields_preserve_later_safe_ids",
+        "http_correlation_field_controls_preserve_safe_priority_and_omission",
+        "managed_policy_revocation_ends_held_http_rejection_before_body_deadline",
+        "dropping_http_rejection_future_closes_socket_while_client_remains_alive"
+      ],
+      "prefix": "http_error_body_capture_tests::"
+    },
+    "public-rejection": {
+      "stage": "transport",
+      "tests": [
+        "complete_handshake_rejections_preserve_body_and_retry_policy",
+        "split_opaque_handshake_rejection_preserves_body_and_retry_policy",
+        "split_forbidden_handshake_rejection_preserves_body_and_terminal_policy",
+        "delayed_handshake_body_preserves_header_receipt_retry_deadline",
+        "truncated_opaque_handshake_body_cannot_trigger_opaque_recovery",
+        "empty_handshake_rejections_measure_zero_accepted_entity_bytes",
+        "cancelled_public_handshake_retires_connection_without_late_diagnostics"
+      ],
+      "prefix": "websocket_rejection_body_tests::"
+    },
+    "framing": {
+      "stage": "websocket",
+      "tests": [
+        "cancelling_a_pending_rejection_retires_io_without_capture_or_later_polls",
+        "accepted_entity_progress_distinguishes_absent_decoder_from_measured_zero",
+        "accepted_entity_progress_preserves_partial_and_complete_decoder_counts",
+        "accepted_entity_progress_survives_empty_and_partial_body_timeouts",
+        "declared_rejection_body_survives_every_body_byte_fragment",
+        "fragmented_headers_are_parsed_without_discarding_the_body",
+        "header_budget_does_not_count_the_same_read_rejection_body",
+        "chunked_body_is_decoded_after_its_trailer_terminator",
+        "eof_delimited_rejection_requires_actual_eof",
+        "incomplete_and_ambiguous_framing_never_exposes_a_complete_json_prefix",
+        "equal_content_lengths_are_unambiguous_and_zero_is_measured",
+        "body_and_chunk_metadata_limits_preserve_http_refusal_without_partial_body",
+        "body_deadline_is_absolute_and_never_accepts_a_json_prefix",
+        "delayed_body_keeps_retry_advice_anchored_to_header_receipt",
+        "later_body_fragments_do_not_restart_the_absolute_deadline",
+        "header_read_budget_bounds_the_prebuffer",
+        "successful_upgrade_uses_the_callers_budget_for_delayed_headers",
+        "delayed_rejection_headers_start_a_full_new_entity_budget",
+        "body_read_failure_does_not_erase_a_received_http_status",
+        "body_policy_refusal_keeps_its_original_typed_io_error",
+        "successful_upgrade_keeps_the_original_verifier_and_buffered_frames",
+        "header_budget_does_not_count_same_read_successful_frame_bytes",
+        "successful_status_still_requires_the_original_accept_verification",
+        "success_adapter_replays_original_header_and_tail_bytes_exactly"
+      ],
+      "prefix": "dialer::alab_handshake::tests::"
+    },
+    "tls": {
+      "stage": "websocket",
+      "tests": [
+        "actual_wss_split_rejection_preserves_explicit_tls_body_and_metadata",
+        "native_default_wss_honors_ssl_cert_file_and_ignores_codex_ca"
+      ],
+      "prefix": "dialer::alab_handshake::tls_tests::"
+    },
+    "proxy-ipv6": {
+      "stage": "websocket",
+      "tests": [
+        "default_http_proxy_brackets_ipv6_target",
+        "default_http_proxy_preserves_ipv4_dns_and_basic_auth",
+        "explicit_socks5_proxy_encodes_ipv6_literal",
+        "explicit_socks5h_proxy_encodes_ipv6_literal",
+        "default_socks5_proxy_preserves_literal_and_dns_targets",
+        "default_socks5h_proxy_preserves_literal_and_dns_targets",
+        "explicit_socks5_proxy_preserves_ipv4_and_dns_targets",
+        "explicit_socks5h_proxy_preserves_ipv4_and_dns_targets"
+      ],
+      "prefix": "dialer::alab_handshake::proxy_ipv6_tests::"
+    },
+    "proxy-ip-tls": {
+      "stage": "websocket",
+      "tests": [
+        "https_proxy_accepts_ipv6_ip_identity_and_tunnels_websocket",
+        "https_ipv6_proxy_rejects_a_trusted_certificate_for_another_ip"
+      ],
+      "prefix": "dialer::alab_handshake::proxy_tls_ipv6_tests::"
+    },
+    "proxy-errors": {
+      "stage": "websocket",
+      "tests": [
+        "default_env_proxy_uri_error_does_not_expose_credentials",
+        "default_env_proxy_password_error_does_not_expose_credentials",
+        "explicit_proxy_uri_error_remains_redacted"
+      ],
+      "prefix": "dialer::alab_handshake::proxy_config_error_tests::"
+    },
+    "proxy-privacy": {
+      "stage": "transport",
+      "tests": [
+        "public_websocket_proxy_parse_errors_hide_credentials"
+      ],
+      "prefix": "websocket_proxy_error_privacy_tests::"
+    },
+    "deflate": {
+      "stage": "transport",
+      "tests": [
+        "negotiated_deflate_preserves_public_responses_across_socket_reuse",
+        "declined_deflate_preserves_public_responses_across_socket_reuse"
+      ],
+      "prefix": "websocket_deflate_tests::"
+    },
+    "typed-transport": {
+      "stage": "transport",
+      "tests": [
+        "transport_retry_logs_only_selected_timeout_and_preserves_encoded_input",
+        "terminal_network_failure_preserves_private_error_without_logging_it",
+        "policy_auth_rejection_is_not_retried_or_sent_and_is_classified",
+        "build_auth_rejection_is_not_retried_or_sent_and_is_classified"
+      ],
+      "prefix": "http_retry_diagnostic_tests::"
+    },
+    "http-advice": {
+      "stage": "transport",
+      "tests": [
+        "selected_http_advice_presence_uses_typed_state_even_when_expired"
+      ],
+      "prefix": "http_retry_diagnostic_tests::"
+    },
+    "sse-advice": {
+      "stage": "transport",
+      "tests": [
+        "selected_sse_advice_presence_tracks_each_typed_slot",
+        "noncarrying_and_superseded_sse_errors_do_not_claim_advice"
+      ],
+      "prefix": "sse_audio_rejection_tests::semantic_categories::"
+    },
+    "nested-ids": {
+      "stage": "transport",
+      "tests": [
+        "nested_error_headers_keep_selected_failure_correlation",
+        "outer_error_headers_keep_existing_correlation_precedence",
+        "invalid_nested_error_ids_remain_private",
+        "outer_error_alias_beats_nested_ids_with_invalid_outer_primary",
+        "mixed_case_nested_error_alias_keeps_selected_correlation",
+        "nested_error_ids_reject_overlong_and_content_like_values"
+      ],
+      "prefix": "websocket_nested_error_ids_tests::"
+    },
+    "quota-unix": {
+      "stage": "recovery",
+      "tests": [
+        "credit_granted_after_exhaustion_resumes_the_original_turn",
+        "cancelling_a_wait_releases_account_custody",
+        "shared_credits_release_each_waiting_turn_once",
+        "advanced_reset_with_delayed_usage_does_not_consume_another_credit",
+        "preflight_redeems_before_denial_and_does_not_repeat_the_request"
+      ],
+      "prefix": "unix::tests::"
+    },
+    "quota-cancel": {
+      "stage": "recovery",
+      "tests": [
+        "cancelled_redemption_releases_custody_and_reconciles_the_same_operation",
+        "timed_out_redemption_releases_custody_and_reconciles_the_same_operation",
+        "natural_reset_releases_pending_redemption_custody_without_losing_its_key"
+      ],
+      "prefix": "unix::cancel_tests::"
+    },
+    "quota-switch": {
+      "stage": "recovery",
+      "tests": [
+        "account_switch_during_redemption_cannot_release_the_destination_retry",
+        "quota_attempts_wait_for_pending_assignment_without_http",
+        "source_retirement_drains_a_quota_http_attempt_until_cancellation",
+        "source_retirement_can_finish_while_quota_wait_sleeps"
+      ],
+      "prefix": "unix::assignment_tests::"
+    },
+    "quota-99": {
+      "stage": "recovery",
+      "tests": [
+        "automatic_redemption_requires_99_percent_and_weekly_refresh_beyond_24_hours",
+        "ineligible_weekly_refresh_cannot_use_another_windows_refresh"
+      ],
+      "prefix": "unix::tests::"
+    },
+    "quota-late": {
+      "stage": "recovery",
+      "tests": [
+        "credit_listing_rechecks_the_24_hour_boundary_and_retains_pending_custody",
+        "usage_changed_during_credit_listing_cannot_authorize_a_post"
+      ],
+      "prefix": "unix::clear_tests::"
+    },
+    "quota-notice": {
+      "stage": "recovery",
+      "tests": [
+        "reset_notice_reports_automatic_redemption_and_restored_usage",
+        "reset_inventory_outage_is_silent_before_work_and_reported_at_a_wall",
+        "healthy_preflight_does_not_print_reset_decisions",
+        "preflight_between_clearance_and_redemption_thresholds_stays_quiet",
+        "preflight_below_redemption_threshold_still_reports_a_broken_ledger",
+        "policy_preservation_is_silent_without_listing_earned_resets",
+        "malformed_usage_is_not_a_successful_policy_preservation",
+        "an_account_change_during_selection_cannot_release_a_credit_retry"
+      ],
+      "prefix": "unix::notice_tests::"
+    },
+    "core-reset": {
+      "stage": "core",
+      "tests": [
+        "weekly_reset_retries_original_local_and_remote_compaction",
+        "creditless_weekly_wall_reads_its_handoff_from_the_turn_store",
+        "hidden_title_turn_ends_on_its_usage_wall_without_recovery",
+        "hidden_recap_turn_ends_on_its_usage_wall_without_recovery",
+        "user_thread_at_a_usage_wall_still_asks_its_handoff",
+        "ephemeral_side_chat_at_a_usage_wall_still_recovers",
+        "saved_title_feature_thread_at_a_usage_wall_still_recovers",
+        "exec_turn_on_a_helper_named_thread_still_recovers",
+        "exec_turn_on_a_title_named_thread_still_recovers"
+      ],
+      "prefix": "session::tests::alab_weekly_compaction_tests::"
+    },
+    "core-notices": {
+      "stage": "core",
+      "tests": [
+        "final_decision_is_delivered_before_recovery_returns",
+        "decision_is_visible_while_recovery_waits"
+      ],
+      "prefix": "responses_retry::alab_capacity_retry::reset_notices::tests::"
+    },
+    "safety-dispatch": {
+      "stage": "tui",
+      "tests": [
+        "queued_safety_retry_rechecks_revoked_authority_and_current_thread",
+        "safety_fallback_preserves_an_acknowledged_tool_without_executing_it_again"
+      ],
+      "prefix": "app::alab_safety_recovery::validation_tests::"
+    },
+    "safety-budget": {
+      "stage": "tui",
+      "tests": [
+        "safety_buffering_active_harness_stops_after_two_automatic_retries",
+        "safety_buffering_active_harness_retries_without_a_person",
+        "safety_buffering_ignores_hidden_stale_and_historical_updates"
+      ],
+      "prefix": "chatwidget::tests::app_server::"
+    },
+    "kimi": {
+      "stage": "kimi-library",
+      "tests": [
+        "recognized_limits_retain_the_original_provider_deadline",
+        "documented_quota_walls_stay_terminal",
+        "only_documented_transient_limits_enter_capacity_recovery",
+        "unknown_and_non_kimi_errors_keep_generic_mapping"
+      ],
+      "prefix": "errors_tests::"
+    },
+    "ownership": {
+      "stage": "boot",
+      "tests": [
+        "regular_and_development_product_versions_have_the_same_update_owner"
+      ],
+      "prefix": "version::update_ownership_tests::"
+    },
+    "proof": {
+      "stage": "proof_build",
+      "tests": [
+        "proof_controls.CertifiedDispatchTests.test_live_compile_uses_certify_and_transitive_application_scope",
+        "proof_controls.CertifiedDispatchTests.test_pristine_mode_derives_vendor_config_and_keeps_the_fixed_policy",
+        "proof_controls.CertifiedDispatchTests.test_pristine_mode_refuses_dirty_or_unrelated_worktrees_before_compiler",
+        "proof_controls.CertifiedDispatchTests.test_unproved_or_unavailable_compilation_never_becomes_success",
+        "proof_controls.CertifiedDispatchTests.test_missing_report_is_an_error_even_after_successful_child_exit",
+        "proof_controls.CertifiedDispatchTests.test_stale_reports_and_wrong_source_start_no_compiler",
+        "proof_controls.CertifiedDispatchTests.test_absent_native_selection_starts_no_compiler",
+        "proof_controls.CertifiedDispatchTests.test_precompiler_resource_and_signal_stops_propagate_without_a_verdict",
+        "proof_controls.CertifiedDispatchTests.test_extra_config_target_manifest_and_lane_options_start_no_compiler",
+        "proof_controls.CertifiedDispatchTests.test_empty_or_populated_flag_environments_cannot_shadow_dependency_policy",
+        "proof_controls.CertifiedDispatchTests.test_unlocked_or_unselected_builds_start_no_compiler",
+        "proof_controls.CertifiedDispatchTests.test_another_directory_under_the_same_git_head_starts_no_compiler",
+        "test_proof_build.ProofObservationTests.test_observation_binds_source_report_and_unchanged_binary_copy",
+        "test_proof_build.ProofObservationTests.test_missing_packaged_binary_cannot_create_verification_observation",
+        "test_proof_build.ProofObservationTests.test_each_first_party_package_input_is_bound_at_its_actual_location",
+        "test_proof_build.ProofObservationTests.test_transformed_or_replaced_shipping_bytes_leave_the_record_unchanged",
+        "test_proof_build.ProofObservationTests.test_redirected_report_is_refused_without_updating_compiler_record",
+        "test_proof_build.ProofObservationTests.test_unadmitted_compiler_and_invalid_binary_sets_cannot_be_recorded"
+      ]
+    },
+    "qual": {
+      "stage": "qualification",
+      "tests": [
+        "test_actual_gate_streams_and_retains_a_complete_source_observation",
+        "test_failed_resource_stop_and_signal_statuses_do_not_qualify",
+        "test_dirty_candidate_is_refused_before_its_gate_runs",
+        "test_external_clean_filter_cannot_qualify_an_altered_gate",
+        "test_configured_external_filters_do_not_run_for_clean_source",
+        "test_builtin_ident_cannot_qualify_an_altered_gate",
+        "test_expanded_ident_gate_does_not_run_a_smudge_only_driver",
+        "test_external_filter_cannot_hide_a_submodule_input_change",
+        "test_builtin_line_ending_conversion_remains_qualifiable",
+        "test_unsupported_filter_driver_name_refuses_before_the_gate",
+        "test_filter_configuration_requires_bounded_unambiguous_key_records",
+        "test_redirected_git_root_cannot_qualify_another_gate_directory",
+        "test_subdirectory_is_not_the_gate_root",
+        "test_canonical_root_alias_uses_the_actual_gate_directory",
+        "test_hidden_submodule_edit_prevents_qualification",
+        "test_hidden_nested_submodule_edit_prevents_qualification",
+        "test_clean_submodule_is_checked_without_changing_its_index",
+        "test_submodule_at_another_commit_is_not_the_recorded_input",
+        "test_unbound_submodule_directory_cannot_supply_a_clean_result",
+        "test_index_flags_cannot_hide_uncommitted_gate_or_source",
+        "test_index_flags_introduced_by_gate_prevent_qualification",
+        "test_relaxed_stat_config_cannot_hide_a_same_size_gate_replacement",
+        "test_local_status_config_cannot_hide_untracked_inputs",
+        "test_checked_paths_with_control_characters_remain_qualifiable",
+        "test_staged_changes_stay_dirty_when_working_files_match_head",
+        "test_deleted_intent_to_add_entry_stays_dirty",
+        "test_fresh_comparison_preserves_real_index_and_matching_exempt_paths",
+        "test_changed_source_or_base_cannot_qualify_even_after_gate_exit_zero",
+        "test_existing_output_is_not_overwritten_or_executed_again",
+        "test_default_output_is_outside_inputs_and_record_can_move",
+        "test_log_changes_and_inconsistent_records_are_refused",
+        "test_inherited_runtime_credentials_and_git_redirect_are_not_used",
+        "test_output_under_candidate_inputs_is_refused_before_creation",
+        "test_actual_child_signal_is_preserved_as_interruption_not_qualification",
+        "test_status_reads_qualification_without_inventing_artifact_or_fetch_stages",
+        "test_old_or_malformed_schema_cannot_report_a_qualified_source",
+        "test_status_retains_source_observation_when_snapshot_capabilities_are_unavailable",
+        "test_after_snapshot_requires_a_mapping_with_boolean_true_clean",
+        "test_production_sync_runs_the_recorder_and_preserves_gate_exit_classes"
+      ],
+      "prefix": "test_qualification.QualificationTests."
+    },
+    "promotion": {
+      "stage": "promote",
+      "tests": [
+        "test_a_valid_forward_package_for_another_requested_source_is_not_selected",
+        "test_forward_published_package_uses_only_the_atomic_selector",
+        "test_inherited_git_directory_cannot_choose_promotion_ancestry",
+        "test_codex_alab_s_own_line_advances_a_selection_named_on_upstream_s",
+        "test_a_compound_version_advances_by_its_count_and_keeps_its_name",
+        "test_fallback_marker_rejects_complete_invalid_values_before_selection",
+        "test_fallback_marker_preserves_generated_and_quoted_string_values",
+        "test_promotion_waits_for_a_bounded_store_lock_without_retrying",
+        "test_an_incomplete_or_failed_package_does_not_reach_selection",
+        "test_truncated_package_tools_do_not_reach_selection",
+        "test_declared_executor_is_required_before_selection",
+        "test_executor_layout_cannot_redirect_selection",
+        "test_required_package_paths_are_regular_protected_components",
+        "test_required_package_layout_matches_its_staged_paths",
+        "test_an_unrelated_fixed_checkout_or_absent_link_is_preserved",
+        "test_older_same_source_divergent_and_unmerged_builds_do_not_replace_selection",
+        "test_malformed_or_mismatched_metadata_is_not_authority",
+        "test_a_stale_selector_never_falls_back",
+        "test_old_selectors_cannot_ignore_unknown_guards_and_mutate",
+        "test_publish_failure_and_opt_out_cannot_call_the_selector",
+        "test_successful_publication_selects_after_the_final_rename"
+      ],
+      "prefix": "test_promote.PromotionTests."
+    },
+    "intake": {
+      "stage": "upstream_gate",
+      "tests": [
+        "test_missing_and_uncommitted_reviews_do_not_admit",
+        "test_changed_source_and_unknown_feature_do_not_admit",
+        "test_record_schema_requires_integer_one_before_counting_valid_decisions",
+        "test_committed_catalog_schema_requires_integer_one",
+        "test_duplicate_records_never_silently_select_one",
+        "test_explicit_supersession_uses_only_the_validated_committed_replacement",
+        "test_superseded_record_requires_integer_one_despite_valid_replacement",
+        "test_supersession_cannot_replace_a_review_with_a_pending_declaration",
+        "test_stepwise_prefix_can_use_a_larger_batch_but_new_commits_stay_pending",
+        "test_owned_only_change_needs_no_new_upstream_assessment",
+        "test_feature_scope_requires_complete_committed_review",
+        "test_evidence_scope_binds_base_and_retains_complete_affected_contract",
+        "test_affected_retired_contract_cannot_be_silently_omitted",
+        "test_prefix_scope_excludes_features_only_in_unintegrated_commits",
+        "test_isolated_cli_returns_nonzero_for_unreviewed_source",
+        "test_real_gate_refuses_before_its_first_build_command",
+        "test_hook_baseline_override_cannot_bypass_upstream_review",
+        "test_real_gate_reaches_existing_checks_after_committed_review"
+      ],
+      "prefix": "test_upstream_gate.ReviewAdmissionTests."
+    },
+    "feature": {
+      "stage": "feature_gate",
+      "tests": [
+        "test_unreviewed_source_cannot_choose_its_own_feature_scope",
+        "test_affected_review_requires_all_scenarios_before_compilation",
+        "test_complete_bundle_admits_and_reaches_existing_gate_checks",
+        "test_completed_bundle_requires_integer_schema_at_both_gate_boundaries",
+        "test_missing_or_partial_scenario_still_refuses_with_existing_bundle",
+        "test_candidate_change_cannot_reuse_prior_bundle",
+        "test_main_base_change_invalidates_even_an_explicit_prior_bundle",
+        "test_log_tampering_and_stale_inventory_are_refused",
+        "test_symlinked_bundle_or_record_and_relative_override_are_refused",
+        "test_explicit_moved_bundle_and_shared_worktree_default",
+        "test_no_new_affected_feature_requires_no_new_bundle",
+        "test_selected_profile_reads_only_existing_bundle_and_keeps_empty_args_portable"
+      ],
+      "prefix": "test_feature_gate.FeatureAdmissionTests."
+    },
+    "package-version": {
+      "stage": "package_version",
+      "tests": [
+        "test_leaf_stamp_keeps_manifest_and_lock_without_metadata",
+        "test_legacy_source_still_stamps_the_workspace_and_only_lock_versions",
+        "test_source_before_version_module_uses_legacy_stamp",
+        "test_unreadable_commit_refuses_before_source_change_or_metadata",
+        "test_legacy_metadata_failure_is_not_accepted",
+        "test_legacy_dependency_change_is_not_accepted_or_discarded",
+        "test_legacy_source_change_is_not_accepted_or_discarded"
+      ],
+      "prefix": "test_package_version.PackageSourceVersionTests."
+    },
+    "version-lines": {
+      "stage": "version_lines",
+      "tests": [
+        "VersionLineTests.test_the_package_says_codex_alab_s_own_line_and_tells_the_server_upstream_s",
+        "VersionLineTests.test_the_client_line_never_sorts_below_the_upstream_code_it_holds",
+        "VersionLineTests.test_a_commit_from_before_codex_alab_s_own_line_keeps_its_one_version",
+        "VersionLineTests.test_malformed_or_missing_lines_are_refused",
+        "VersionLineTests.test_a_snapshot_takes_its_client_line_from_alab_client_version",
+        "VersionLineTests.test_pre_promote_refuses_codex_alab_s_own_line_without_its_ledger",
+        "ClientVersionRecordTests.test_the_client_version_is_recorded_beside_the_version",
+        "ClientVersionRecordTests.test_a_package_with_one_version_records_no_client_version",
+        "ClientVersionRecordTests.test_a_client_version_of_another_build_is_refused"
+      ],
+      "prefix": "test_version_lines."
+    },
+    "hook-controls": {
+      "stage": "hook-controls",
+      "tests": [
+        "test_retained_hook_reaches_the_metadata_boundary",
+        "test_missing_hook_refuses_before_the_metadata_boundary"
+      ],
+      "prefix": "hook_controls.ActualHookLossTests."
+    },
+    "kimi-wire": {
+      "stage": "wire",
+      "tests": [
+        "test_extra_usage_quota_is_terminal_on_the_wire",
+        "test_five_hour_quota_is_terminal_on_the_wire",
+        "test_monthly_quota_is_terminal_on_the_wire",
+        "test_transient_overload_retries_once_and_finishes_the_same_turn",
+        "test_weekly_quota_is_terminal_on_the_wire"
+      ],
+      "prefix": "wire_controls.KimiWireControls."
+    },
+    "check_runtime": {
+      "stage": "check_runtime",
+      "tests": [
+        "test_beyond_24h_positive_controls_use_the_real_preflight_and_recovery_models",
+        "test_five_hour_and_exact_24h_are_real_preservation_fixtures"
+      ],
+      "prefix": "test_check_runtime.RuntimePolicyContractTests."
+    },
+    "reset_notice_oracle": {
+      "stage": "reset_notice_oracle",
+      "tests": [
+        "test_selected_preservation_traces_require_only_the_true_policy_branch",
+        "test_selected_spending_traces_accept_real_canonical_actions_and_backed_duplicates"
+      ],
+      "prefix": "test_reset_notice_oracle.ResetNoticeOracleTests."
+    },
+    "weekly-wire": {
+      "stage": "wire",
+      "tests": [
+        "test_preflight_and_reactive_24_and_25_hour_boundaries"
+      ],
+      "prefix": "wire_controls.WeeklyQuotaControls."
+    },
+    "package-inputs": {
+      "stage": "package-inputs",
+      "tests": [
+        "package_input_controls.NativePackageInputTests.test_package_controller_inputs_are_readable_but_readonly_outside_target"
+      ]
+    },
+    "notice-request": {
+      "stage": "tui",
+      "prefix": "app::tests::alab_security_setup_custody_tests::",
+      "tests": [
+        "old_empty_fetch_cannot_settle_a_newer_accepted_notice",
+        "a_current_empty_fetch_settles_the_observed_notice",
+        "an_empty_fetch_cannot_settle_after_the_saved_identity_changes",
+        "an_empty_fetch_cannot_settle_a_notice_restated_during_http",
+        "a_refused_fetch_preserves_the_notice",
+        "a_timed_out_fetch_preserves_the_notice",
+        "an_empty_fetch_without_an_observed_entry_cannot_settle_a_new_one",
+        "another_servers_successful_empty_fetch_cannot_settle_the_observed_identity",
+        "app_awaits_settlement_and_rechecks_identity_for_queued_results"
+      ]
+    },
+    "notice-server": {
+      "stage": "tui",
+      "prefix": "app::tests::security_setup_tests::",
+      "tests": [
+        "security_setup_fetch_with_default_features_uses_authenticated_codex_endpoint",
+        "security_setup_skips_unavailable_or_mismatched_server_notice"
+      ]
+    },
+    "notice-identity": {
+      "stage": "tui",
+      "prefix": "security_setup::alab_notices::tests::",
+      "tests": [
+        "only_matching_verified_absence_can_settle_an_existing_reminder",
+        "a_real_reminder_requires_its_own_identity_even_with_a_receipt"
+      ]
+    },
+    "history-reversed-endings": {
+      "stage": "tui",
+      "tests": [
+        "app_server_session::history_page::tests::reversed_turn_endings_reproduce_the_76_to_38_crash"
+      ]
+    },
+    "history-item-ownership": {
+      "stage": "tui",
+      "tests": [
+        "app_server_session::history_page::tests::interleaved_turns_complete_in_item_order_with_their_empty_interruptions",
+        "app_server_session::history_page::tests::reused_item_ids_do_not_complete_another_turn",
+        "app::history_pagination::completion::tests::multiple_turns_keep_item_groups_and_completion_order"
+      ]
+    },
+    "history-partial-pages": {
+      "stage": "tui",
+      "tests": [
+        "app_server_session::history_page::tests::metadata_permutations_and_partial_pages_preserve_exact_coverage",
+        "app::history_pagination::completion::tests::split_turn_only_completes_on_the_page_with_its_last_item"
+      ]
+    },
+    "history-interruption-ownership": {
+      "stage": "tui",
+      "tests": [
+        "app_server_session::history_page::tests::interruptions_are_owned_only_by_the_page_with_their_anchor",
+        "app::history_pagination::completion::tests::itemless_interruptions_keep_their_position_on_the_owning_page",
+        "app_server_session::history_page::tests::interleaved_turns_complete_in_item_order_with_their_empty_interruptions"
+      ]
+    },
+    "model-readiness": {
+      "stage": "model-wire",
+      "tests": [
+        "test_catalog_and_client_readiness"
+      ],
+      "prefix": "model_wire_controls.ModelWireControls."
+    },
+    "model-startup": {
+      "stage": "tui",
+      "tests": [
+        "fresh_startup_uses_server_defaults_with_explicit_and_managed_precedence",
+        "fresh_startup_reads_destination_and_cleared_model_uses_catalog"
+      ],
+      "prefix": "app::tests::session_lifecycle_requests::startup_defaults_tests::"
+    },
+    "daybreak-catalog": {
+      "stage": "exec",
+      "tests": [
+        "explicit_daybreak_rejects_a_catalog_failure",
+        "disabled_daybreak_preserves_automatic_treatment_on_catalog_failure",
+        "successful_catalog_replies_pass_through_for_both_preferences"
+      ],
+      "prefix": "daybreak::tests::"
+    },
+    "kimi-profiles": {
+      "stage": "boot",
+      "tests": [
+        "kimi_profiles_are_opt_in_and_use_subscription_api_keys",
+        "selected_packaged_profiles_overlay_defaults_without_changing_the_base"
+      ],
+      "prefix": "kimi_tests::"
+    },
+    "kimi-catalog": {
+      "stage": "kimi-library",
+      "tests": [
+        "catalog_covers_every_documented_model_with_current_codex_capabilities",
+        "explicit_catalog_and_vanilla_behavior_take_precedence"
+      ],
+      "prefix": "tests::"
+    },
+    "kimi-selection": {
+      "stage": "core",
+      "prefix": "config::alab_family_config::tests::",
+      "tests": [
+        "provider_switches_replace_packaged_catalogs_and_preserve_explicit_catalogs"
+      ]
+    },
+    "kimi-model-wire": {
+      "stage": "model-wire",
+      "tests": [
+        "test_kimi_profiles_list_and_serve_every_documented_model"
+      ],
+      "prefix": "model_wire_controls.ModelWireControls."
+    },
+    "model-worker": {
+      "stage": "app-server",
+      "tests": [
+        "live_worker_shutdown_releases_pending_preflight_in_both_modes",
+        "live_worker_drop_releases_pending_preflight_in_both_modes"
+      ],
+      "prefix": "models_refresh_worker::alab_tests::"
+    },
+    "model-cold": {
+      "stage": "app-server",
+      "tests": [
+        "cold_thread_resume_promotes_saved_family_and_keeps_completed_history"
+      ],
+      "prefix": "request_processors::thread_lifecycle::listener_shutdown_tests::alab_cold_model_resume_tests::"
+    },
+    "model-peer-cache": {
+      "stage": "app-server",
+      "tests": [
+        "following_thread_confirms_a_peer_catalog_after_a_warm_launch",
+        "following_thread_with_an_older_provider_observation_confirms_a_peer_catalog",
+        "exact_pin_keeps_a_peer_catalog_warm_without_confirming_a_successor",
+        "peer_successor_requires_the_following_threads_own_provider_to_confirm_it",
+        "next_turn_confirms_peer_models_with_its_own_provider_and_preserves_pins",
+        "work_next_turn_confirms_only_its_scoped_peer_release_and_preserves_pins",
+        "idle_model_following_recovers_when_managed_provider_requirements_allow_it_again"
+      ],
+      "prefix": "models_refresh_worker::alab_tests::cross_tab::"
+    },
+    "model-handoff-commands": {
+      "stage": "core",
+      "tests": [
+        "first_turn_after_idle_handoff_discovers_a_release_with_a_warm_catalog",
+        "first_compaction_and_review_after_handoff_use_the_confirmed_model",
+        "idle_handoff_promotes_using_the_api_key_catalog_without_a_refresh"
+      ],
+      "prefix": "session::model_catalog_settings::alab_live_model_successor::tests::"
+    },
+    "model-resume-wire": {
+      "stage": "model-wire",
+      "tests": [
+        "test_cold_and_loaded_threads_use_the_announced_successor",
+        "test_one_catalog_refresh_updates_each_following_thread_and_preserves_a_pin",
+        "test_a_peer_process_catalog_refresh_reaches_idle_following_threads",
+        "test_first_turn_immediately_after_a_peer_catalog_refresh_uses_the_successor",
+        "test_peer_release_during_a_tool_turn_takes_effect_on_the_next_turn",
+        "test_pre_stream_model_retirement_continues_the_same_resumed_turn",
+        "test_retirement_on_a_tool_result_reuses_the_completed_call_in_the_same_turn",
+        "test_successor_writes_to_the_original_live_shell_after_retirement",
+        "test_retirement_requires_a_following_session_and_an_eligible_successor",
+        "test_retirement_recovery_stops_if_the_successor_also_refuses_the_turn",
+        "test_streamed_model_refusal_preserves_visible_output_and_recovers_following_turns",
+        "test_next_turn_retries_a_peer_release_after_catalog_unavailability",
+        "test_idle_thread_retries_a_peer_release_after_catalog_unavailability",
+        "test_next_turn_follows_the_work_clients_own_shared_catalog",
+        "test_idle_session_follows_the_work_clients_own_shared_catalog",
+        "test_fork_and_parent_follow_the_saved_family_on_their_own_threads"
+      ],
+      "prefix": "model_wire_controls.ModelWireControls."
+    },
+    "fleet-peer": {
+      "stage": "alab-tui",
+      "tests": [
+        "kernel_peer_identity_thread_generation_and_replay_are_checked",
+        "canceled_delivery_loses_authority_before_the_application_dispatches_it"
+      ],
+      "prefix": "model_policy::tests::"
+    },
+    "fleet-dispatch": {
+      "stage": "tui",
+      "tests": [
+        "native_update_keeps_thread_draft_and_requires_the_original_thread",
+        "canceled_fleet_delivery_cannot_change_the_serving_threads_settings"
+      ],
+      "prefix": "app::alab_model_policy::tests::"
+    },
+    "fleet-homes": {
+      "stage": "fleet-cli",
+      "tests": [
+        "sessions_only_receipt_survives_restart_and_scope_collision_is_refused",
+        "explicit_launch_pin_is_reported_and_preserved",
+        "unpinned_defaults_use_the_serving_catalog_and_remain_unpinned",
+        "later_personal_edit_is_overridden_and_multiple_registered_homes_keep_their_own_defaults"
+      ]
+    },
+    "model-withdrawal": {
+      "stage": "core",
+      "tests": [
+        "resumed_turn_preserves_requested_effort_across_serving_catalog_withdrawals",
+        "custom_catalog_preserves_effort_and_recovers_only_along_its_declared_edges"
+      ],
+      "prefix": "session::model_catalog_settings::alab_live_model_successor::tests::"
+    },
+    "model-withdrawal-wire": {
+      "stage": "model-wire",
+      "tests": [
+        "test_withdrawal_and_return_of_the_saved_effort_on_the_wire"
+      ],
+      "prefix": "model_wire_controls.ModelWireControls."
+    },
+    "product-defaults": {
+      "stage": "boot",
+      "tests": [
+        "alabs_own_defaults_parse",
+        "the_aterm_only_defaults_are_set_only_inside_aterm"
+      ],
+      "prefix": "tests::"
+    },
+    "skill-watch-roots": {
+      "stage": "boot",
+      "tests": [
+        "a_missing_skills_root_in_the_home_directory_is_not_watched"
+      ],
+      "prefix": "tests::"
+    },
+    "skill-watcher-wire": {
+      "stage": "skill-wire",
+      "tests": [
+        "test_root_creation_skill_edits_and_vendor_reinstall"
+      ],
+      "prefix": "skill_wire_controls.SkillWireControls."
+    },
+    "product-config-wire": {
+      "stage": "product-wire",
+      "tests": [
+        "test_terminal_defaults_and_runtime_override_precedence"
+      ],
+      "prefix": "product_wire_controls.ProductWireControls."
+    },
+    "model-eligibility": {
+      "stage": "models-manager",
+      "tests": [
+        "a_saved_model_only_advances_to_a_newer_eligible_member_of_its_own_family",
+        "hidden_retired_and_incompatible_models_cannot_win_or_supply_a_fallback",
+        "a_provider_declares_successors_for_opaque_models_in_its_own_catalog"
+      ],
+      "prefix": "sol_family::tests::"
+    },
+    "model-start-authority": {
+      "stage": "core",
+      "tests": [
+        "family_startup_uses_catalog_and_preserves_pins_and_server_authority"
+      ],
+      "prefix": "config::alab_family_config::tests::"
+    },
+    "product-mode": {
+      "stage": "boot",
+      "tests": [
+        "vanilla_switch_restores_upstream_defaults_and_behavior"
+      ],
+      "prefix": "tests::"
+    },
+    "model-live-mode": {
+      "stage": "app-server",
+      "tests": [
+        "live_mode_changes_wake_the_worker_and_restore_native_polling"
+      ],
+      "prefix": "models_refresh_worker::alab_tests::"
+    },
+    "model-resume-mode": {
+      "stage": "core",
+      "tests": [
+        "pending_model_resume_observes_the_actor_finishing_in_vanilla"
+      ],
+      "prefix": "session::model_catalog_settings::alab_live_model_successor::tests::"
+    },
+    "fixture-startup": {
+      "stage": "tui",
+      "tests": [
+        "attached_startup_does_not_hide_a_backend_drain_failure",
+        "only_the_successfully_attached_expected_thread_completes_startup"
+      ],
+      "prefix": "app::alab_startup_fixture::tests::"
+    },
+    "fixture-children": {
+      "stage": "core",
+      "tests": [
+        "process_exec_tool_call_cancellation_allows_sigterm_cleanup",
+        "kill_child_process_group_kills_grandchildren_on_timeout"
+      ],
+      "prefix": "exec::tests::"
+    },
+    "fixture-watcher": {
+      "stage": "watch-fixtures",
+      "tests": [
+        "watch_events_invalidate_discovery_and_no_subscription_disables_caching",
+        "alab_event_temp::tests::event_directory_is_private_outside_excluded_ancestors_and_cleans_up"
+      ],
+      "prefix": "discover_v2::capability_manager::capability_watchers::tests::"
+    },
+    "fixture-compression": {
+      "stage": "boot",
+      "tests": [
+        "recorded_plain_and_compressed_requests_preserve_the_same_bytes",
+        "corrupt_and_oversized_recorded_frames_are_refused"
+      ],
+      "prefix": "test_support::tests::"
+    },
+    "fixture-helper-request": {
+      "stage": "app-server",
+      "tests": [
+        "native_helper_tree_retains_an_implicit_choice_under_a_fresh_owner",
+        "native_helper_tree_refuses_another_accounts_implicit_choice",
+        "native_helper_tree_preserves_an_explicit_override_across_accounts"
+      ],
+      "prefix": "message_processor::alab_exec_suspend::recovery::tree::tests::helper_choices::"
+    },
+    "fixture-wire-body": {
+      "stage": "api-fixtures",
+      "tests": [
+        "real_http_retries_preserve_wire_body_and_provider_pacing"
+      ],
+      "prefix": "http_wire_retry_tests::"
+    },
+    "fixture-comparison": {
+      "stage": "unit-comparison",
+      "tests": [
+        "test_same_pristine_failure_remains_a_failed_copy"
+      ],
+      "prefix": "unit_comparison_controls.UnitComparison."
+    },
+    "fixture-pipes": {
+      "stage": "api-fixtures",
+      "tests": [
+        "noisy_exact_child_drains_both_pipes_and_preserves_real_summary"
+      ],
+      "prefix": "child_capture_tests::"
+    },
+    "fixture-markers": {
+      "stage": "api-fixtures",
+      "tests": [
+        "marker_capture_requires_observed_stdout_and_reaped_success"
+      ],
+      "prefix": "marker_capture_tests::"
+    },
+    "fixture-snapshots": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "slash_daybreak_offers_an_application_when_unavailable",
+        "slash_daybreak_custom_provider_requires_capability"
+      ],
+      "prefix": "chatwidget::tests::slash_commands::"
+    },
+    "fixture-overview": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "worktrees_overview_groups_by_project_or_directory"
+      ],
+      "prefix": "app::agents_overview::tests::"
+    },
+    "fixture-clock": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "simultaneous_threads_keep_independent_references",
+        "nested_scopes_restore_and_out_of_order_drop_keeps_the_current_reference"
+      ],
+      "prefix": "fixture_clock::tests::"
+    },
+    "fixture-paths": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "configured_long_root_is_rejected_without_leaving_a_candidate",
+        "overlong_preferred_root_is_cleaned_before_private_fallback",
+        "upgrade_root_prefers_configured_parent_and_binds_the_longest_socket"
+      ],
+      "prefix": "test_paths::tests::"
+    },
+    "fixture-timeout": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "snapshot_is_bounded_private_and_does_not_consume_events_or_tasks",
+        "a_busy_recorder_does_not_block_the_timeout_diagnostic",
+        "a_poisoned_recorder_is_reported_without_unwinding",
+        "the_hook_preserves_the_original_failure_prefix"
+      ],
+      "prefix": "test_diagnostics::tests::"
+    },
+    "fixture-open": {
+      "stage": "api-fixtures",
+      "tests": [
+        "native_sse_failure_retains_real_parent_spans_after_caller_context_exits",
+        "native_websocket_failure_retains_request_dispatch_after_caller_context_exits"
+      ],
+      "prefix": "sse_diagnostic_context_tests::"
+    },
+    "fixture-sse": {
+      "stage": "api-fixtures",
+      "tests": [
+        "incomplete_content_length_body_hits_named_deadline_and_closes_connection",
+        "dropping_fixture_with_incomplete_body_closes_connection",
+        "cancelling_finish_with_incomplete_body_closes_connection"
+      ],
+      "prefix": "sse_fixture::tests::"
+    },
+    "fixture-saved-chat": {
+      "stage": "tui-fixtures",
+      "tests": [
+        "sidebar_reopens_saved_side_chat_after_restart",
+        "closed_saved_chat_keeps_its_live_read_receipt_during_install"
+      ],
+      "prefix": "app::tests::"
+    },
+    "ui-conversation-stash": {
+      "stage": "tui",
+      "tests": [
+        "bottom_pane::chat_composer::inline_input::alab_stash::tests::structured_prompt_round_trip_keeps_attachment_ids_mentions_blobs_and_cursor",
+        "bottom_pane::chat_composer::inline_input::alab_stash::tests::each_conversation_recovers_its_prompt_after_widget_replacement",
+        "app::alab_backend_bookkeeping::tests::parked_completion_matches_backend_and_exact_turn_without_changing_the_displayed_ui"
+      ]
+    },
+    "ui-pet-frames": {
+      "stage": "tui",
+      "tests": [
+        "chatwidget::alab_pet_layout::tests::narrow_or_short_terminals_hide_pet_and_keep_full_text_width",
+        "chatwidget::alab_pet_layout::tests::hidden_pet_does_not_schedule_frames_and_visible_pet_resumes",
+        "app::alab_pet_cleanup_tests::full_screen_overlays_hide_the_pet_without_releasing_its_frames",
+        "app::alab_pet_cleanup_tests::a_queued_pet_disable_releases_images_while_an_overlay_stays_open"
+      ]
+    },
+    "ui-replayed-images": {
+      "stage": "tui",
+      "tests": [
+        "transcript_view::layout::tests::user_image_history_tests::pasted_and_replayed_images_keep_their_transcript_thumbnails",
+        "app::resize_reflow::alab_image_history::tests::pasted_image_in_native_history_survives_reflow"
+      ]
+    },
+    "ui-goal-row": {
+      "stage": "tui",
+      "tests": [
+        "bottom_pane::chat_composer::composer_layout::alab_border::tests::active_goal_reserves_a_row_without_moving_the_draft_or_stealing_account_hits"
+      ]
+    },
+    "ui-status-layout": {
+      "stage": "tui",
+      "tests": [
+        "bottom_pane::chat_composer::status_surface::tests::native_status_wraps_links_within_the_host_budget",
+        "bottom_pane::chat_composer::status_surface::tests::status_rows_respect_host_budget_and_yield_to_the_draft",
+        "bottom_pane::chat_composer::composer_layout::alab_border::tests::goal_account_rows_follow_footer_layout_with_constrained_draft_and_focus",
+        "bottom_pane::chat_composer::composer_layout::alab_border::tests::passive_footer_keeps_its_native_status_without_replacing_focused_account_hits"
+      ]
+    },
+    "ui-sidebar-wire": {
+      "stage": "native-ui-wire",
+      "tests": [
+        "native_ui_controls.NativeUI.test_fresh_side_chat_keeps_drafts_on_their_own_threads",
+        "native_ui_controls.NativeUI.test_resumed_side_chat_keeps_drafts_on_their_own_threads"
+      ]
+    },
+    "ui-image-wire": {
+      "stage": "native-ui-wire",
+      "tests": [
+        "native_ui_controls.NativeUI.test_pasted_images_survive_scroll_and_resume"
+      ]
+    },
+    "continuity-hook-policy": {
+      "stage": "execution-wire",
+      "prefix": "execution_wire_controls.ExecutionWireControls.",
+      "tests": [
+        "test_project_hook_execution_respects_mode_and_explicit_thread_override"
+      ]
+    },
+    "continuity-model-migration": {
+      "stage": "execution-wire",
+      "prefix": "execution_wire_controls.ExecutionWireControls.",
+      "tests": [
+        "test_optional_model_stays_and_retired_model_moves_with_a_notice"
+      ]
+    },
+    "continuity-mcp-elicitation": {
+      "stage": "execution-wire",
+      "prefix": "execution_wire_controls.ExecutionWireControls.",
+      "tests": [
+        "test_capable_user_thread_accepts_confirmation_and_declines_requested_fields"
+      ]
+    },
+    "continuity-thread-titles": {
+      "stage": "execution-wire",
+      "prefix": "execution_wire_controls.ExecutionWireControls.",
+      "tests": [
+        "test_automatic_title_is_suppressed_and_manual_suggestion_is_editable"
+      ]
+    },
+    "continuity-finding-input": {
+      "stage": "tui",
+      "tests": [
+        "chatwidget::tests::misalignment_policy::opting_out_of_misalignment_review_keeps_findings_non_interactive",
+        "chatwidget::tests::misalignment_policy::passive_finding_retains_input_restored_after_replay",
+        "chatwidget::tests::recovered_input_preview::finding_shows_delivery_and_manual_recall_for_each_input",
+        "chatwidget::tests::recovered_input_preview::fresh_image_preparation_stays_separate_from_held_input",
+        "chatwidget::tests::misalignment_policy::passive_finding_retires_deferred_image_and_startup_submissions",
+        "chatwidget::tests::misalignment_policy::misalignment_policy_failure_stops_the_thread_and_renders_once",
+        "app::tests::misalignment_terminal_hold_tests::enter_on_a_running_turn_checks_its_outcome_before_starting_another",
+        "app::tests::observed_steer_routing_tests::a_delayed_steer_stays_with_its_original_thread_after_selection"
+      ]
+    },
+    "continuity-finding-wire": {
+      "stage": "native-ui-wire",
+      "tests": [
+        "native_ui_controls.NativeUI.test_passive_refusal_holds_queued_input_until_new_user_input",
+        "native_ui_controls.NativeUI.test_interactive_refusal_review_sends_neither_queue_nor_continuation"
+      ]
+    },
+    "continuity-fork-history": {
+      "stage": "tool-recovery-cli",
+      "tests": [
+        "a_sample_and_fork_report_an_unknown_outcome_while_the_parent_receives_the_result",
+        "cold_restart_keeps_recorded_and_unknown_outcomes_in_legacy_history",
+        "cold_restart_keeps_recorded_and_unknown_outcomes_in_paginated_history"
+      ]
+    },
+    "continuity-snapshot-owner": {
+      "stage": "core",
+      "prefix": "shell_snapshot::alab_snapshot_tests::",
+      "tests": [
+        "canceling_validation_preserves_the_first_captured_value_until_its_owner_releases_it"
+      ]
+    },
+    "account-transport-switch": {
+      "stage": "core-integration",
+      "tests": [
+        "runtime_auth_tests::http_reprepares_request_when_account_switches_during_budget_check::assertion_only",
+        "runtime_auth_tests::http_reprepares_request_when_account_switches_during_budget_check::dual_header",
+        "runtime_auth_tests::websocket_reconnects_for_replacement_and_account_switch_within_a_turn::assertion_only",
+        "runtime_auth_tests::websocket_reconnects_for_replacement_and_account_switch_within_a_turn::dual_header",
+        "runtime_auth_tests::websocket_reconnects_for_replacement_and_account_switch_within_a_turn::assertion_only_with_gateway",
+        "runtime_auth_tests::websocket_reconnects_for_replacement_and_account_switch_within_a_turn::dual_header_with_gateway",
+        "responses_websocket_reconnects_after_account_switch"
+      ],
+      "prefix": "suite::client_websockets::"
+    },
+    "diagnostic-wal": {
+      "stage": "state",
+      "prefix": "sqlite::alab_diagnostic_wal::tests::",
+      "tests": [
+        "diagnostic_wal_releases_burst_space_on_the_next_write",
+        "diagnostic_wal_preserves_stricter_limits_and_other_journals"
+      ]
+    },
+    "sqlite-pool-recovery": {
+      "stage": "state",
+      "prefix": "sqlite::connection::alab_transaction_recovery::tests::",
+      "tests": [
+        "full_write_is_rolled_back_and_next_borrower_can_commit",
+        "ordinary_dropped_transactions_keep_a_reusable_connection"
+      ]
+    },
+    "native-claim-and-policy-order": {
+      "stage": "aterm",
+      "prefix": "tests::",
+      "tests": [
+        "claim_order_tests::release_cannot_be_overwritten_by_an_already_answered_claim_proof",
+        "claim_order_tests::a_local_loss_invalidates_an_already_answered_claim_proof",
+        "claim_order_tests::release_revokes_an_in_flight_reconfirmation_before_it_can_authorize",
+        "claim_order_tests::a_reconfirmation_that_retakes_a_locally_lost_claim_is_given_back",
+        "claim_order_tests::close_wakes_queued_claim_transitions_before_a_buffered_proof_resumes",
+        "policy_order_tests::concurrent_policy_reads_retain_the_latest_five_hour_recovery_bound",
+        "policy_order_tests::forgetting_policy_invalidates_a_buffered_read_before_a_waiting_fresh_read",
+        "policy_order_tests::closing_keeps_policy_empty_when_a_buffered_read_and_a_waiter_finish"
+      ]
+    },
+    "native-inbox-receipts": {
+      "stage": "aterm",
+      "prefix": "tests::",
+      "tests": [
+        "fleet_rows_keep_older_unhandled_tasks_visible",
+        "repeated_broker_offset_keeps_ring_work_visible_without_reading_the_wrong_body",
+        "duplicate_local_row_identity_refuses_the_snapshot_and_recovers_on_refresh",
+        "malformed_inbox_rows_never_supply_a_partial_receipt_snapshot",
+        "the_badge_counts_rows_above_the_handled_watermark"
+      ]
+    },
+    "native-control-reply-framing": {
+      "stage": "aterm",
+      "prefix": "conn::tests::",
+      "tests": [
+        "aggregate_limit_counts_wire_bytes_and_preserves_following_reply",
+        "aggregate_limit_stops_before_allocating_an_over_budget_line",
+        "an_empty_reply_needs_no_body_budget_and_errors_have_no_body",
+        "aggregate_budget_does_not_change_status_or_bytes_framing",
+        "status_obeys_its_own_wire_limit_and_has_no_body",
+        "status_and_lines_stop_at_the_default_line_limit",
+        "bytes_enforce_their_size_limit_and_consume_exactly_the_declared_body",
+        "lines_enforce_the_announced_count_before_reading_any_body"
+      ]
+    },
+    "account-direct-reader": {
+      "stage": "login-reader",
+      "tests": [
+        "auth::manager::alab_native_member::tests::native_managed_direct_reader_owns_real_reader_lifetime"
+      ]
+    },
+    "account-cloud-reader": {
+      "stage": "cloud-reader",
+      "tests": [
+        "retained_cloud_transport_owns_its_actual_reader_and_destination_policy"
+      ]
+    },
+    "account-credential-output": {
+      "stage": "login-reader",
+      "prefix": "auth::manager::",
+      "tests": [
+        "alab_native_member::tests::native_credential_output_refuses_staged_and_pending_bytes_after_source_loss_or_policy_withdrawal",
+        "alab_context_host::tests::credential_export_rechecks_before_delivering_rendered_response",
+        "alab_context_host::tests::credential_export_refuses_host_replacement_with_unchanged_watch_counters",
+        "alab_epoch_snapshot::tests::credential_export_holds_retirement_until_output_is_dropped"
+      ]
+    },
+    "goal-retained-turn-usage": {
+      "stage": "autopilot-library",
+      "prefix": "extension::goal_retained_usage_tests::",
+      "tests": [
+        "terminal_paths_flush_retained_tokens_before_stopping_a_later_manual_turn",
+        "same_original_stopped_goal_recovers_but_replacement_keeps_retained_usage_held",
+        "a_new_manual_turn_cannot_drop_shared_usage_from_a_zero_token_failed_turn",
+        "rejected_current_and_idle_usage_survive_native_unchanged_outcomes"
+      ]
+    },
+    "goal-descendant-usage": {
+      "stage": "goal-extension",
+      "prefix": "accounting::alab_storage::tests::",
+      "tests": [
+        "a_raw_replacement_quarantines_the_original_shared_boundary"
+      ]
+    },
+    "goal-reactivation": {
+      "stage": "autopilot-library",
+      "prefix": "extension::goal_persistence_tests::",
+      "tests": [
+        "a_queued_old_stop_cannot_overwrite_a_successful_same_goal_reactivation",
+        "goal_runtime_status_failed_external_stop_holds_until_a_fresh_persisted_action"
+      ]
+    },
+    "exec-helper-restored-intent": {
+      "stage": "core",
+      "tests": [
+        "restored_helper_data_binds_a_fresh_owner_and_keeps_selection_implicit",
+        "another_account_refuses_the_inherited_automatic_choice",
+        "an_explicit_override_does_not_borrow_an_inherited_choice",
+        "stored_data_cannot_activate_disabled_propagation",
+        "active_choice_is_frozen_separately_from_later_turn_defaults"
+      ],
+      "prefix": "agent::helper_daybreak::turn::alab_exec_helper::tests::"
+    },
+    "original-editor-update-retry": {
+      "stage": "tui",
+      "tests": [
+        "app::tests::alab_original_editor_tests::real_app_owns_original_editor_and_parks_queues_until_handback"
+      ]
+    },
+    "native-startup-record-sweep": {
+      "stage": "alab-tui",
+      "prefix": "session_tests::",
+      "tests": [
+        "record_sweep_tests::start_sweep_preserves_a_record_replaced_after_the_verdict_snapshot",
+        "record_sweep_tests::start_sweep_rechecks_liveness_before_retiring_a_judged_record",
+        "record_sweep_tests::start_sweep_preserves_atomic_republication_of_the_same_known_fields",
+        "record_sweep_tests::start_sweep_preserves_a_valid_replacement_of_an_unreadable_candidate",
+        "record_sweep_tests::start_sweep_hold_keeps_both_publications_when_restore_finds_a_new_canonical_record",
+        "the_start_sweep_removes_only_dead_identities_from_before",
+        "the_start_sweep_hands_on_each_dead_record_it_removed",
+        "startup_sweeps_the_configured_home_before_any_frame"
+      ]
+    },
+    "native-plan-preparation": {
+      "stage": "tui",
+      "prefix": "app::tests::session_lifecycle_requests::new_session_tests::",
+      "tests": [
+        "plan_implementation_reads_approved_plan_file_in_fresh_session",
+        "plan_implementation_handles_unavailable_attachment"
+      ]
+    },
+    "native-plan-opening": {
+      "stage": "autopilot-library",
+      "prefix": "extension::opening_tests::",
+      "tests": [
+        "a_prepared_plan_continues_only_its_targets_accepted_prompt",
+        "editing_a_prepared_targets_first_input_cancels_its_continuation",
+        "concurrent_prepared_roots_keep_independent_accepted_prompts",
+        "stopping_a_prepared_root_discards_only_its_own_prompt",
+        "a_real_prepared_root_continues_only_after_its_approved_input_is_recorded"
+      ]
+    },
+    "goal-status-cancel-and-reset": {
+      "stage": "app-server",
+      "prefix": "extensions::alab_goal_status::tests::",
+      "tests": [
+        "goal_runtime_status_cancelled_blocked_selection_and_inline_preserve_each_final_phase",
+        "goal_runtime_status_cancelled_old_selection_cannot_restore_over_acknowledged_inline",
+        "goal_runtime_status_repeated_churn_reset_bypasses_stalled_listener_and_closes_terminally",
+        "goal_runtime_status_cancelled_blocked_reset_keeps_one_control_and_rearms"
+      ]
+    },
+    "goal-status-widget-loss": {
+      "stage": "tui",
+      "prefix": "chatwidget::alab_hand::goal_runtime_status_widget_tests::",
+      "tests": [
+        "goal_runtime_status_widget_backend_and_reset_controls",
+        "physical_disconnect_clears_held_goal_and_preserves_saved_active_status"
+      ]
+    },
+    "handoff-suspended-review-tree": {
+      "stage": "core",
+      "prefix": "session::alab_exec_recovery_options::tree_capture::tests::queued_review::",
+      "tests": [
+        "exec_review_tree_suspends_original_delegate_grandchild_and_queued_user_input"
+      ]
+    },
+    "handoff-child-registration": {
+      "stage": "core",
+      "tests": [
+        "restores_public_v2_children_with_residency_pins"
+      ],
+      "prefix": "agent::control::exec_tree_gate::child_restore::tests::"
+    },
+    "handoff-registered-tree": {
+      "stage": "app-server",
+      "tests": [
+        "exec_recovery_tree_keeps_internal_children_and_survives_a_lost_waiter",
+        "exec_recovery_tree_refusal_stops_every_member_before_sampling",
+        "exec_recovery_tree_deadline_cancels_pending_admission_without_sampling"
+      ],
+      "prefix": "message_processor::alab_exec_suspend::recovery::tree::tests::"
+    },
+    "native-model-goal-teardown": {
+      "stage": "autopilot-library",
+      "prefix": "extension::model_blocked_goal_tests::teardown::",
+      "tests": [
+        "a_forced_sampling_teardown_preserves_the_committed_model_block_and_its_recovery",
+        "releasing_the_sampling_observer_drains_the_native_goal_tool_and_keeps_its_source",
+        "an_api_pause_after_commit_defeats_model_recovery_across_forced_sampling_teardown",
+        "shutdown_drains_the_committed_model_stop_before_retiring_its_native_owner"
+      ]
+    },
+    "handoff-installed-context": {
+      "stage": "core",
+      "prefix": "context_manager::history::alab_exec_context::tests::",
+      "tests": [
+        "memory_context_retains_accounting_and_renews_process_evidence",
+        "memory_context_retains_item_allocations_across_actual_install",
+        "memory_context_keeps_file_audio_in_both_tool_output_forms",
+        "invalid_accounting_boundaries_are_rejected",
+        "sampling_and_audio_metadata_cannot_invent_a_trusted_boundary"
+      ]
+    },
+    "handoff-checkpoint-ordinal": {
+      "stage": "core",
+      "prefix": "session::alab_exec_recovery_options::ephemeral::records::tests::",
+      "tests": [
+        "compaction_keeps_nested_tool_outcomes_and_review_provenance"
+      ]
+    },
+    "handoff-private-allocation": {
+      "stage": "core",
+      "prefix": "session::alab_exec_recovery_options::ephemeral::codec::tests::",
+      "tests": [
+        "generated_item_allocations_survive_private_handoff_and_stay_off_provider_wire",
+        "orphaned_allocation_is_refused_instead_of_discarded"
+      ]
+    },
+    "native-goal-call-id-collision": {
+      "stage": "autopilot-library",
+      "prefix": "extension::upgrade_handoff_tests::model_blocked_identity_tests::",
+      "tests": [
+        "model_goal_observed_native_call_id_collision_preserves_the_original_source",
+        "model_goal_observed_native_call_id_collision_preserves_an_origin_callback_arriving_first",
+        "model_goal_observed_native_call_id_collision_failure_before_sql_cannot_consume_the_source",
+        "model_goal_observed_native_call_id_collision_preserves_a_committed_aborted_source",
+        "model_goal_observed_native_call_id_collision_failed_duplicate_cannot_strand_aborted_usage"
+      ]
+    },
+    "native-model-block-recovery": {
+      "stage": "autopilot-library",
+      "prefix": "extension::model_blocked_goal_tests::source::",
+      "tests": [
+        "a_host_round_trip_defeats_a_prepared_model_block_resume",
+        "a_mode_round_trip_defeats_a_prepared_model_block_resume",
+        "a_mode_round_trip_during_goal_instruction_rejects_only_the_stale_model_block",
+        "a_fresh_model_block_after_host_activity_establishes_new_epoch_authority"
+      ]
+    },
+    "native-goal-usage-reset": {
+      "stage": "autopilot-turn",
+      "select_if_required": "required_libtests",
+      "prefix": "wall_acts::",
+      "tests": [
+        "a_goal_started_without_a_user_turn_resumes_itself_after_a_dated_usage_limit"
+      ]
+    },
+    "native-goal-reset-upgrade": {
+      "stage": "autopilot-library",
+      "select_if_required": "required_libtests",
+      "prefix": "extension::upgrade_handoff_tests::upgrade_inventory_tests::",
+      "tests": [
+        "a_pending_provider_reset_keeps_the_original_goal_timer_on_upgrade_refusal"
+      ]
+    }
+  }
+}

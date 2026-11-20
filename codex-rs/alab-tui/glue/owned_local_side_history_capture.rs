@@ -18,8 +18,8 @@ impl App {
         {
             bail!("an original side attachment already owns this store");
         }
-        let incoming = Incoming::begin(self, server, target).await;
         let request = uuid::Uuid::new_v4();
+        let incoming = Incoming::begin(self, server, target, request).await;
         self.saved_openings.active.insert(
             target.key(),
             Flight {

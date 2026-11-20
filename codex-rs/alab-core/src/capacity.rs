@@ -15,6 +15,7 @@ pub use live_wait::CAPACITY_RETRY_NOTICE;
 pub use live_wait::CapacityReason;
 pub use live_wait::LiveCapacityWait;
 pub use live_wait::LiveCapacityWaitGuard;
+pub use live_wait::retry_timing;
 
 /// The latest Responses failure's server deadline, scoped to its turn.
 ///

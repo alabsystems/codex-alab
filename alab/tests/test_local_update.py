@@ -84,6 +84,35 @@ class LocalUpdateTests(unittest.TestCase):
     def mutations(self):
         return [args for args in self.calls if args[-1] != "--help"]
 
+    def test_fetch_stops_when_a_transfer_destination_changes_between_checks(self):
+        for name in ("objects", "pack", "scratch"):
+            with self.subTest(redirected=name):
+                root = self.home / name
+                common = root / "common"
+                scratch = root / "scratch"
+                objects = common / "objects"
+                pack = objects / "pack"
+                pack.mkdir(parents=True)
+                scratch.mkdir()
+                alternate = root / "alternate"
+                alternate.mkdir()
+                path = {"objects": objects, "pack": pack, "scratch": scratch}[name]
+
+                def transfer(*args, before_transfer):
+                    self.assertIsNone(before_transfer(common, scratch))
+                    path.rename(root / "original")
+                    path.symlink_to(alternate, target_is_directory=True)
+                    before_transfer(common, scratch)
+
+                transport = {"fetch": transfer, "Refused": ValueError}
+                space = mock.Mock(f_bavail=35 * 2**30, f_frsize=1, f_fsid=42)
+                with (mock.patch.object(UPDATE.runpy, "run_path", return_value=transport),
+                      mock.patch.object(UPDATE.os, "statvfs", return_value=space),
+                      self.assertRaisesRegex(RuntimeError, "destination changed")):
+                    self.update()
+        self.assertEqual(self.builds, [])
+        self.assertEqual(self.mutations(), [])
+
     def test_fetch_and_selection_use_the_requested_repository(self):
         foreign = self.home / "foreign repo"
         foreign_origin = self.home / "foreign origin.git"
@@ -268,12 +297,15 @@ class LocalUpdateTests(unittest.TestCase):
 
     def test_divergent_origin_does_not_build_or_change_selection(self):
         self.select(self.new)
+        tracking = self.git("rev-parse", "refs/remotes/origin/main")
         self.git("checkout", "-q", "-b", "side", self.old_source)
         self.git("commit", "-q", "--allow-empty", "-m", "divergent remote source")
         self.git("push", "-q", "--force", "origin", "HEAD:main")
+        self.git("update-ref", "refs/remotes/origin/main", tracking)
         before = self.marker.read_bytes()
-        changed, _ = self.update()
-        self.assertFalse(changed)
+        with self.assertRaises(RuntimeError):
+            self.update()
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), tracking)
         self.assertEqual(self.builds, [])
         self.assertEqual(self.marker.read_bytes(), before)
         self.assertEqual(self.mutations(), [])

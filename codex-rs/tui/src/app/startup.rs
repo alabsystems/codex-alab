@@ -102,9 +102,7 @@ pub(super) fn startup_model(
     bootstrap: &AppServerBootstrap,
     server_defaults_read: bool,
 ) -> Result<String> {
-    config
-        .model
-        .clone()
+    config.alab_request_model().or_else(|| config.model.as_ref().and(bootstrap.default_model.clone())) // ALAB(defaults): show the server bootstrap selection for a stored preference.
         .or_else(|| {
             if server_defaults_read {
                 // Legacy bootstrap paths may be seeded with local config, which can differ from a
@@ -170,7 +168,7 @@ impl App {
         app_event_rx: &mpsc::UnboundedReceiver<AppEvent>,
     ) -> bool {
         self.pending_thread_switch_resets == 0
-            && (app_event_rx.is_empty()
+            && (!self.saved_openings.alab_events_pending(app_event_rx) // ALAB(retained-ui): a published chooser reply participates in the thread-switch input boundary.
                 || (!self.config.features.enabled(Feature::TuiMultiBackend)
                     && !self.side_retention_enabled(tui)
                     && self
@@ -188,7 +186,7 @@ impl App {
     ) -> Result<()> {
         if self.awaiting_side_replay(tui)
             || (tui.is_owned_screen()
-                && !app_event_rx.is_empty()
+                && self.saved_openings.alab_events_pending(app_event_rx) // ALAB(retained-ui): preserve the loading frame while either startup inbox has work.
                 && !self.chat_widget.has_active_view())
         {
             return Ok(());
@@ -325,6 +323,8 @@ impl App {
         }
         #[cfg(unix)]
         let alab_constructor = startup_try!(startup_draft.alab_constructor_owner(|| crate::chatwidget::create_initial_user_message(initial_prompt.clone(), initial_images.clone(), Vec::new()))); // ALAB(retained-ui): retain mandatory original constructor/Entry before startup awaits.
+        #[cfg(unix)]
+        startup_try!(alab_constructor.validate_primary_startup(&app_server, &session_selection)); // ALAB(retained-ui): verify the captured display before starting, forking or resuming a thread.
         // Adopt actual launch ownership before constructing session-local preferences.
         startup_try!(tui.prepare_owned_screen(config.tui_fullscreen_transcript));
         let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
@@ -461,6 +461,7 @@ impl App {
                 &harness_overrides,
             );
         }
+        let provisional_model = startup_try!(config.alab_provisional_startup_model(&bootstrap.available_models, fresh_start, app_server.thread_params_mode() != crate::app_server_session::ThreadParamsMode::Embedded).map_err(color_eyre::eyre::Report::msg)); // ALAB(defaults): an unmarked remote may choose at thread/start; an embedded catalog must have a usable default.
         let mut model = startup_try!(startup_model(&config, &bootstrap, fresh_start));
         let available_models = bootstrap.available_models;
         let mut remote_connection =
@@ -488,7 +489,7 @@ impl App {
             return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         let exit_info =
-            if matches!(&session_selection, SessionSelection::Fork(_)) && config.model.is_none() {
+            if provisional_model || (matches!(&session_selection, SessionSelection::Fork(_)) && config.model.is_none()) { // ALAB(defaults): never turn a provisional display row into a migration or model override.
                 None
             } else {
                 let result = handle_model_migration_prompt_if_needed(
@@ -507,7 +508,7 @@ impl App {
             shutdown_startup_sessions(std::iter::once(app_server).chain(other_backends)).await;
             return Ok(exit_info);
         }
-        if let Some(updated_model) = config.model.clone() {
+        if let Some(updated_model) = config.alab_request_model() { // ALAB(defaults): preserve the catalog-resolved display unless a new selection overrides it.
             model = updated_model;
         }
         app_server.worktree_source_config_builder = Some(crate::app_server_session::alab_builder_owner::Owned::new(
@@ -710,6 +711,7 @@ impl App {
                     .await
                 {
                     Ok(Ok(resumed)) => Ok(resumed),
+                    Ok(Err(err)) if crate::app_server_session::alab_upgrade_receiver::restoring() => return shutdown_on_startup_error(app_server, &mut other_backends, err).await, // ALAB(exec-recovery): an unsuccessful forest restore cannot fall back to an archive or read-only disk view.
                     Ok(Err(err))
                         if crate::app_server_session::is_active_writer_error(&err)
                             || crate::app_server_session::model_provider_error(&err).is_some() =>
@@ -824,7 +826,7 @@ impl App {
                         .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
-                (ChatWidget::new_with_app_event(init), resumed)
+                ChatWidget::alab_opened_thread_widget(init, resumed) // ALAB(defaults): paint the opened thread's confirmed model on the first frame.
             }
             SessionSelection::Fork(target_session) => {
                 let explicit_permission_override =
@@ -943,13 +945,13 @@ impl App {
                         .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
-                (ChatWidget::new_with_app_event(init), forked)
+                ChatWidget::alab_opened_thread_widget(init, forked) // ALAB(defaults): paint the opened thread's confirmed model on the first frame.
             }
         };
         #[cfg(unix)]
         startup_try!(startup_draft.alab_share_entered_startup_clock(&mut chat_widget)); // ALAB(retained-ui): original live pump clock follows actual widget before callback replay.
         #[cfg(unix)]
-        startup_try!(alab_constructor.install_original_messages(&mut chat_widget)); // ALAB(retained-ui): whole original message graph respects post-filter initial value before hold/drain.
+        startup_try!(alab_constructor.install_original_messages(&mut chat_widget, &app_server, initial_started_thread.as_ref(), read_only_thread)); // ALAB(retained-ui): only the actual resumed primary can receive the selected input queue.
         #[cfg(unix)]
         startup_try!(alab_constructor.constructed(&chat_widget.initial_user_message)); // ALAB(retained-ui): actual post-filter message is retained before configured hold.
         #[cfg(unix)]
@@ -1166,6 +1168,8 @@ See the Codex keymap documentation for supported actions and examples."
         }
         #[cfg(unix)]
         if app_server.retained_frontend().is_some() { startup_try!(alab_constructor.adopt_reply_owner(&mut app, &app_server)); startup_try!(app.alab_bind_retained_reply_owner(&app_server)); startup_try!(alab_constructor.bind_callback_transfer(&mut app,&app_server)); } // ALAB(retained-ui): SAME actual final tenure owns replies before first event drain.
+        #[cfg(unix)]
+        startup_try!(crate::owned_local_entered_readers::saved_resume_queries(&app_server).and_then(|queries| app.saved_openings.alab_restore_saved_resume_queries(&app_server, queries))); // ALAB(retained-ui): route authenticated saved opening identities to the successor's chooser.
         if tui.is_owned_screen()
             && app.right_click_paste_environment.wsl
             && app.right_click_paste_environment.allows(
@@ -1273,7 +1277,7 @@ See the Codex keymap documentation for supported actions and examples."
         {
             return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
-        if app_event_rx.is_empty()
+        if !app.saved_openings.alab_events_pending(&app_event_rx) // ALAB(retained-ui): settle both startup inboxes before accepting the pending paste.
             && !app.has_queued_startup_protected_request()
             && !app.startup_pending_protected_request
             && !app.chat_widget.has_active_view()
@@ -1298,7 +1302,7 @@ See the Codex keymap documentation for supported actions and examples."
         { app._alab_startup_editor = native_recovery; }
         #[cfg(not(unix))]
         let mut pending_startup_draft = startup_draft.alab_into_startup_draft(); // ALAB(upgrade): the restored native editor never passes through a provisional snapshot.
-        if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
+        if !app.saved_openings.alab_events_pending(&app_event_rx) && !app.has_queued_startup_protected_request() { // ALAB(retained-ui): restore startup input after both actor inboxes drain.
             app.chat_widget.restore_startup_input_when_ready(
                 &mut pending_startup_draft,
                 &mut pending_startup_submission,
@@ -1308,7 +1312,7 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(windows)]
         let mut terminal_color_probe_pending = true;
         #[cfg(windows)]
-        if app.ready_for_terminal_color_probe(!app_event_rx.is_empty()) {
+        if app.ready_for_terminal_color_probe(app.saved_openings.alab_events_pending(&app_event_rx)) { // ALAB(retained-ui): the probe observes the same queues as protected startup.
             tui.probe_default_colors_after_protected_startup();
             terminal_color_probe_pending = false;
         }
@@ -1318,8 +1322,9 @@ See the Codex keymap documentation for supported actions and examples."
         if let Err(err) = app.render_startup_frame(tui, &app_event_rx) {
             return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
-        codex_alab_tui::life::on_terminate({ let tx = app.app_event_tx.clone(); move || tx.send(AppEvent::Exit(ExitMode::ShutdownFirst)) }, crate::tui::restore_after_exit); // ALAB(life): TERM/HUP/INT leave like /exit
-        codex_alab_tui::life::on_upgrade({ let tx = app.app_event_tx.clone(); move |request| tx.send(AppEvent::AlabUpgrade(request)) }); // ALAB(upgrade): recheck native facts when the queued leave is dispatched.
+        codex_alab_tui::life::on_terminate(app.saved_openings.alab_shutdown_callback(), crate::tui::restore_after_exit); // ALAB(life): signals leave through the same actor after reconnect.
+        codex_alab_tui::life::on_upgrade(app.saved_openings.alab_upgrade_callback()); // ALAB(upgrade): the original conditional request survives a backend channel rotation.
+        #[cfg(unix)] let _model_endpoint = super::alab_model_policy::listen(&app); // ALAB(fleet-model): the settings endpoint lives exactly as long as the App.
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
         tracing::info!(
@@ -1492,7 +1497,7 @@ See the Codex keymap documentation for supported actions and examples."
                     let wait_for_drain =
                         app.pending_startup_thread_start && backends.is_listening(displayed_owner);
                     let attempt = reconnect::reconnect(
-                        displayed_owner,
+                        backends.session_at(displayed_session).reconnect_owner(), // ALAB(accounts): carry this physical backend's original login.
                         app.app_server_target.clone(),
                         app.config.clone(),
                         app.local_settings.clone(),
@@ -1521,7 +1526,7 @@ See the Codex keymap documentation for supported actions and examples."
                 }
                 // Replay queues history and operations. A buffered closure must not switch
                 // widgets before those app events have been applied.
-                let has_pending_app_events = !app_event_rx.is_empty();
+                let has_pending_app_events = app.saved_openings.alab_events_pending(&app_event_rx); // ALAB(retained-ui): the startup loop receives from the backend and persistent chooser inboxes.
                 let paused_backend = ((app.reconnect.offline && !app.pending_startup_thread_start)
                     || (app.awaiting_side_replay(tui) && has_pending_app_events)
                     || (!matches!(app.app_server_target, AppServerTarget::Embedded)
@@ -1556,6 +1561,7 @@ See the Codex keymap documentation for supported actions and examples."
                     .chat_widget
                     .rate_limit_refresh_interval()
                     .and_then(|interval| app.rate_limit_refresh_state.poll_deadline(interval));
+                let saved_resume_wake = if has_pending_app_events || block_terminal_input_for_pending_startup_events { None } else { app.saved_openings.alab_next_saved_wake(&backends, app.reconnect.offline.then_some(displayed_owner)) }; // ALAB(retained-ui): only an authenticated Pending result arms the idle actor.
                 let control = select! {
                     result = async {
                         match app.daemon_restart.as_mut() {
@@ -1569,7 +1575,9 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                         AppRunControl::Continue
                     }
-                    Some(event) = app.saved_openings.next_event(&mut app_event_rx) => {
+                    Some(event) = app.saved_openings.next_event(&mut app_event_rx) => if let Some(event) = app.alab_admit_upgrade_event(
+                        event, &app_event_rx, reconnect.is_some() || app.daemon_restart.is_some() || !parked_side_completions.is_empty(), pending_startup_draft.as_ref(), &backends,
+                    ) { // ALAB(upgrade): preserve actor work, provisional drafts and parked input before conditional leave.
                         let switch_backend = match &event {
                             AppEvent::ChooseNewSessionCheckout { name } | AppEvent::NewSession { name }
                                 if multi_backend => app.other_new_session_backend(&backends).await
@@ -1599,6 +1607,13 @@ See the Codex keymap documentation for supported actions and examples."
                                 if cell.as_any().is::<history_cell::SessionInfoCell>()
                         );
                         let event_session = match &event {
+                            AppEvent::AlabSavedResumeObserved(observation) => { // ALAB(retained-ui): finish the historical read on its issuing backend even when another pane is displayed.
+                                let Some(owner) = backends.slot(observation.backend) else {
+                                    app.saved_openings.alab_detach_saved_history_observer(observation);
+                                    continue;
+                                };
+                                owner
+                            }
                             AppEvent::SideCreated { backend_id, .. } if *backend_id != displayed_owner => {
                                 parked_side_completions.entry(*backend_id).or_default().push(event);
                                 continue;
@@ -1630,7 +1645,7 @@ See the Codex keymap documentation for supported actions and examples."
                             Err(err) if app.recover_transport_error(&err) => AppRunControl::Continue,
                             Err(err) => break Err(err),
                         }
-                    }
+                    } else { AppRunControl::Continue }, // ALAB(upgrade): a refused leave still runs the normal post-event startup handoff.
                     active = async {
                         if let Some(rx) = app.active_thread_rx.as_mut() {
                             rx.recv().await
@@ -1661,7 +1676,7 @@ See the Codex keymap documentation for supported actions and examples."
                                 && !app.reconnect.offline
                                 && pending_startup_draft.is_none()
                                 && !waiting_for_initial_session_configured
-                                && app_event_rx.is_empty()
+                                && !app.saved_openings.alab_events_pending(&app_event_rx) // ALAB(retained-ui): only clear the protected boundary when both event sources are idle.
                                 && !app.startup_pending_protected_request
                                 && app
                                     .active_thread_rx
@@ -1781,6 +1796,12 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                         AppRunControl::Continue
                     }
+                    owner = sidebar_loading::saved_history::wait_for_saved_resume(saved_resume_wake), if saved_resume_wake.is_some() => { // ALAB(retained-ui): issue one bounded read batch on its original observer's registered backend.
+                        if !app.saved_openings.alab_events_pending(&app_event_rx) {
+                            app.saved_openings.alab_wake_saved_history(&backends, app.reconnect.offline.then_some(displayed_owner), owner);
+                        }
+                        AppRunControl::Continue
+                    }
                     () = async {
                         match rate_limit_poll_deadline {
                             Some(deadline) => {
@@ -1841,7 +1862,7 @@ See the Codex keymap documentation for supported actions and examples."
                             pending_startup_submission = false;
                             app.chat_widget.cancel_startup_submission();
                         }
-                        if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
+                        if !app.saved_openings.alab_events_pending(&app_event_rx) && !app.has_queued_startup_protected_request() { // ALAB(retained-ui): queued chooser results precede startup draft restoration.
                             app.chat_widget.restore_startup_input_when_ready(
                                 &mut pending_startup_draft,
                                 &mut pending_startup_submission,
@@ -1849,7 +1870,7 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                         #[cfg(windows)]
                         if terminal_color_probe_pending
-                            && app.ready_for_terminal_color_probe(!app_event_rx.is_empty())
+                            && app.ready_for_terminal_color_probe(app.saved_openings.alab_events_pending(&app_event_rx)) // ALAB(retained-ui): handle pending chooser results before the deferred probe.
                         {
                             tui.probe_default_colors_after_protected_startup();
                             terminal_color_probe_pending = false;

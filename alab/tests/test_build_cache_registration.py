@@ -37,6 +37,8 @@ class BuildCacheRegistrationTests(unittest.TestCase):
             "mode = os.environ.get('FIXTURE_MODE', 'supported')\n"
             "if args[2:] == ['--capabilities']:\n"
             "    if mode == 'old': sys.exit(2)\n"
+            "    if mode == 'cap-resource': sys.exit(75)\n"
+            "    if mode == 'cap-interrupted': sys.exit(130)\n"
             "    print('aterm-build-cache-register-v1')\n"
             "    sys.exit(0)\n"
             "target = Path(next(a.split('=', 1)[1] for a in args if a.startswith('--target-dir=')))\n"
@@ -132,9 +134,27 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         self.environment["FIXTURE_MODE"] = "interrupted"
         done = self.shell('alab_build_target_ready "$1" "$2"; touch "$3"',
                           self.workspace, fresh, compiler)
-        self.assertEqual(done.returncode, 75, done.stderr)
+        self.assertEqual(done.returncode, 130, done.stderr)
         self.assertTrue((fresh / ".aterm-build-cache.json").is_file())
         self.assertFalse(compiler.exists())
+
+    def test_only_a_native_registration_refusal_arms_a_retry(self):
+        self.target.mkdir(parents=True)
+        (self.target / ".aterm-build-cache.json").write_text("fixture-owned")
+        for mode, status, retry, registered in (
+                ("old", 75, False, False), ("cap-resource", 75, False, False),
+                ("cap-interrupted", 130, False, False), ("interrupted", 130, False, True),
+                ("refuse", 75, True, True)):
+            with self.subTest(mode=mode):
+                self.environment["FIXTURE_MODE"] = mode
+                receipt = self.fixture / (mode + ".status")
+                before = len(self.recorded())
+                done = self.shell('alab_build_target_ready "$1" "$2" "$3"',
+                                  self.workspace, self.target, receipt)
+                self.assertEqual(done.returncode, status, done.stderr)
+                self.assertEqual(len(self.recorded()) - before, int(registered))
+                self.assertEqual(receipt.read_bytes() if receipt.exists() else None,
+                                 b"75\n" if retry else None)
 
     def test_relative_target_uses_cargos_workspace_cwd_and_shared_owners_are_observed(self):
         other = self.home / "other-source/codex-rs"
@@ -148,6 +168,25 @@ class BuildCacheRegistrationTests(unittest.TestCase):
         self.assertEqual([event["manifest"] for event in events],
                          [str(self.workspace / "Cargo.toml"), str(other / "Cargo.toml")])
         self.assertEqual(events[0]["target"], events[1]["target"])
+
+    def test_native_intermediate_marker_requires_registration_of_the_whole_target(self):
+        child = self.target / ".ubd/build.noindex"
+        child.mkdir(parents=True)
+        marker = child / ".aterm-build-cache.json"
+        marker.write_text("fixture-owned")
+        compiler = self.fixture / "compiler-ran"
+        for mode in ("old", "unmanaged"):
+            with self.subTest(mode=mode):
+                self.environment["FIXTURE_MODE"] = mode
+                done = self.shell('alab_build_target_ready "$1" "$2"; touch "$3"',
+                                  self.workspace, self.target, compiler)
+                self.assertEqual(done.returncode, 75, done.stderr)
+                self.assertFalse(compiler.exists())
+                self.assertEqual(marker.read_text(), "fixture-owned")
+        self.assertEqual(len(self.recorded()), 1)
+        event = self.recorded()[0]
+        self.assertTrue(event["strict"])
+        self.assertEqual(event["target"], str(self.target))
 
     def test_supported_noop_cannot_admit_a_marked_target_outside_scratch_home(self):
         external = self.fixture / "outside-scratch-home.noindex"
@@ -247,7 +286,7 @@ class BuildCacheRegistrationTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(self.workspace.parent), *arguments],
                            env=self.environment, check=True, capture_output=True)
         body = self.sync_function("run_check")
-        body += '\nwt="$1"; check=1; mode=continue; '
+        body += '\nwt="$1"; repo_root="$2"; check=1; mode=continue; '
         body += 'in_wt() { printf "fixture-source\\n"; }; '
         body += 'exit_with() { exit "$1"; }; check_failed() { exit "$1"; }; run_check'
         for target in (str(self.target), None):
@@ -258,7 +297,7 @@ class BuildCacheRegistrationTests(unittest.TestCase):
                     if target is not None:
                         self.environment["CARGO_TARGET_DIR"] = target
                     self.environment["FIXTURE_GATE_STATUS"] = str(status)
-                    done = self.shell(body, self.workspace.parent)
+                    done = self.shell(body, self.workspace.parent, ROOT)
                     self.assertEqual(done.returncode, status, done.stderr)
                     self.assertIn("qualification record:", done.stdout)
                     self.assertEqual(self.recorded(), [{
@@ -296,18 +335,21 @@ class BuildCacheRegistrationTests(unittest.TestCase):
     def test_real_metadata_resolver_registers_before_its_contained_command(self):
         (self.workspace / "Cargo.lock").write_text("fixture-lock\n")
         body = self.sync_function("reresolve_cargo_lock")
-        body += '\nwt="$1"; cargo=/usr/bin/true; in_wt() { return 0; }; drift_check() { :; }; '
+        body += '\nwt="$1"; in_wt() { return 0; }; drift_check() { :; }; '
+        body += 'alab_project_run() { [[ "$1" == "$wt" && -z "$2" ]] || return 1; '
+        body += 'printf \'{"kind":"lease"}\\n\' >> "$FIXTURE_EVENTS"; alab_project_resolve_cargo_lock "${@: -1}"; }; '
+        body += 'alab_project_selected() { ATPKG_PROJECT_FRONT=/usr/bin/true; ATPKG_PROJECT_EXECUTION=/usr/bin; ALAB_CARGO=/usr/bin/true; }; '
         body += 'alab_contained() { printf \'{"kind":"contained","target":"%s"}\\n\' "${CARGO_TARGET_DIR-unset}" >> "$FIXTURE_EVENTS"; }; '
         body += 'reresolve_cargo_lock'
         self.environment["CARGO_TARGET_DIR"] = str(self.target)
         done = self.shell(body, self.workspace.parent)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual([event["kind"] for event in self.recorded()], ["register", "contained"])
+        self.assertEqual([event["kind"] for event in self.recorded()], ["lease", "register", "contained"])
         self.assertEqual(self.recorded()[-1]["target"], str(self.target))
         self.environment.pop("CARGO_TARGET_DIR")
         done = self.shell(body, self.workspace.parent)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.recorded()[-1]["target"], "unset")
+        self.assertEqual(self.recorded()[-1]["target"], str(self.workspace / "target"))
 
     def package_target(self, *, run_compiler=False):
         self.package_cache = self.home / "package-cache"

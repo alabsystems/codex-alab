@@ -140,8 +140,8 @@ async fn within(limit: Duration, what: &str, done: impl Fn() -> bool) {
 
 async fn roots() -> Roots {
     let (login, identity, refresh) = subscription_fixture("side-wall").await;
-    // The week's reset is beyond the 24-hour earned-reset spending boundary.
-    let reset = i64::try_from(now_ms() / 1000).unwrap_or(i64::MAX) + 25 * 3600;
+    // Keep the spent weekly window eligible for an earned reset.
+    let reset = i64::try_from(now_ms() / 1000).unwrap_or(i64::MAX) + 49 * 3600;
     let account = Arc::new(Account::default());
     let backend = wiremock::MockServer::start().await;
     let read = Arc::clone(&account);
@@ -155,7 +155,7 @@ async fn roots() -> Roots {
                 "rate_limit": {"allowed": !spent, "limit_reached": spent,
                     "secondary_window": {"used_percent": if spent { 100 } else { 0 },
                         "limit_window_seconds": 604_800, "reset_at": reset,
-                        "reset_after_seconds": 90_000}},
+                        "reset_after_seconds": 176_400}},
             }))
         })
         .mount(&backend)

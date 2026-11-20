@@ -25,6 +25,55 @@ fn user(presentation: UserMessagePresentation) -> Arc<dyn HistoryCell> {
     })
 }
 #[test]
+fn retained_finding_command_keeps_its_scoped_pending_identity() {
+    let thread = codex_protocol::ThreadId::new();
+    let mut exec = crate::exec_cell::new_active_exec_command(
+        "read".into(),
+        vec!["cat".into(), "answer.txt".into()],
+        vec![],
+        codex_app_server_protocol::CommandExecutionSource::UnifiedExecStartup,
+        None,
+        false,
+    );
+    assert!(exec.append_output("read", "partial bytes before the finding"));
+    let exec = Arc::new(exec);
+    let pending = crate::chatwidget::AlabPendingCommand::new(
+        thread,
+        "turn".into(),
+        "read".into(),
+        "cat answer.txt".into(),
+    )
+    .with_original(exec.clone(), Some("418".into()));
+    let original: Arc<dyn HistoryCell> = Arc::new(pending);
+    let original_exec: Arc<dyn HistoryCell> = exec;
+    let mut capture = Capture::default();
+    let key = capture.intern(&original).unwrap();
+    let exec_key = capture.intern(&original_exec).unwrap();
+    let other = capture.intern(&user(UserMessagePresentation::Typed)).unwrap();
+    let bytes = encoded(&mut capture, 64 * 1024).unwrap();
+    let mut wrong: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    wrong["cells"][key.0 as usize]["original"]["command"] = serde_json::json!(other.0);
+    assert!(decoded(&serde_json::to_vec(&wrong).unwrap(), 64 * 1024).is_err());
+    let copy = decoded(&bytes, 64 * 1024).unwrap();
+    let cell = copy.cell(key).unwrap();
+    let pending = cell
+        .as_any()
+        .downcast_ref::<crate::chatwidget::AlabPendingCommand>()
+        .unwrap();
+    assert!(pending.matches(thread, "turn", "read"));
+    assert_eq!(pending.process_id(), Some("418"));
+    let restored_exec: Arc<dyn HistoryCell> = pending.original().unwrap().clone();
+    assert!(Arc::ptr_eq(&copy.cell(exec_key).unwrap(), &restored_exec));
+    assert_eq!(cell.display_lines(90), original.display_lines(90));
+    assert_eq!(cell.raw_lines(), original.raw_lines());
+    assert!(
+        cell.raw_lines()
+            .iter()
+            .any(|line| line.to_string().contains("partial bytes"))
+    );
+}
+
+#[test]
 fn actual_repeated_arc_is_shared_but_equal_distinct_cells_keep_distinct_identity() {
     let first = user(UserMessagePresentation::Typed);
     let second = user(UserMessagePresentation::Typed);

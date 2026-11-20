@@ -682,6 +682,8 @@ inherits = "test"
 opt-level = 0
 
 [patch.crates-io]
+# ALAB(shell-invocation): require the requested PTY working directory at process launch.
+portable-pty = { path = "../alab/vendor/portable-pty" }
 # ALAB(toolchain): avoid duplicate Infallible/never impls on current Trust.
 allocative = { path = "../alab/vendor/allocative" }
 # Uncomment to debug local changes.

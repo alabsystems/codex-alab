@@ -9,6 +9,7 @@
 //! irreversible guard, the person's hour, answers off, the bound and its refusal, Land's order,
 //! the menu bar (§15.6) and the texts.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -1287,6 +1288,7 @@ fn every_continuation_and_check_is_cut_within_the_persons_hour() {
             walled(
                 start,
                 Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: None,
                     reset_label: None,
                 },

@@ -337,34 +337,6 @@ impl Ledger {
             .ok_or_else(|| invalid("actual original ingress owner absent"))?;
         Ok((records, connection))
     }
-    fn acknowledge(&self, recipient: ConnectionId, ids: &[RequestId]) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let records = state
-            .recipients
-            .get_mut(&recipient)
-            .ok_or_else(|| invalid("callback recipient is gone"))?;
-        // Validate the entire semantic acknowledgement before removing any cell.
-        let mut unique = HashSet::new();
-        for id in ids {
-            if !unique.insert(id)
-                || !records.get(id).is_some_and(|record| {
-                    matches!(
-                        record.state.load(Ordering::Acquire),
-                        RESPONSE | CLIENT_ERROR | CANCELLED | WITHDRAWN
-                    )
-                })
-            {
-                return Err(invalid(
-                    "callback UI acknowledgement lacks actual endpoint closure",
-                ));
-            }
-        }
-        let retired: Vec<_> = ids.iter().filter_map(|id| records.remove(id)).collect();
-        state.recipients.retain(|_, entries| !entries.is_empty());
-        drop(state);
-        drop(retired);
-        Ok(())
-    }
     fn acknowledge_captured(
         &self,
         recipient: ConnectionId,
@@ -477,35 +449,8 @@ pub(crate) struct Capture {
 /// preparation, preparation refuses; after preparation its cells cannot vanish.
 pub(crate) struct PreparedCapture {
     capture: Arc<Capture>,
-    cancellation: tokio_util::sync::CancellationToken,
 }
 impl PreparedCapture {
-    /// Every observation borrows the SAME prepared Capture. No post-EOF lookup
-    /// or resubmission can substitute a different recipient/cell set.
-    pub(crate) async fn observe(
-        &self,
-        actual: &OutgoingMessageSender,
-        backend: &BoundBackend,
-    ) -> io::Result<Arc<Capture>> {
-        self.capture.check_sender(actual)?;
-        if !self.capture.ledger.belongs_to(backend) {
-            return Err(invalid(
-                "prepared callback capture changed actual bound Incoming",
-            ));
-        }
-        if self.cancellation.is_cancelled() {
-            return Err(invalid("callback capture observation cancelled"));
-        }
-        let origin = &self.capture._original_origin;
-        let current = backend.observe_reader_origin(origin).await?;
-        if !current.same_receipt(origin) {
-            return Err(invalid("callback capture changed actual bound A receipt"));
-        }
-        if self.cancellation.is_cancelled() {
-            return Err(invalid("callback capture observation cancelled"));
-        }
-        Ok(self.capture.clone())
-    }
     /// A genuine later ticket observer supplies its NEW actual request context.
     /// Old canceled C1 observation cannot choose the new origin or erase cells.
     pub(crate) async fn observe_current_for(
@@ -649,9 +594,6 @@ pub(crate) struct Watch {
     receiver: tokio::sync::watch::Receiver<u8>,
 }
 impl Watch {
-    pub(crate) fn request_id_data(&self) -> &RequestId {
-        &self.record.id
-    }
     /// Initial facts come only from facts_for's callback-map cut. This method
     /// returns subsequent real transition observations, not an unvalidated
     /// initial Pending value from the watch receiver.
@@ -664,7 +606,7 @@ impl Watch {
 impl OutgoingMessageSender {
     /// Prepare synchronously during accepted ticket construction, before any
     /// awaited Native/currentness work. Caller stores THIS owner before polling
-    /// observe; drop/cancellation never turns lost observation into NoCapture.
+    /// observation; cancellation never turns lost observation into NoCapture.
     /// The same-lock original recipient cut either owns all requested cells or
     /// refuses before acceptance. IDs and preparation grant no Native authority.
     pub(crate) fn alab_prepare_callback_capture(
@@ -702,48 +644,7 @@ impl OutgoingMessageSender {
                 _original_origin: origin,
                 original_connection,
             }),
-            cancellation: actual.cancellation.clone(),
         })
-    }
-    /// Invoke only AFTER the same-session original UI applied typed resolution
-    /// and removed/reconciled its view. Delivery/absence/local send is not ACK.
-    pub(crate) async fn alab_ack_callback_views(
-        &self,
-        backend: &BoundBackend,
-        actual: &RequestContext,
-        ids: &[RequestId],
-    ) -> io::Result<()> {
-        let ledger = self
-            .alab_callback_outcomes
-            .as_ref()
-            .ok_or_else(|| invalid("ordinary sender has no retained callback ledger"))?;
-        if !ledger.belongs_to(backend) {
-            return Err(invalid(
-                "callback acknowledgement changed actual bound Incoming",
-            ));
-        }
-        let origin =
-            actual
-                .alab_connection_resource
-                .as_ref()
-                .and_then(
-                    codex_alab_core::connection_resource::ConnectionResource::downcast::<
-                        AcceptedOrigin,
-                    >,
-                )
-                .ok_or_else(|| {
-                    invalid("callback acknowledgement requires actual physical A resource")
-                })?;
-        let current = backend.observe_reader_origin(&origin).await?;
-        if !current.same_receipt(&origin) {
-            return Err(invalid(
-                "callback acknowledgement changed actual bound A receipt",
-            ));
-        }
-        if actual.cancellation.is_cancelled() {
-            return Err(invalid("callback acknowledgement observation cancelled"));
-        }
-        ledger.acknowledge(actual.alab_request_id().connection_id, ids)
     }
 }
 fn invalid(message: &'static str) -> io::Error {

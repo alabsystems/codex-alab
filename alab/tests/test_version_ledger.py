@@ -17,6 +17,7 @@ as package.sh defines it, sourced.
 """
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -117,7 +118,7 @@ class Scratch(unittest.TestCase):
         """ALab's tooling, VERSION, alab/client-version and (unless None) the ledger, committed
         and (with `land`) pushed as origin's main, this clone's origin/main moving with it."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py", "file_hash.py", "versions.py",
+        for name in ("package.sh", "lib.sh", "upstream_intake.py", "command_guard.py", "github.py", "cli_status.py", "file_hash.py", "versions.py",
                      "qualification.py", "source_content.py", "upstream_intake.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
         # Version tests stop at the real hook's separate native proof boundary.
@@ -441,6 +442,98 @@ class ReleaseRecordTests(Scratch):
     """Rule (a) holds against a rewritten origin/main: the public release repository records
     every release as a snapshot naming its dev commit, which must still be on origin/main."""
 
+    @unittest.skipUnless(os.name == "posix", "POSIX release transfer admission")
+    def test_public_snapshot_transfer_checks_the_scratch_pack_volume(self):
+        self.on(self.u3, "ledger-source")
+        source, _ = self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"), land=False)
+        self.git(self.alab, "push", "-q", "origin", f"{source}:refs/heads/main")
+        url = self.public.as_uri()
+        arguments = ["check", "--repo", str(self.alab), "--commit", source, "--version", "0.1.0",
+                     "--baseline", "0.164.0", "--baseline-commit", self.tags["0.164.0"],
+                     "--main", "refs/remotes/origin/main", "--released", url]
+        def check():
+            with mock.patch.object(sys, "stdout", io.StringIO()) as output, mock.patch.object(
+                    sys, "stderr", io.StringIO()) as error:
+                return VERSIONS.main(arguments), output.getvalue(), error.getvalue()
+
+        # An advertised tag outside the release grammar is metadata only.
+        snapshot = self.git(self.alab, "commit-tree", f"{source}^{{tree}}", "-m",
+                            f"snapshot: 2026-10-24 from codex-alab@{source}")
+        self.git(self.alab, "push", "-q", str(self.public), f"{snapshot}:refs/tags/vnext")
+        with mock.patch.object(os, "statvfs", side_effect=AssertionError("no object transfer")):
+            self.assertEqual(check(), (0, "0.1.0+codex.0.164.0\n", ""))
+
+        self.git(self.public, "tag", "-a", "v0.1.0", "-m", "public release", snapshot)
+        paths = []
+        def space(path):
+            paths.append(path)
+            return mock.Mock(f_bavail=19 if path.name == "pack" else 20, f_frsize=2**30)
+
+        run = VERSIONS.GITHUB.run_transport
+        with mock.patch.object(os, "statvfs", space), mock.patch.object(
+                VERSIONS.GITHUB, "run_transport", wraps=run) as commands:
+            status, output, error = check()
+        self.assertEqual((status, output), (1, ""), error)
+        self.assertIn("cannot fetch the releases at " + url, error)
+        self.assertIn(str(paths[-1]), error)
+        self.assertIn("20 GiB running floor", error)
+        self.assertEqual(paths[-1], paths[0] / "objects" / "pack")
+        self.assertNotEqual(paths[0], self.alab / ".git")
+        self.assertFalse(any("--no-write-fetch-head" in command.args[0] for command in commands.call_args_list))
+        with mock.patch.object(os, "statvfs", return_value=mock.Mock(f_bavail=20, f_frsize=2**30)):
+            self.assertEqual(check(), (0, "0.1.0+codex.0.164.0\n", ""))
+
+    def test_release_names_share_snapshot_checks_in_a_private_ref_namespace(self):
+        self.on(self.u3, "catalog")
+        source, _ = self.layer()
+        self.publish(source, "0.1.0")
+        self.git(self.public, "tag", "-a", "v0.2.0", "-m", "nested", "refs/tags/v0.1.0")
+        self.git(self.public, "tag", "v0.3.0", "refs/heads/main")
+        refs = ["refs/heads/main", "refs/tags/v0.1.0", "refs/tags/v0.2.0", "refs/tags/v0.3.0"]
+        actual = VERSIONS.git
+        scratch_refs = []
+
+        def observe(repo, *args, **kwargs):
+            if args[:2] == ("cat-file", "commit") and repo != self.alab:
+                scratch_refs.append(set(VERSIONS.GITHUB.local_refs(repo)))
+            return actual(repo, *args, **kwargs)
+
+        with mock.patch.object(VERSIONS, "git", side_effect=observe):
+            self.assertEqual(VERSIONS.released(self.alab, self.public.as_uri(), source), {source: refs})
+        self.assertEqual(len(scratch_refs), 1)
+        private = {name for name in scratch_refs[0] if not name.startswith("refs/agh/")}
+        self.assertEqual(private, {"refs/remotes/published/" + ref[5:] for ref in refs})
+
+        # A second commit naming the same dev source must prove its own ledger.
+        invalid = self.git(self.alab, "commit-tree", f"{self.u3}^{{tree}}", "-m",
+                           f"snapshot: 2026-10-24 from codex-alab@{source}")
+        self.git(self.alab, "push", "-q", str(self.public), f"{invalid}:refs/tags/v0.4.0")
+        with self.assertRaisesRegex(VERSIONS.Refused, "v0.4.0 .* carries a .* other than"):
+            VERSIONS.released(self.alab, self.public.as_uri(), source)
+
+    def test_reftable_release_snapshot_preserves_annotated_tags_and_rejects_noncommits(self):
+        probe = subprocess.run(["git", "init", "--bare", "--template=", "--ref-format=reftable",
+                                str(self.scratch / "format.git")], env=self.env, capture_output=True)
+        if probe.returncode and b"unknown option" in probe.stderr:
+            self.skipTest("Git lacks reftable support")
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.on(self.u3, "reftable-catalog")
+        source, _ = self.layer()
+        self.publish(source, "0.1.0")
+        actual = VERSIONS.git
+
+        def use_reftable(repo, *args, **kwargs):
+            if args[0] == "init":
+                args = (*args, "--ref-format=reftable")
+            return actual(repo, *args, **kwargs)
+
+        with mock.patch.object(VERSIONS, "git", side_effect=use_reftable):
+            self.assertEqual(VERSIONS.released(self.alab, self.public.as_uri(), source),
+                             {source: ["refs/heads/main", "refs/tags/v0.1.0"]})
+            self.git(self.public, "tag", "v0.2.0", "refs/heads/main^{tree}")
+            with self.assertRaisesRegex(VERSIONS.Refused, "refs/tags/v0.2.0 .* names no commit"):
+                VERSIONS.released(self.alab, self.public.as_uri(), source)
+
     def release_0_1_0(self):
         """main on u3: 0.1.0's row appended, released as 0.1.0+codex.0.164.0 and published."""
         self.on(self.u3, "main-on-u3")
@@ -574,10 +667,10 @@ class ReleaseRecordTests(Scratch):
         process = self.hook(PUB_SOURCE_COMMIT=source, PUB_VERSION="0.1.0")
         self.assertEqual(process.returncode, 0, process.stderr)
 
-    def test_pre_promote_binds_every_consumed_history_runtime_helper(self):
+    def test_pre_promote_binds_every_consumed_terminal_runtime_helper(self):
         self.on(self.u3, "main-on-u3")
         self.layer(ledger=HEADER + self.row("0.1.0", "0.164.0"))
-        helpers = ("history_pagination.py", "capacity_exec.py", "quota_resume.py")
+        helpers = ("history_pagination.py", "capacity_exec.py", "quota_resume.py", "model_resume.py")
         directory = self.alab / "alab/smoke"
         directory.mkdir()
         for name in helpers:
@@ -659,7 +752,14 @@ assert args.pop(0) == "--anonymous", args
 def git(*words):
     return subprocess.check_output(["git", "-c", "protocol.allow=never", "-c",
         "protocol.file.allow=always", *words], text=True).strip()
-if args[0] == "api":
+if args[:3] == ["repo", "public-refs", "alabsystems/codex-alab"]:
+    assert args[3] == "--prefix", args
+    rows = git("-C", public, "show-ref", "--dereference").splitlines()
+    for line in rows:
+        oid, ref = line.split()
+        if ref.startswith(args[4]):
+            print(oid + "\\t" + ref)
+elif args[0] == "api":
     assert args[1].startswith("/repos/alabsystems/codex-alab/"), args
     assert args[-1] == "--all", args
     prefix = "refs/" + args[1].split("/git/matching-refs/", 1)[1]
@@ -683,7 +783,8 @@ else:
         self.assertNotEqual(process.returncode, 0, process.stdout)
         self.assertIn(f"was released from {released[:12]}", process.stderr)
         calls = [json.loads(line) for line in requests.read_text().splitlines()]
-        self.assertTrue(any(call[:2] == ["--anonymous", "api"] and call[-1] == "--all" for call in calls))
+        self.assertTrue(any(call[:3] == ["--anonymous", "repo", "public-refs"] for call in calls))
+        self.assertFalse(any(call[:2] == ["--anonymous", "api"] for call in calls))
         self.assertTrue(any(call[:4] == ["--anonymous", "repo", "fetch", "alabsystems/codex-alab"]
                             and "--input" in call for call in calls))
         # A slug that is not owner/name is refused before anything is read.
@@ -1044,6 +1145,16 @@ class BaselineRecordTests(unittest.TestCase):
         self.assertEqual(doc["client_version"], "0.165.0-dev.7+gaaaaaaaaa")
         self.assertEqual(doc["baseline"], "0.164.0")
         self.assertEqual(doc["upstream"]["release"], "rust-v0.164.0")
+
+    def test_snapshot_records_its_ledger_baseline_without_upstream_provenance(self):
+        product = "0.11.0-dev.1+codex.0.169.1.gaaaaaaaaa"
+        client = "0.170.0-dev.1+gaaaaaaaaa"
+        process, doc = self.write(product, client, "0.169.1", release=None)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(doc["version"], product)
+        self.assertEqual(doc["client_version"], client)
+        self.assertEqual(doc["baseline"], "0.169.1")
+        self.assertNotIn("upstream", doc)
 
     def test_records_that_disagree_on_the_baseline_are_refused(self):
         for version, client, baseline, release in (

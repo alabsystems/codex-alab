@@ -15,6 +15,7 @@ import subprocess
 import time
 
 import capacity_exec as probe
+import exec_named_limit
 import native_host_record
 import package_standing
 import renewal_follow as native
@@ -85,8 +86,9 @@ def managed_checkout(root):
 
 
 class Model(native.Model):
-    def __init__(self, root, chain=False, exhausted=False, change_model=False, worktree=False, pending_mail=False, token_usage=False, child_followup=False, active_child=False, child_quota=False, ephemeral=False, review=None):
+    def __init__(self, root, chain=False, exhausted=False, change_model=False, worktree=False, pending_mail=False, token_usage=False, child_followup=False, active_child=False, child_quota=False, ephemeral=False, review=None, limit="codex"):
         super().__init__(root, weekly_quota=True, chain=chain, all_exhausted=exhausted)
+        self.limit = limit
         self.review = None
         if review is not None:
             from exec_review import Review
@@ -144,6 +146,8 @@ class Model(native.Model):
             (new_token and self.middle_exhausted) or (next_token and not self.middle_exhausted))))
 
     def limit_headers(self, generation, wall=False, usage=None):
+        if self.limit != "codex":
+            return super().limit_headers(generation, wall, usage)
         # None: this fixture's source is spent before its first, answered request, so
         # headers that agree with its usage would put a spent week on a 200.
         return {}
@@ -159,6 +163,10 @@ class Model(native.Model):
             return self.pending_root_reply(body, generation)
         if generation == "new":
             (self.root / "renewed").touch()
+        if self.limit != "codex" and generation == "old" and self.source_walled:
+            # Background requests also receive the same model's refusal once the source is spent.
+            result = super().reply(body, generation)
+            return self.refused(result[-1], generation, "Fixture model limit reached")
         return super().reply(body, generation)
 
     def pending_root_reply(self, body, generation):
@@ -416,10 +424,20 @@ def stream_problems(events):
     return problems
 
 
+def exec_provider_config(config_file):
+    config = config_file.read_text().replace("requires_openai_auth = false", "requires_openai_auth = true")
+    config = config.replace('name = "local capacity smoke"', 'name = "OpenAI"')
+    config = config.replace("http://127.0.0.1:", "https://127.0.0.1:")
+    config = config.replace("[tools.update_plan]", "[features]\nenable_request_compression = false\n[tools.update_plan]")
+    return config
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, type=Path)
     parser.add_argument("--package", required=True, type=Path)
+    parser.add_argument("--limit", choices=("codex", native.provider_fixture.GOLDEN_MODEL_LIMIT), default="codex",
+                        help="exhaust the weekly window of this bucket")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--drop-consume-ack", action="store_true")
     parser.add_argument("--chain", action="store_true", help="exhaust a second account and recover the same turn again")
@@ -464,6 +482,10 @@ def main():
                   "pending mail uses one successful quota move")
     probe.require(not args.token_usage or (args.pending_mail and not args.human),
                   "token-usage qualification uses the pending-mail JSON scenario")
+    if args.limit != "codex":
+        probe.require(not any((args.human, args.chain, args.exhausted, args.worktree, args.change_model, args.ephemeral,
+                      args.stop_after_consume, args.pending_mail, args.token_usage, args.review, args.child_followup,
+                      args.active_child, args.child_quota, args.drop_consume_ack)), "named quota uses the original JSON turn")
     build, manifest, codex = probe.package_records(args.package.resolve(strict=True))
     host = args.host.resolve(strict=True)
     host_record = native_host_record.load(host)
@@ -475,11 +497,11 @@ def main():
     model = Model(root, chain=args.chain, exhausted=args.exhausted,
                   change_model=args.change_model, worktree=args.worktree, pending_mail=args.pending_mail, token_usage=args.token_usage,
                   child_followup=args.child_followup, active_child=args.active_child, child_quota=args.child_quota,
-                  ephemeral=args.ephemeral, review=args.review)
-    server, worker = native.serve(model)
+                  ephemeral=args.ephemeral, review=args.review, limit=args.limit)
+    server, worker = native.serve(model, handoff_usage_path=native.ROOT_USAGE_PATH)
     report = {"passed": False, "source": build["source"], "version": manifest["version"],
-              "nativeHost": native_host_record.summary(host_record),
               "package": package_standing.summary(build),
+              "nativeHost": native_host_record.summary(host_record),
               "dropConsumeAck": args.drop_consume_ack or args.stop_after_consume,
               "chain": args.chain, "exhausted": args.exhausted,
               "human": args.human, "ephemeral": args.ephemeral, "review": args.review,
@@ -487,6 +509,8 @@ def main():
               "worktree": args.worktree,
               "stopAfterConsume": args.stop_after_consume, "pendingMail": args.pending_mail,
               "tokenUsage": args.token_usage, "childFollowup": args.child_followup, "activeChild": args.active_child, "childQuota": args.child_quota}
+    if args.limit != "codex":
+        report["limit"] = args.limit
     try:
         probe.configure(root, server.server_port)
         if args.worktree:
@@ -498,10 +522,7 @@ def main():
                 subprocess.run(["/usr/bin/git", "-C", str(root / "work"), *command], env=env,
                                check=True, capture_output=True)
         config_file = root / "codex-home/config.toml"
-        config = config_file.read_text().replace("requires_openai_auth = false", "requires_openai_auth = true")
-        config = config.replace('name = "local capacity smoke"', 'name = "OpenAI"')
-        config = config.replace("http://127.0.0.1:", "https://127.0.0.1:")
-        config = config.replace("[tools.update_plan]", "[features]\nenable_request_compression = false\n[tools.update_plan]")
+        config = exec_provider_config(config_file)
         if args.pending_mail or args.child_quota or model.idle_child:
             config = config.replace(f'model = "{probe.MODEL}"', f'model = "{PENDING_MODEL}"', 1)
             config = config.replace("enable_request_compression = false", "enable_request_compression = false\nmulti_agent = true\nmulti_agent_v2 = true")
@@ -555,6 +576,12 @@ def main():
                     # A reply the fixture could not build is answered 500, which the client
                     # takes for "usage unknown": the walled turn would poll to the deadline.
                     native.require_no_fixture_fault(model)
+                    if args.limit != "codex":
+                        with model.lock:
+                            calls = [(e.get("account"), e["status"]) for e in model.http_events
+                                     if e.get("kind") == "foreground" and "status" in e]
+                        expected = [("source", 200), ("source", 429), ("target", 200)]
+                        probe.require(calls == expected[:len(calls)], f"unexpected foreground provider history {calls}")
                     ready, _, _ = select.select([process.stdout], [], [], .1)
                     if ready:
                         data = os.read(process.stdout.fileno(), 65536)
@@ -673,6 +700,9 @@ def main():
             expected_count = len(model.idle_child.calls) + 2
         probe.require(len(requests) == expected_count and requests[-1].get("newTokenMatched") is True,
                       "account handoff did not resume with the selected login")
+        if args.limit != "codex":
+            report["namedExec"] = exec_named_limit.summary(model, root)
+            exec_named_limit.verify(model, root, receipt, requests, report["namedExec"])
         if args.change_model:
             probe.require(model.model_changed, "model config mutation was not reached")
             probe.require(all(item["body"]["model"] == (PENDING_MODEL if args.pending_mail else probe.MODEL) for item in requests),
@@ -765,6 +795,8 @@ def main():
         server.shutdown()
         worker.join()
         server.server_close()
+        if args.limit != "codex" and not report["passed"]:
+            report["namedExec"] = exec_named_limit.summary(model, root)
         probe.write_json(root / "result.json", report)
     print(json.dumps(report, indent=2))
     return 0

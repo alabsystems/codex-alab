@@ -76,6 +76,7 @@ impl WriteStdinHandler {
             step_context,
             cancellation_token,
             call_id,
+            source, // ALAB(shell-output): select the native tool's preview.
             payload,
             environments,
             ..
@@ -108,6 +109,7 @@ impl WriteStdinHandler {
                     interaction_event: Some(WriteStdinInteractionEvent {
                         session: &session,
                         turn: &turn,
+                        source: &source, // ALAB(shell-output): capture a poll's native result under the terminal interaction lock.
                     }),
                 },
             )

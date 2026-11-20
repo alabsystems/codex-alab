@@ -6,21 +6,31 @@ use serde::Deserialize;
 use serde::Serialize;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Observation {
-    pub schema: u8,
-    pub operation: String,
-    pub claim: String,
-    pub thread_id: String,
-    pub state: State,
+pub struct Observation {
+    schema: u8,
+    operation: String,
+    claim: String,
+    thread_id: String,
+    state: State,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum State {
+pub enum State {
     Observed,
     Unowned,
 }
 impl Observation {
-    pub(crate) fn matches(&self, operation: &str, claim: &str, thread: &str) -> bool {
+    pub fn new(operation: String, claim: String, thread_id: String, state: State) -> Self {
+        Self {
+            schema: 1,
+            operation,
+            claim,
+            thread_id,
+            state,
+        }
+    }
+
+    pub fn matches(&self, operation: &str, claim: &str, thread: &str) -> bool {
         self.schema == 1
             && self.operation == operation
             && self.claim == claim

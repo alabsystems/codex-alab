@@ -7,28 +7,72 @@ impl AppServerSession {
     pub(crate) fn alab_unsubscribe_side_view(
         &mut self,
         thread: ThreadId,
-    ) -> impl std::future::Future<Output = Result<()>> + use<> {
+    ) -> (
+        bool,
+        impl std::future::Future<Output = (Result<()>, Option<SideCloseAck>)> + use<>,
+    ) {
         let operation = self
             .retained_frontend()
             .map(|tenure| tenure.target.side_close_operation(thread))
-            .transpose();
-        let original = self.thread_unsubscribe(thread);
-        async move {
-            match operation?.flatten() {
-                Some(operation) => operation.run(original).await,
-                None => original.await,
-            }
-        }
+            .transpose()
+            .map(Option::flatten);
+        let interrupt = match &operation {
+            Ok(Some(reservation)) => reservation.is_first(),
+            Ok(None) => true,
+            Err(_) => false,
+        };
+        let handle = self.request_handle();
+        let request = self.next_request_id();
+        let original = self.thread_unsubscribe_response(thread, request);
+        (interrupt, async move {
+            let reservation = match operation {
+                Err(error) => return (Err(error.into()), None),
+                Ok(None) => {
+                    return (
+                        original
+                            .await
+                            .map(|_| ())
+                            .wrap_err("thread/unsubscribe failed in TUI"),
+                        None,
+                    );
+                }
+                Ok(Some(reserved)) => reserved,
+            };
+            let result = if reservation.is_first() {
+                reservation.operation.run(original).await
+            } else {
+                reservation.operation.read_result(&handle).await
+            };
+            let ack = SideCloseAck::for_reply(
+                reservation.target.clone(),
+                reservation.thread,
+                &reservation.operation,
+                handle,
+                &result,
+            );
+            (
+                result
+                    .map(|_| ())
+                    .wrap_err("thread/unsubscribe failed in TUI"),
+                ack,
+            )
+        })
     }
-    /// The original local close/error callback has now been applied. Awaiting
-    /// this bookkeeping cannot lose the operation retained by the target.
-    pub(crate) async fn alab_observe_side_close(&self, thread: ThreadId) -> Result<()> {
-        if let Some(tenure) = self.retained_frontend() {
-            tenure
-                .target
-                .observe_side_close(thread, &self.request_handle())
-                .await?;
-        }
-        Ok(())
+}
+
+impl SideCloseAck {
+    pub(crate) fn for_reply(
+        target: crate::owned_local_frontend::OwnedLocalTarget,
+        thread: ThreadId,
+        operation: &codex_app_server_client::SideViewCloseOperation,
+        handle: codex_app_server_client::AppServerRequestHandle,
+        result: &std::result::Result<ThreadUnsubscribeResponse, TypedRequestError>,
+    ) -> Option<Self> {
+        matches!(result, Ok(_) | Err(TypedRequestError::Server { .. })).then(|| Self {
+            target,
+            thread,
+            operation: operation.clone(),
+            handle,
+        })
     }
 }

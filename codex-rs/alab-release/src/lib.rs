@@ -9,11 +9,16 @@ use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
+use std::fs::File;
+use std::fs::Metadata;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 
 #[cfg(unix)]
 pub mod assembly;
+#[cfg(unix)]
+mod lease;
 #[cfg(unix)]
 pub mod product;
 #[cfg(unix)]
@@ -21,7 +26,11 @@ pub mod protected;
 #[cfg(unix)]
 pub mod ripgrep;
 #[cfg(unix)]
+pub mod schedule;
+#[cfg(unix)]
 pub mod source;
+#[cfg(unix)]
+pub mod space;
 #[cfg(unix)]
 pub mod v8;
 #[cfg(unix)]
@@ -29,9 +38,10 @@ pub mod workflow;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Read bounded, owned control-plane data without following a final link or waiting on a pipe.
-pub fn record_bytes(path: &Path) -> Result<Vec<u8>> {
-    use std::io::Read;
+fn open_record(path: &Path, named: &Metadata) -> Result<File> {
+    if !named.is_file() {
+        return Err("release intent must be a regular file".into());
+    }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -39,10 +49,11 @@ pub fn record_bytes(path: &Path) -> Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err("release intent must be a regular file".into());
-    }
-    let file = options.open(path)?;
+    Ok(options.open(path)?)
+}
+
+fn read_record(file: &File) -> Result<Vec<u8>> {
+    use std::io::Read;
     let info = file.metadata()?;
     if !info.is_file() || info.len() > 64 * 1024 {
         return Err("release intent must be a bounded regular file".into());
@@ -61,6 +72,11 @@ pub fn record_bytes(path: &Path) -> Result<Vec<u8>> {
         return Err("release intent grew beyond its byte limit".into());
     }
     Ok(bytes)
+}
+
+/// Read bounded, owned control-plane data without following a final link or waiting on a pipe.
+pub fn record_bytes(path: &Path) -> Result<Vec<u8>> {
+    read_record(&open_record(path, &path.symlink_metadata()?)?)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -136,6 +152,15 @@ fn core(text: &str) -> bool {
         })
 }
 
+/// The product ledger allocates MAJOR.MINOR.0 on its own release line.
+fn check_product_version(version: &str) -> Result<()> {
+    if core(version) && version.ends_with(".0") {
+        Ok(())
+    } else {
+        Err("codex-alab VERSION must be a regular MAJOR.MINOR.0 number".into())
+    }
+}
+
 /// The MAJOR.MINOR line of an already validated regular version.
 fn line(text: &str) -> Result<(u64, u64)> {
     let mut parts = text.split('.');
@@ -183,15 +208,47 @@ fn repository(repo: &Path) -> Result<String> {
     github_repository(&git(repo, &["remote", "get-url", "origin"])?)
 }
 
+fn fetched_main(repo: &Path, output: &[u8]) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Snapshot<'a> {
+        #[serde(rename = "ref")]
+        reference: &'a str,
+        oid: &'a str,
+    }
+    let snapshot: Snapshot<'_> = serde_json::from_slice(output)?;
+    if snapshot.reference != "refs/agh/fetched-main" || !source_id(snapshot.oid) {
+        return Err("agh fetch-main returned an invalid snapshot".into());
+    }
+    if git(repo, &["cat-file", "-t", snapshot.oid])?.trim_end() != "commit" {
+        return Err("agh fetch-main did not name a commit object".into());
+    }
+    // Another fetch may already have moved the shared ref. Only this
+    // authenticated fetch supplied both the observed tip and its ancestry.
+    Ok(snapshot.oid.to_owned())
+}
+
+fn check_fetched_ancestry(repo: &Path, source: &str, output: &[u8]) -> Result<()> {
+    git(
+        repo,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            source,
+            &fetched_main(repo, output)?,
+        ],
+    )?;
+    Ok(())
+}
+
 impl Release {
     /// Read bounded regular intent data without following its final symlink or
     /// waiting on a pipe. Source authority is rechecked separately before acts.
     pub fn load(path: &Path) -> Result<Self> {
         let release: Self = serde_json::from_slice(&record_bytes(path)?)?;
+        check_product_version(&release.version)?;
         if release.schema != 2
             || !source_id(&release.source)
             || release.target != "aarch64-apple-darwin"
-            || !core(&release.version)
             || !core(&release.client_version)
             || !core(&release.baseline)
             || github_repository(&format!("https://github.com/{}", release.repository))?
@@ -222,19 +279,7 @@ impl Release {
             )
             .into());
         }
-        let observed = Command::new("agh")
-            .args(["rev", &format!("{repository}@main")])
-            .output()?;
-        if !observed.status.success() {
-            return Err("agh could not read source main".into());
-        }
-        let observed: serde_json::Value = serde_json::from_slice(&observed.stdout)?;
-        let main = observed
-            .get("sha")
-            .and_then(serde_json::Value::as_str)
-            .filter(|text| source_id(text))
-            .ok_or("agh returned no valid main commit")?;
-        git(repo, &["merge-base", "--is-ancestor", source, main])?;
+        check_fetched_ancestry(repo, source, &fetched.stdout)?;
         let release = Self::from_commit(repo, source, target)?;
         if release.repository != repository {
             return Err("source origin changed during admission".into());
@@ -262,10 +307,9 @@ impl Release {
         let ledger: toml::Value = toml::from_str(&read("alab/versions.toml")?)?;
         read("trust.lock")?;
         read("codex-rs/Cargo.lock")?;
-        if !core(&version) || !core(&client_version) {
-            return Err(
-                "release and client versions must be regular MAJOR.MINOR.PATCH numbers".into(),
-            );
+        check_product_version(&version)?;
+        if !core(&client_version) {
+            return Err("alab/client-version must be a regular MAJOR.MINOR.PATCH number".into());
         }
         let rows = ledger
             .get("release")
@@ -329,12 +373,47 @@ impl Release {
     /// Create once. A resume must read the same bytes, rather than silently selecting
     /// a new main, version, target, or toolchain after a failure.
     pub fn save(&self, path: &Path) -> Result<()> {
+        check_product_version(&self.version)?;
         save_record(path, &serde_json::to_vec_pretty(self)?)
     }
 }
 
-/// Atomically create durable private controller data, or verify identical bytes
-/// on a retry. Never replace another campaign's record or a malformed object.
+fn flush_existing_record(path: &Path, parent: &Path, named: &Metadata, bytes: &[u8]) -> Result<()> {
+    let file = open_record(path, named)?;
+    if read_record(&file)? != bytes {
+        return Err("release intent already exists with different inputs".into());
+    }
+    file.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    let current = path.symlink_metadata()?;
+    if !current.is_file() || current.len() != bytes.len() as u64 {
+        return Err("release record changed during its retry flush".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let identity = |m: &Metadata| {
+            (
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mode(),
+                m.uid(),
+                m.mtime(),
+                m.mtime_nsec(),
+            )
+        };
+        if identity(named) != identity(&current)
+            || identity(&file.metadata()?) != identity(&current)
+        {
+            return Err("release record changed during its retry flush".into());
+        }
+    }
+    Ok(())
+}
+
+/// Atomically create durable private controller data, or flush an identical record
+/// in place on retry even when the volume has no space for another temporary file.
 pub fn save_record(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     if bytes.len() > 64 * 1024 {
@@ -344,30 +423,18 @@ pub fn save_record(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    match path.symlink_metadata() {
+        Ok(named) => return flush_existing_record(path, parent, &named, bytes),
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     match temporary.persist_noclobber(path) {
-        Ok(_) => std::fs::File::open(parent)?.sync_all()?,
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if !std::fs::symlink_metadata(path)?.file_type().is_file()
-                || record_bytes(path)? != bytes
-            {
-                return Err("release intent already exists with different inputs".into());
-            }
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-            }
-            let file = options.open(path)?;
-            if !file.metadata()?.is_file() {
-                return Err("release record changed before its retry flush".into());
-            }
-            file.sync_all()?;
-            std::fs::File::open(parent)?.sync_all()?;
+        Ok(_) => File::open(parent)?.sync_all()?,
+        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => {
+            flush_existing_record(path, parent, &path.symlink_metadata()?, bytes)?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -377,6 +444,49 @@ pub fn save_record(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_ancestry_uses_the_commit_reported_by_its_own_fetch() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let repo = temporary.path();
+        git(repo, &["init", "--quiet"])?;
+        git(repo, &["config", "user.name", "release fixture"])?;
+        git(
+            repo,
+            &["config", "user.email", "release-fixture@example.invalid"],
+        )?;
+        let commit = |message: &str| -> Result<String> {
+            git(repo, &["commit", "--quiet", "--allow-empty", "-m", message])?;
+            Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_owned())
+        };
+        let older = commit("older main")?;
+        let source = commit("release candidate")?;
+        let fetched = commit("main observed by this fetch")?;
+        let later = commit("main observed afterward")?;
+        let reference = "refs/agh/fetched-main";
+        let receipt = serde_json::to_vec(&serde_json::json!({"ref":reference, "oid":fetched}))?;
+        // Other worktrees can overwrite the snapshot in either direction.
+        git(repo, &["update-ref", reference, &older])?;
+        check_fetched_ancestry(repo, &source, &receipt)?;
+        git(repo, &["update-ref", reference, &later])?;
+        assert!(check_fetched_ancestry(repo, &later, &receipt).is_err());
+        // A newer observation absent locally, a missing/invalid receipt, or a
+        // tag that peels to the right commit cannot borrow the available ref.
+        git(repo, &["tag", "-a", "tagged", "-m", "fixture", &fetched])?;
+        let tag = git(repo, &["rev-parse", "refs/tags/tagged"])?;
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"ref":reference}),
+            serde_json::json!({"ref":"refs/heads/main", "oid":fetched}),
+            serde_json::json!({"ref":reference, "oid":"HEAD"}),
+            serde_json::json!({"ref":reference, "oid":"f".repeat(40)}),
+            serde_json::json!({"ref":reference, "oid":tag.trim()}),
+        ] {
+            assert!(check_fetched_ancestry(repo, &source, &serde_json::to_vec(&invalid)?).is_err());
+        }
+        assert!(check_fetched_ancestry(repo, &source, b"truncated{").is_err());
+        Ok(())
+    }
 
     #[test]
     fn preparation_binds_committed_locks_and_ignores_dirty_working_files() -> Result<()> {
@@ -552,9 +662,38 @@ mod tests {
     }
 
     #[test]
+    fn only_the_product_version_requires_a_zero_patch() -> Result<()> {
+        let (repo, source) = frozen_fixture("0.168.7\n")?;
+        let mut release = Release::from_commit(repo.path(), &source, "aarch64-apple-darwin")?;
+        let intent = repo.path().join("intent.json");
+        release.save(&intent)?;
+        assert_eq!(Release::load(&intent)?, release);
+
+        // Commit the matching ledger row as well, so the version itself causes the refusal.
+        std::fs::write(repo.path().join("VERSION"), "0.6.1\n")?;
+        std::fs::write(
+            repo.path().join("alab/versions.toml"),
+            "[[release]]\nversion = '0.6.1'\nbaseline = '0.167.2'\n",
+        )?;
+        git(
+            repo.path(),
+            &["commit", "--quiet", "-am", "nonzero product patch"],
+        )?;
+        let patched_source = git(repo.path(), &["rev-parse", "HEAD"])?;
+        assert!(Release::from_commit(repo.path(), patched_source.trim(), &release.target).is_err());
+
+        release.version = "0.6.1".into();
+        let malformed = repo.path().join("patched-intent.json");
+        assert!(release.save(&malformed).is_err());
+        save_record(&malformed, &serde_json::to_vec(&release)?)?;
+        assert!(Release::load(&malformed).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn regular_product_numbers_do_not_select_the_updater() -> Result<()> {
-        for valid in ["0.5.0", "1.2.3", "2026.1111.1"] {
-            assert!(core(valid));
+        for valid in ["0.5.0", "1.2.0", "2026.1111.0"] {
+            check_product_version(valid)?;
         }
         for invalid in [
             "0.5.0-dev.1",
@@ -562,8 +701,10 @@ mod tests {
             "01.2.3",
             "1.2",
             "1.2.3\n",
+            "0.12.1",
+            "0.1234567890.0",
         ] {
-            assert!(!core(invalid));
+            assert!(check_product_version(invalid).is_err());
         }
         let mut release = Release {
             schema: 2,
@@ -586,6 +727,81 @@ mod tests {
         assert!(release.save(&intent).is_err());
         let saved: Release = serde_json::from_slice(&std::fs::read(intent)?)?;
         assert_eq!(saved.source, "a".repeat(40));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_release_intent_replays_without_staging_in_its_directory() -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        let (repo, source) = frozen_fixture("0.168.0\n")?;
+        let release = Release::from_commit(repo.path(), &source, "aarch64-apple-darwin")?;
+        let journal = tempfile::tempdir()?;
+        let path = journal.path().join("intent.json");
+        release.save(&path)?;
+        let original = record_bytes(&path)?;
+        let inode = path.metadata()?.ino();
+        let link = journal.path().join("linked-intent");
+        std::os::unix::fs::symlink(&path, &link)?;
+        let mut changed = release.clone();
+        changed.source = "0".repeat(40);
+        let dir = std::fs::File::open(journal.path())?;
+        dir.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))?;
+        let before = dir.metadata()?.modified()?;
+        dir.set_permissions(std::fs::Permissions::from_mode(0o500))?;
+        let replay = release.save(&path);
+        let conflict = changed.save(&path);
+        let linked = release.save(&link);
+        // A privileged process can still create names in this directory. The mtime
+        // control detects even temporary staging for an existing record in either case.
+        let missing = journal.path().join("new.json");
+        // SAFETY: geteuid has no preconditions.
+        let create = (unsafe { libc::geteuid() } != 0).then(|| release.save(&missing));
+        dir.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        replay?;
+        assert!(conflict.is_err());
+        assert!(linked.is_err());
+        if let Some(create) = create {
+            assert!(create.is_err());
+            assert!(!missing.exists());
+        }
+        assert_eq!(dir.metadata()?.modified()?, before);
+        assert_eq!(path.metadata()?.ino(), inode);
+        assert_eq!(record_bytes(&path)?, original);
+        assert_eq!(Release::load(&path)?, release);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_record_creators_accept_only_the_winning_bytes() -> Result<()> {
+        let journal = tempfile::tempdir()?;
+        let path = journal.path().join("record");
+        let candidates = [b"one", b"two", b"one", b"two"];
+        let gate = std::sync::Barrier::new(candidates.len());
+        let outcomes = std::thread::scope(|scope| {
+            let writers: Vec<_> = candidates
+                .into_iter()
+                .map(|bytes| {
+                    let gate = &gate;
+                    let path = &path;
+                    scope.spawn(move || {
+                        gate.wait();
+                        (bytes, save_record(path, bytes).is_ok())
+                    })
+                })
+                .collect();
+            writers
+                .into_iter()
+                .map(|writer| writer.join().expect("record writer"))
+                .collect::<Vec<_>>()
+        });
+        let winner = record_bytes(&path)?;
+        assert!(candidates.iter().any(|bytes| bytes.as_slice() == winner));
+        for (bytes, accepted) in outcomes {
+            assert_eq!(accepted, bytes.as_slice() == winner);
+        }
+        assert_eq!(journal.path().read_dir()?.count(), 1);
         Ok(())
     }
 

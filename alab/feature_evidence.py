@@ -3,24 +3,31 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check declared feature/scenario evidence; does not run tests or prove semantics."""
 import argparse
+import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import runpy
 import subprocess
 import sys
+import tempfile
 import tomllib
 
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Preserve parser exports used by existing evidence collectors.
 from focused_results import PASSED, RESULT, START, completed_names, confirm, libtest_output
-from upstream_intake import git
+from upstream_intake import git, upstream_target
 from python_test_results import passed_tests as python_passed_tests
 
 FILE_HASH = runpy.run_path(str(Path(__file__).resolve().with_name('file_hash.py')))
 CLI = runpy.run_path(str(Path(__file__).resolve().with_name('cli_status.py')))
+REQUIRED_TESTS = (('required_libtest_groups', 'required_libtests', 'libtest'),
+                  ('required_python_groups', 'required_python_tests', 'python-unittest'))
 
 
 def read_record(path):
@@ -31,6 +38,7 @@ def read_record(path):
 
 def snapshot(repo, source, upstream, base=None):
     source = git(repo, 'rev-parse', '--verify', '--end-of-options', source + '^{commit}')
+    upstream = upstream_target(repo, source, upstream)
     upstream = git(repo, 'rev-parse', '--verify', '--end-of-options', upstream + '^{commit}')
     try:
         frontier = git(repo, 'merge-base', source, upstream)
@@ -45,6 +53,7 @@ def snapshot(repo, source, upstream, base=None):
     if type(catalog.get('schema')) is not int or catalog.get('schema') != 1:
         raise ValueError('unsupported feature inventory schema')
     features, ids = [], set()
+    recipes = None
     for feature in catalog['features']:
         lifecycle = feature.get('lifecycle')
         if not isinstance(lifecycle, str) or lifecycle not in {'active', 'retiring', 'retired'}:
@@ -62,24 +71,42 @@ def snapshot(repo, source, upstream, base=None):
         if identity in ids or len(set(scenarios)) != len(scenarios):
             raise ValueError('duplicate feature or scenario')
         ids.add(identity)
-        features.append({'id': identity, 'scenarios': [
-            {'description': scenario, 'checks': []} for scenario in scenarios]})
+        rows = [{'description': scenario, 'checks': []} for scenario in scenarios]
+        for group_field, row_field, result_format in REQUIRED_TESTS:
+            if group_field not in feature:
+                continue
+            from feature_recipes.manifest import decode, required_tests
+            if recipes is None:
+                path = 'alab/feature_recipes/scenarios.json'
+                recipes = decode(git(repo, 'show', source + ':' + path).encode(), path)
+            names = required_tests(feature, recipes, group_field, result_format)
+            for row in rows:
+                if names[row['description']]:
+                    row[row_field] = names[row['description']]
+        features.append({'id': identity, 'scenarios': rows})
     if not features:
         raise ValueError('no active feature contracts')
     result = {'schema': 1, 'source': source, 'upstream': upstream,
               'inventory_sha256': hashlib.sha256(raw.encode()).hexdigest(),
               'features': features}
-    if base is not None:
-        from upstream_gate import admission
-        review = admission(repo, base, source, upstream)
-        if review['missing'] or review['errors']:
-            raise ValueError('complete committed upstream review required before feature scoping')
-        affected = set(review['affected_features'])
-        if not affected <= ids:
-            raise ValueError('affected feature has no active or retiring contract')
-        result['base'] = review['base']
-        result['features'] = [feature for feature in features if feature['id'] in affected]
-    return result
+    if base is None:
+        return result
+    from upstream_gate import admission
+    return scoped_snapshot(result, admission(repo, base, source, upstream))
+
+
+def scoped_snapshot(inventory, review):
+    """Apply one committed review to the inventory of the same immutable candidate."""
+    if review['missing'] or review['errors']:
+        raise ValueError('complete committed upstream review required before feature scoping')
+    if (inventory['source'] != review['source']
+            or inventory['upstream'] != review['integrated_upstream']):
+        raise ValueError('committed review differs from feature inventory source or frontier')
+    affected = set(review['affected_features'])
+    features = [feature for feature in inventory['features'] if feature['id'] in affected]
+    if len(features) != len(affected):
+        raise ValueError('affected feature has no active or retiring contract')
+    return {**inventory, 'base': review['base'], 'features': features}
 
 
 def log_bytes(observation, log_root=None):
@@ -116,7 +143,7 @@ def check(observation, source, log_root=None):
         raise ValueError('check requires an actual successful command status')
     command = observation.get('command')
     if not isinstance(command, list) or not command or any(
-            not isinstance(arg, str) or not arg for arg in command):
+            not isinstance(arg, str) or not arg or '\0' in arg for arg in command):
         raise ValueError('command must be a nonempty argument list')
     reason = observation.get('reason')
     if not isinstance(reason, str) or not reason.strip():
@@ -142,9 +169,22 @@ def check(observation, source, log_root=None):
 
 
 def validate(record, expected, log_root=None):
+    return _validate_record(record, expected, log_root, allow_pending=False)
+
+
+def missing_required_tests(scenario, passed):
+    for _, row_field, result_format in REQUIRED_TESTS:
+        missing = [test for test in scenario.get(row_field, ()) if (result_format, test) not in passed]
+        if missing:
+            yield row_field, missing
+
+
+def _validate_record(record, expected, log_root, *, allow_pending):
     errors = []
     if not isinstance(record, dict):
         return ['record must be an object']
+    if 'base' in record and 'base' not in expected:
+        errors.append('scoped evidence requires its original base')
     fields = ('schema', 'source', 'upstream', 'inventory_sha256')
     if 'base' in expected:
         fields += ('base',)
@@ -164,24 +204,98 @@ def validate(record, expected, log_root=None):
                     s['description'] for s in contract['scenarios']]):
             errors.append(prefix + 'scenario coverage differs from inventory')
             continue
-        for scenario in scenarios:
+        for scenario, required in zip(scenarios, contract['scenarios'], strict=True):
             label = prefix + scenario['description'] + ': '
             checks = scenario.get('checks')
-            if not isinstance(checks, list) or not checks:
+            if not isinstance(checks, list) or (not checks and not allow_pending):
                 errors.append(label + 'executed evidence required')
                 continue
+            passed = set()
             for observation in checks:
                 try:
                     check(observation, expected['source'], log_root)
                 except (OSError, UnicodeError, ValueError) as error:
                     errors.append(label + str(error))
+                else:
+                    result_format = observation.get('format', 'libtest')
+                    passed.update((result_format, test) for test in observation['tests'])
+            if not allow_pending:
+                for row_field, missing in missing_required_tests(required, passed):
+                    errors.append(label + 'missing ' + row_field.replace('_', ' ') + ': ' + ', '.join(missing))
     return errors
 
 
-def bundle(record, expected, destination):
-    errors = validate(record, expected)
+def combine(records, expected, *, first_log_root=None):
+    """Validate and combine one snapshot's records. Only the first may use an explicit portable log root."""
+    result = copy.deepcopy(expected)
+    for index, record in enumerate(records):
+        errors = _validate_record(record, expected, first_log_root if index == 0 else None, allow_pending=True)
+        if errors:
+            raise ValueError('\n'.join(errors))
+        for source, target in zip(record['features'], result['features'], strict=True):
+            for part, scenario in zip(source['scenarios'], target['scenarios'], strict=True):
+                checks = scenario['checks']
+                for observation in part['checks']:
+                    # Missing and explicit libtest identify the same format. Retain the first declaration.
+                    identity = {'format': 'libtest', **observation}
+                    if not any({'format': 'libtest', **previous} == identity for previous in checks):
+                        checks.append(observation)
+    return result
+
+
+def progress(records, expected, log_root=None):
+    return _progress_report(combine(records, expected, first_log_root=log_root))
+
+
+def progress_summary(report):
+    features = report['features']
+    scope = 'affected' if report['scope'] == 'affected-features' else 'inventory'
+    contracts = 'feature contract' if len(features) == 1 else 'feature contracts'
+    lines = [f"ALab release scenario coverage for {report['source']}",
+             f"{report['covered']} of {report['total']} verified across {len(features)} {scope} {contracts}",
+             f"Pending scenarios   {report['total'] - report['covered']}"]
+    for feature in features:
+        if feature['pending']:
+            numbers = ', '.join(str(scenario['number']) for scenario in feature['pending'])
+            lines.append(f"  {feature['id']}   {feature['covered']} of {feature['total']} verified, pending {numbers}")
+    return '\n'.join(lines)
+
+
+def _progress_report(observed):
+    features = []
+    for feature in observed['features']:
+        pending = []
+        for number, scenario in enumerate(feature['scenarios'], 1):
+            passed = {(observation.get('format', 'libtest'), test)
+                      for observation in scenario['checks'] for test in observation['tests']}
+            missing = dict(missing_required_tests(scenario, passed))
+            if not passed or missing:
+                row = {'number': number, 'description': scenario['description']}
+                if missing:
+                    row['missing'] = missing
+                pending.append(row)
+        total = len(feature['scenarios'])
+        features.append({'id': feature['id'], 'covered': total - len(pending), 'total': total, 'pending': pending})
+    return {**{key: value for key, value in observed.items() if key != 'features'},
+            'scope': 'affected-features' if 'base' in observed else 'inventory',
+            'covered': sum(f['covered'] for f in features), 'total': sum(f['total'] for f in features),
+            'features': features, 'limits': 'Counts verified named scenario evidence only. '
+                                           'Semantic review and release qualification have separate gates.'}
+
+
+def require_valid(record, expected, log_root=None):
+    errors = validate(record, expected, log_root)
     if errors:
         raise ValueError('\n'.join(errors))
+
+
+def stage_bundle_logs(record, expected, destination, *, retained_logs=None):
+    """Stage missing captures and return the record to validate at its final log root."""
+    require_valid(record, expected)
+    return _copy_captures(record, destination, retained_logs=retained_logs)
+
+
+def _copy_captures(record, destination, *, portable_root=None, retained_logs=None):
     # Create exclusively; a resumed export must never overwrite an earlier record.
     destination = Path(destination)
     destination.mkdir()
@@ -193,35 +307,66 @@ def bundle(record, expected, destination):
     for feature in exported['features']:
         for scenario in feature['scenarios']:
             for observation in scenario['checks']:
-                raw = log_bytes(observation)
+                # combine() admits portable paths only in the first input record.
+                source_root = None if Path(observation['log']).is_absolute() else portable_root
+                raw = log_bytes(observation, source_root)
                 observation['log'] = 'logs/' + observation['log_sha256'] + '.log'
                 target = destination / observation['log']
+                if retained_logs is not None and os.path.lexists(retained_logs / target.name):
+                    continue
                 if not target.exists():
                     with target.open('xb') as stream:
                         stream.write(raw)
-    errors = validate(exported, expected, destination)
-    if errors:
-        raise ValueError('\n'.join(errors))
+    return exported
+
+
+def bundle(record, expected, destination):
+    destination = Path(destination)
+    exported = stage_bundle_logs(record, expected, destination)
+    require_valid(exported, expected, destination)
     with (destination / 'record.json').open('x') as stream:
         json.dump(exported, stream, indent=2)
         stream.write('\n')
 
 
+def export_progress(records, expected, destination, log_root=None):
+    combined = combine(records, expected, first_log_root=log_root)
+    destination = Path(destination)
+    copied = _copy_captures(combined, destination, portable_root=log_root)
+    # The same observation from portable and local inputs now has one log path.
+    exported = combine([copied], expected, first_log_root=destination)
+    report = _progress_report(exported)
+    # Expose the final record only after the complete JSON has been closed.
+    with tempfile.TemporaryDirectory(dir=destination) as staging:
+        record = Path(staging) / 'progress-record.json'
+        record.write_text(json.dumps(exported, indent=2) + '\n', encoding='utf-8')
+        os.link(record, destination / record.name)
+    return report
+
+
 def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['snapshot', 'validate', 'bundle'])
+    parser.add_argument('operation', choices=['snapshot', 'validate', 'bundle', 'progress', 'export-progress'])
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--source', required=True)
     parser.add_argument('--upstream', required=True)
     parser.add_argument('--base', help='scope to affected features from committed upstream reviews')
     parser.add_argument('--record', type=Path, required=True)
+    parser.add_argument('--summary', action='store_true', help='show progress as counts and pending scenario numbers')
+    parser.add_argument('--part', type=Path, action='append', default=[],
+                        help='add a local record of the same scope for bundle, progress or export-progress (repeatable)')
     parser.add_argument('--log-root', type=Path,
-                        help='validate content-addressed logs inside this portable bundle')
-    parser.add_argument('--destination', type=Path, help='new directory for bundle export')
+                        help='validate content-addressed logs for --record inside this portable bundle')
+    parser.add_argument('--destination', type=Path, help='new directory for bundle or export-progress')
     args = parser.parse_args()
-    if (args.log_root is not None and args.operation != 'validate'
-            or (args.destination is not None) != (args.operation == 'bundle')):
-        parser.error('--log-root requires validate; --destination is required only for bundle')
+    if args.summary and args.operation != 'progress':
+        parser.error('--summary requires progress')
+    if args.part and args.operation not in ('bundle', 'progress', 'export-progress'):
+        parser.error('--part requires bundle, progress or export-progress')
+    if args.log_root is not None and args.operation not in ('validate', 'progress', 'export-progress'):
+        parser.error('--log-root requires validate, progress or export-progress')
+    if (args.destination is not None) != (args.operation in ('bundle', 'export-progress')):
+        parser.error('bundle and export-progress require --destination and only those operations accept it')
     return args
 
 
@@ -239,10 +384,18 @@ def _run(args):
             print('Created pending feature coverage record; no scenarios qualified')
             return 0
         try:
-            record_path = args.record.resolve(strict=True)
+            paths = [path.resolve(strict=True) for path in [args.record, *args.part]]
         except RuntimeError as error:
             raise ValueError('feature record path cannot be resolved') from error
-        record = read_record(record_path)
+        records = [read_record(path) for path in paths]
+        if args.operation == 'export-progress':
+            print(json.dumps(export_progress(records, expected, args.destination, args.log_root), indent=2))
+            return 0
+        if args.operation == 'progress':
+            report = progress(records, expected, args.log_root)
+            print(progress_summary(report) if args.summary else json.dumps(report, indent=2))
+            return 0
+        record = combine(records, expected) if args.part else records[0]
         if args.operation == 'bundle':
             bundle(record, expected, args.destination)
             print('Exported declared scenario evidence and hashed logs; no tests were run')

@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "base": "bcff988bd12917283be7040768bfe928f63b5ff0",
+  "target": "24e236514bebcef874c2d38ce5df26164aa50ca4",
+  "frontier": "bcff988bd12917283be7040768bfe928f63b5ff0",
+  "commits": [
+    {
+      "sha": "24e236514bebcef874c2d38ce5df26164aa50ca4",
+      "subject": "Allow Bedrock Runtime selection during setup and login (#62222)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ClientRequest.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/LoginAccountParams.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/LoginAccountParams.ts",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/account.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/bedrock.rs",
+        "codex-rs/app-server-test-client/src/lib.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/bedrock_setup.rs",
+        "codex-rs/app-server/src/request_processors/bedrock_auth.rs",
+        "codex-rs/app-server/tests/suite/v2/account.rs",
+        "codex-rs/app-server/tests/suite/v2/bedrock_gov_cloud_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/bedrock_setup.rs",
+        "codex-rs/tui/src/onboarding/bedrock.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "model"
+      ],
+      "features": [
+        "account-isolation",
+        "model-discovery",
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Accept the optional, typed Amazon Bedrock Runtime selection on app-server setup and login. Keep the Mantle default, existing onboarding behavior, and existing credential and provider policy checks.",
+      "evidence": [
+        "Reviewed the exact 20 changed paths and binary schema exports against bcff988bd1. Binary diff SHA-256 0e7d50ce488b79e6709a0cab94fce67983d730a0efc1c3a904e3986e4b995c87.",
+        "Profile and environment setup, API-key login, and access-key login share the typed provider selection. The resolver maps only the two built-in provider IDs, checks the selected provider for credential export, and retains region and allowed-login validation.",
+        "Legacy requests omit providerId and still select Mantle. The TUI still sends None on the existing onboarding paths. Generated JSON, TypeScript, and Python mirror the additive optional request field.",
+        "Source-declared controls only. login_amazon_bedrock_replaces_primary_auth_and_persists_provider covers legacy and Runtime for both credential forms and logout cleanup. setup_bedrock_profile_and_environment and setup_bedrock_rejects_invalid_or_conflicting_credentials cover persisted routing and exporter conflicts."
+      ],
+      "revisit": "Run the paired legacy and Runtime login and setup controls with isolated credentials and verify the Runtime thread provider. Preserve account isolation and provider-lock precedence on integration."
+    }
+  ]
+}

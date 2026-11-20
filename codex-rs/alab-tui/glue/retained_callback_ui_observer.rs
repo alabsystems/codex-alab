@@ -44,22 +44,32 @@ impl Drop for Guard {
         }
     }
 }
+struct Projection<'a> {
+    owner: &'a Arc<CallbackUi>,
+    ticket: &'a Arc<Ticket>,
+    pending: &'a Arc<Pending>,
+    receipt: &'a kind::Receipt,
+}
+
 impl Observer {
     fn start(
-        owner: &Arc<CallbackUi>,
-        ticket: &Arc<Ticket>,
-        pending: &Arc<Pending>,
-        receipt: kind::Receipt,
+        projection: Projection<'_>,
         initial: CallbackObservation,
         events: AppEventSender,
         handle: AppServerRequestHandle,
         revalidate: bool,
     ) -> io::Result<Arc<Self>> {
+        let Projection {
+            owner,
+            ticket,
+            pending,
+            receipt,
+        } = projection;
         let actual = Arc::new(Self {
             owner: Arc::downgrade(owner),
             ticket: Arc::downgrade(ticket),
             pending: Arc::downgrade(pending),
-            receipt,
+            receipt: receipt.clone(),
             latest: Mutex::new(Some(initial.clone())),
             applied: std::sync::atomic::AtomicU64::new(initial.sequence_data()),
             terminal: tokio::sync::watch::channel(None).0,
@@ -258,17 +268,19 @@ pub(super) fn ensure(
                 "old actual Source observer has not observably ended",
             ));
         }
-        state.obsolete_observers.push(old.clone());
+        state.obsolete_observers.push(old);
         revalidate = true;
     }
     // Release progress before capture/observer creation; no lock inversion.
     drop(state);
     let actual = Observer::start(
-        owner,
-        ticket,
-        pending,
-        receipt.clone(),
-        initial.clone(),
+        Projection {
+            owner,
+            ticket,
+            pending,
+            receipt,
+        },
+        (**initial).clone(),
         events,
         handle,
         revalidate,
@@ -413,7 +425,7 @@ impl App {
             return Err(invalid("callback observer changed exact actual projection"));
         }
         if let Some(Err(_)) = *update.0.terminal.borrow() {
-            let cut = Cut::Projected(
+            let cut = Cut::Projected(Box::new(
                 update
                     .0
                     .latest
@@ -421,7 +433,7 @@ impl App {
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone()
                     .ok_or_else(|| invalid("terminal observer lost actual Source cut"))?,
-            );
+            ));
             // ensure distinguishes observed terminal refusal from uncertain
             // transport loss. A retry must receive a NEW actual Source cut.
             return ensure(
@@ -444,7 +456,7 @@ impl App {
         if observation.sequence_data() <= update.0.applied.load(Ordering::Acquire) {
             return Ok(());
         }
-        let cut = Cut::Projected(observation.clone());
+        let cut = Cut::Projected(Box::new(observation.clone()));
         let closed = validate_cut(&ticket.thread, &ticket.ids, &cut)?;
         for id in &closed {
             self.alab_apply_closed_callback(&ticket.thread, id);

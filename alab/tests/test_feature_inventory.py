@@ -197,6 +197,27 @@ class CommittedInventoryTests(unittest.TestCase):
                 self.assertNotIn('Traceback', result.stderr)
                 self.assertNotIn('ownership complete:', result.stdout)
 
+    def test_committed_catalog_utf8_is_independent_of_process_locale(self):
+        path = self.repo / 'alab/features.toml'
+        path.write_bytes(path.read_bytes().replace(
+            b'Own fixture hooks', 'Own café fixture hooks'.encode('utf-8')))
+        source = self.commit('valid UTF-8 feature catalog')
+
+        def read_inventory():
+            return subprocess.run(
+                [sys.executable, '-I', '-X', 'utf8=0',
+                 str(self.repo / 'alab/feature_inventory.py')],
+                cwd=self.repo, env=dict(self.env, LC_ALL='C'),
+                text=True, encoding='utf-8', capture_output=True, timeout=15)
+
+        self.assert_source_passes(read_inventory(), source)
+        path.write_bytes(path.read_bytes() + b'\n# \xff\n')
+        self.commit('invalid UTF-8 feature catalog')
+        result = read_inventory()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertNotIn('ownership complete:', result.stdout)
+
     def assert_exact_topic_ownership(self, topic, other_owner, *, hook=None):
         if hook is None:
             hook = f'// ALAB({topic}): committed fixture hook\n'.encode()

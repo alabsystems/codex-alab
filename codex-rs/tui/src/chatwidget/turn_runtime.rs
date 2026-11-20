@@ -209,6 +209,7 @@ impl ChatWidget {
         self.clear_safety_buffering();
         self.update_task_running_state();
         self.running_commands.clear();
+        self.alab_finding_commands.clear_starts(); // ALAB(misalignment-review): retire turn-scoped starts after transferring unfinished calls.
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
@@ -343,11 +344,15 @@ impl ChatWidget {
         ) && self.enqueue_rejected_steer()
     }
 
-    /// Finalize any active exec as failed and stop/clear agent-turn UI state.
+    /// Finalize active cells and stop/clear agent-turn UI state.
     ///
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.finalize_turn_after_finding(false); // ALAB(misalignment-review): ordinary interruption keeps its existing finalization.
+    }
+
+    pub(super) fn finalize_turn_after_finding(&mut self, finding: bool) { // ALAB(misalignment-review): provider findings do not report command completion.
         self.flush_answer_and_plan_streams();
         self.flush_interrupt_activity();
         self.finish_dynamic_activity();
@@ -363,8 +368,8 @@ impl ChatWidget {
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
-        // Ensure any spinner is replaced by a red ✗ and flushed into history.
-        self.finalize_active_cell_as_failed();
+        // Retire live rows before the terminal notice is inserted.
+        if !finding || !self.alab_record_finding_commands() { self.finalize_active_cell_as_failed(); } // ALAB(misalignment-review): retain command outcomes independently of the turn.
         // Turn-scoped hook rows are transient live state; once the turn is over,
         // do not leave an orphaned running row behind if no matching completion
         // event arrived before cancellation.
@@ -381,6 +386,7 @@ impl ChatWidget {
         };
         self.update_task_running_state();
         self.running_commands.clear();
+        self.alab_finding_commands.clear_starts(); // ALAB(misalignment-review): retire turn-scoped starts after transferring unfinished calls.
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
@@ -488,6 +494,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_rate_limit_error(&mut self, error_kind: RateLimitErrorKind, message: String) {
+        if self.alab_render_historical_quota(&error_kind, &message) { return; } // ALAB(accounts): a saved turn cannot put the current login into quota recovery.
         self.invalidate_ordinary_usage_recovery();
         // on_error can drain queued input, before the asynchronous recovery read completes.
         self.input_queue.rate_limit_recovery_pending = self.has_chatgpt_account;

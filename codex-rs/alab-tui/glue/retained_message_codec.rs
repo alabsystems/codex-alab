@@ -110,6 +110,8 @@ crate::alab_editor_upgrade::native_state!(
     InputQueueWire,
     #[serde(remote = "InputQueueState", deny_unknown_fields)]
     struct InputQueueWire {
+        #[serde(skip)]
+        alab_snapshot_input_held: bool,
         startup_submission: Option<crate::bottom_pane::ComposerDraftSnapshot>,
         queued_user_messages: VecDeque<QueuedUserMessage>,
         queued_user_message_history_records: VecDeque<UserMessageHistoryRecord>,

@@ -151,24 +151,34 @@ fn parse(line: &str, expected: &Origin) -> Result<Selection, Error> {
 }
 
 pub async fn prepare(client: &Client, origin: &Origin) -> Result<Selection, Error> {
+    prepare_for(client, origin, None).await
+}
+
+async fn prepare_for(
+    client: &Client,
+    origin: &Origin,
+    limit: Option<&str>,
+) -> Result<Selection, Error> {
     if !origin.valid() || !client.holds_claim() {
         return Err(Error::BadRequest(
             "exec account selection requires a valid native origin and self-claim".into(),
         ));
     }
-    let reply = client
-        .on_self(&format!(
-            "codex-exec-handoff prepare thread={} turn={} source_account={} source_user={}",
-            origin.thread, origin.turn, origin.identity.account, origin.identity.user,
-        ))
-        .await?;
+    let mut request = format!(
+        "codex-exec-handoff prepare thread={} turn={} source_account={} source_user={}",
+        origin.thread, origin.turn, origin.identity.account, origin.identity.user,
+    );
+    crate::account_recovery::append_exec_limit(client, &mut request, limit)?;
+    let reply = client.on_self(&request).await?;
     parse(&reply.status, origin)
 }
 
 /// What an exec run's ask about one wall came to (gap 4 of `alab/PARALLEL-LOGINS.md`, step S3).
 pub enum Asked {
-    /// Nothing was sent: no host is asked about this kind of wall ([`WallKind::asked`]).
+    /// No prepare was sent. The bucket cannot be represented or the host lacks its contract.
     Unasked,
+    /// A reused claim saw rotation disabled. Fresh admission owns the passive retry clock.
+    Readmit,
     /// Nothing was sent: the host's policy leaves no wall of refused ordinary use
     /// ([`crate::account_recovery::leaves_refusals`]), so it would answer `not-needed`.
     NotLeft,
@@ -176,14 +186,31 @@ pub enum Asked {
     Answered(Result<Selection, Error>),
 }
 
-/// Ask the host, through `client` (claimed, its policy read), to select a destination for the run
-/// standing at a wall of `kind`. A model's own limit is not asked ([`WallKind::asked`]); a wall
-/// the run keeps only while a host may move it ([`WallKind::host_kept`]) is asked only of a host
-/// whose policy leaves one ([`crate::account_recovery::leaves_exec_wall`]), which a connection
-/// claimed at an ordinary wall may not. An ordinary wall is asked as before.
+/// Ask for this refusal's exact bucket only when the host advertises the matching contract.
 pub async fn ask(client: &Client, origin: &Origin, kind: &WallKind) -> Asked {
     if !kind.asked() {
         return Asked::Unasked;
+    }
+    if kind.limit_id().is_some() {
+        match client.harness_policy().await {
+            Ok(crate::policy::PolicyAnswer::Supported(policy))
+                if crate::account_recovery::leaves_exec_wall(&policy, kind) => {}
+            Ok(crate::policy::PolicyAnswer::Supported(policy))
+                if !crate::account_recovery::policy_allows(
+                    &policy,
+                    codex_alab_core::account_handoff::Purpose::WeeklyQuota,
+                ) =>
+            {
+                return Asked::Readmit;
+            }
+            Ok(crate::policy::PolicyAnswer::Unsupported(line))
+                if !crate::exec_route::not_served(&line) =>
+            {
+                return Asked::Answered(Err(Error::PolicyInvalidated));
+            }
+            Ok(_) => return Asked::Unasked,
+            Err(error) => return Asked::Answered(Err(error)),
+        }
     }
     if kind.host_kept()
         && !client
@@ -192,7 +219,7 @@ pub async fn ask(client: &Client, origin: &Origin, kind: &WallKind) -> Asked {
     {
         return Asked::NotLeft;
     }
-    Asked::Answered(prepare(client, origin).await)
+    Asked::Answered(prepare_for(client, origin, kind.limit_id()).await)
 }
 
 impl Asked {
@@ -203,7 +230,7 @@ impl Asked {
     /// `None`: no answer yet (a refusal that names a suspension among them), or nothing asked.
     pub fn verdict(&self) -> Option<Verdict> {
         match self {
-            Asked::Unasked => None,
+            Asked::Unasked | Asked::Readmit => None,
             Asked::NotLeft => Some(Verdict::Declined),
             Asked::Answered(Ok(Selection::Waiting | Selection::Selected { .. })) => {
                 Some(Verdict::Keep)
@@ -225,6 +252,7 @@ impl Asked {
         }
         let keep = verdict == Some(Verdict::Keep);
         match self {
+            Asked::Readmit => Step::Readmit,
             Asked::Unasked | Asked::NotLeft => Step::Decline,
             Asked::Answered(Ok(Selection::Selected { destination, .. })) => {
                 Step::Move { destination, keep }
@@ -240,6 +268,8 @@ impl Asked {
 /// What the runtime of an exec run does with one ask at its wall ([`Asked::step`]).
 #[derive(Clone, PartialEq, Eq)]
 pub enum Step {
+    /// Drop the reused claim and check normal admission again for the same live wall.
+    Readmit,
     /// No move will come of this wall before it changes, and nothing is told: a host-kept wall
     /// was answered a definite no, or nothing was asked. The runtime declines a host-kept wall
     /// ([`Verdict::Declined`]), so the run ends at its next refusal there, and asks nothing more
@@ -271,6 +301,7 @@ impl Step {
 impl std::fmt::Debug for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Step::Readmit => f.write_str("Readmit"),
             Step::Decline => f.write_str("Decline"),
             Step::Tell(route) => f.debug_tuple("Tell").field(route).finish(),
             Step::Move { keep, .. } => f
@@ -698,8 +729,16 @@ mod tests {
                 "a host-kept wall tells nothing"
             );
         }
-        // Nothing asked: a model's own limit, and a workspace's wall the policy leaves none of.
+        // Neither the model nor the workspace prepare is supported by its corresponding policy below.
         let model = WallKind::Limit("codex_other".into());
+        host.reply_once(
+            &format!("@{} harness policy", host.sid()),
+            "ERR busy retry_ms=100\n",
+        );
+        assert_eq!(
+            ask(&client, &origin, &model).await.step(false),
+            Step::Again { keep: false }
+        );
         assert_eq!(
             ask(&client, &origin, &model).await.step(false),
             Step::Decline
@@ -846,7 +885,7 @@ mod tests {
             );
         }
 
-        // A model's own limit: no `prepare`, whatever the host's words.
+        // A host advertising workspace recovery alone cannot accept a named prepare.
         let before = prepares();
         let model = WallKind::Limit("codex_other".into());
         let asked = ask(&client, &origin, &model).await;

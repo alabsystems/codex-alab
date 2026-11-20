@@ -9,6 +9,7 @@ use crate::CodexThread;
 use crate::CodexThreadSettingsOverrides;
 use crate::ExecTreeSeal;
 use crate::config::ExecConfiguration;
+use crate::session::input_queue::exec_input_state::results::PreparedResults;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::turn_input::SuspendTurnOutcome;
@@ -117,6 +118,7 @@ struct Plan {
     root_options: ExecRecoveryOptions,
     invocation: ExecConfiguration,
     seal: ExecTreeSeal,
+    results: Option<PreparedResults>,
     members: Vec<Member>,
 }
 
@@ -145,8 +147,9 @@ impl CodexThread {
         let root_options = ExecRecoveryOptions::capture(self, turn)
             .await
             .ok_or("tree capture requires the original active exec root")?;
-        self.validate_exec_input_handoff(turn).await?;
         let threads = seal.loaded_threads(self).await.map_err(|e| e.to_string())?;
+        let results = PreparedResults::prepare(self, &threads).await?;
+        self.validate_exec_input_handoff(turn).await?;
         let root = threads
             .iter()
             .find(|thread| std::ptr::eq(thread.as_ref(), self))
@@ -245,6 +248,7 @@ impl CodexThread {
                 root_options,
                 invocation: invocation.clone(),
                 seal,
+                results,
                 members,
             })),
             outcome: OnceLock::new(),
@@ -259,6 +263,10 @@ async fn capture_configuration(
     let state = thread.session.state.lock().await;
     let current = &state.session_configuration;
     let mut config = (*current.original_config_do_not_use).clone();
+    let root_follow = (current.parent_thread_id.is_none()
+        && !current.session_source.is_non_root_agent()
+        && !crate::guardian::is_basic_session_source(&current.session_source))
+    .then(|| config.alab_follows_saved_model());
     config.model = Some(current.step_settings.collaboration_mode.model().to_owned());
     config.model_provider = current.provider.info().clone();
     config.model_reasoning_effort = current.step_settings.collaboration_mode.reasoning_effort();
@@ -283,7 +291,11 @@ async fn capture_configuration(
     config
         .permissions
         .set_workspace_roots(current.runtime_workspace_roots.clone());
-    invocation.capture_child(&config).map_err(|e| e.to_string())
+    match root_follow {
+        Some(follows) => invocation.capture_root_model(&config, follows),
+        None => invocation.capture_child(&config),
+    }
+    .map_err(|e| e.to_string())
 }
 
 fn order_members(root: ThreadId, mut pending: Vec<Member>) -> Result<Vec<Member>, String> {
@@ -344,6 +356,10 @@ impl ExecPreparedTree {
 
 impl Plan {
     async fn capture(mut self) -> Result<ExecCapturedTree, String> {
+        let results = match self.results.take() {
+            Some(prepared) => Some(prepared.commit()?),
+            None => None,
+        };
         self.seal.commit();
         for member in &mut self.members {
             if let Some(review) = &mut member.review {
@@ -368,7 +384,7 @@ impl Plan {
         }
         match self
             .root
-            .suspend_turn_and_shutdown()
+            .suspend_turn_with_result_owner(results.as_ref())
             .await
             .map_err(|e| e.to_string())?
         {
@@ -383,6 +399,9 @@ impl Plan {
             .wait()
             .await
             .map_err(|e| e.to_string())?;
+        if let Some(results) = &results {
+            results.finish(&self.root).await?;
+        }
         let active = self
             .members
             .iter()
@@ -485,6 +504,9 @@ impl Plan {
             inputs,
         };
         super::ExecTreeSnapshot::capture(&captured)?;
+        if let Some(results) = results {
+            results.captured(&self.root);
+        }
         Ok(captured)
     }
 }

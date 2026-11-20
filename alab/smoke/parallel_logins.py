@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import http.server
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 import capacity_exec as probe
 import package_standing
 import provider_fixture
+from device_login_fixture import DeviceIssuer, Slot, login_args
 from renewal_follow import bearer_generation, fake_auth, fixture_tls, request_kind
 
 
@@ -72,7 +74,7 @@ class Accounts:
         return probe.response(f"parallel-{index}", item)
 
 
-def server_for(accounts, root):
+def server_for(accounts, root, issuer):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -96,14 +98,25 @@ def server_for(accounts, root):
 
         def do_POST(self):
             try:
-                if self.path != "/v1/responses":
-                    raise ValueError("unexpected endpoint")
                 length = int(self.headers.get("content-length", "0"))
                 if not 0 < length <= 8 * 1024 * 1024:
                     raise ValueError("unbounded request")
-                data = accounts.respond(self.headers, json.loads(self.rfile.read(length)))
+                body = self.rfile.read(length)
+                route = re.fullmatch(r"/signin/([0-9]+)/(.+)", self.path)
+                if self.path == "/v1/responses":
+                    if issuer:
+                        index = accounts.identity(self.headers)
+                        if not issuer.bearer_matches(str(index), self.headers.get("Authorization")):
+                            raise ValueError("request did not use the access token issued for this account")
+                    data = accounts.respond(self.headers, json.loads(body))
+                    content_type = "text/event-stream"
+                elif issuer and route:
+                    data = issuer.reply(int(route[1]), route[2], body)
+                    content_type = "application/json"
+                else:
+                    raise ValueError("unexpected endpoint")
                 self.send_response(200)
-                self.send_header("content-type", "text/event-stream")
+                self.send_header("content-type", content_type)
                 self.send_header("content-length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -122,12 +135,24 @@ def server_for(accounts, root):
     return server, thread
 
 
-def run_worker(root, index, executable):
+def run_worker(root, index, executable, device_port):
     directory = root / "clients" / str(index)
     env = json.loads((directory / "environment.json").read_text())
-    return probe.run(executable, ["exec", "--json", "--color", "never",
+    if device_port:
+        auth = Path(env["CODEX_AUTH_PATH"])
+        probe.require(not auth.exists(), "device login slot was already initialized")
+        code = probe.run(executable, login_args(device_port, index), directory, env, "login")
+        if code != 0:
+            return code
+        probe.require(auth.is_file(), "login did not create its credential file")
+        login_hash = hashlib.sha256(auth.read_bytes()).digest()
+    code = probe.run(executable, ["exec", "--json", "--color", "never",
         "--skip-git-repo-check", "--cd", str(root / "work"), "--sandbox", "read-only",
         prompt(index)], directory, env, "exec")
+    if device_port:
+        probe.require(hashlib.sha256(auth.read_bytes()).digest() == login_hash,
+                      "exec overwrote the credential file created by device login")
+    return code
 
 
 def main():
@@ -135,6 +160,9 @@ def main():
     parser.add_argument("--package", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--count", type=int, default=40)
+    parser.add_argument("--device-login", action="store_true",
+                        help="sign in through a loopback device issuer before making requests")
+    parser.add_argument("--device-port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--worker", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--executable", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -142,7 +170,7 @@ def main():
     if args.worker is not None:
         if args.executable is None:
             parser.error("--worker requires --executable")
-        return run_worker(root, args.worker, args.executable.resolve(strict=True))
+        return run_worker(root, args.worker, args.executable.resolve(strict=True), args.device_port)
     if args.package is None:
         parser.error("--package is required")
     probe.require(1 <= args.count <= 128, "qualification count must be between 1 and 128")
@@ -151,7 +179,11 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     env = probe.fresh_environment(root)
     accounts = Accounts(args.count)
-    server, thread = server_for(accounts, root)
+    slots = [Slot(str(index), f"parallel-account-{index}", f"parallel-user-{index}",
+                  f"parallel-{index}@example.invalid", root / "clients" / str(index) / "auth/auth.json")
+             for index in range(args.count)]
+    issuer = DeviceIssuer(slots) if args.device_login else None
+    server, thread = server_for(accounts, root, issuer)
     processes, handles, auth_hashes, thread_ids = [], [], {}, []
     executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
     report = {"passed": False, "source": build["source"], "version": manifest["version"],
@@ -168,21 +200,24 @@ def main():
         text = text.replace("http://127.0.0.1:", "https://127.0.0.1:")
         text = text.replace("[tools.update_plan]", "[features]\nenable_request_compression = false\n[tools.update_plan]")
         config.write_text(f'cli_auth_credentials_store = "file"\nchatgpt_base_url = "https://127.0.0.1:{server.server_port}"\n' + text)
-        for index in range(args.count):
+        for index, slot in enumerate(slots):
             directory = root / "clients" / str(index)
             (directory / "work").mkdir(parents=True)
-            auth = directory / "auth/auth.json"
-            fake_auth(auth, str(index), f"https://127.0.0.1:{server.server_port}",
-                      f"parallel-account-{index}", email=f"parallel-{index}@example.invalid",
-                      user=f"parallel-user-{index}")
-            auth_hashes[auth] = hashlib.sha256(auth.read_bytes()).hexdigest()
+            auth = slot.auth_path
+            if issuer:
+                auth.parent.mkdir()
+            else:
+                fake_auth(auth, slot.generation, f"https://127.0.0.1:{server.server_port}",
+                          slot.account, email=slot.email, user=slot.user)
+                auth_hashes[auth] = hashlib.sha256(auth.read_bytes()).hexdigest()
             worker_env = dict(env, CODEX_AUTH_PATH=str(auth),
                               CODEX_CA_CERTIFICATE=str(root / "fixture-ca.pem"))
             probe.write_json(directory / "environment.json", worker_env)
             output = (directory / "worker-output.txt").open("xb")
             handles.append(output)
             processes.append(subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
-                "--output", str(root), "--worker", str(index), "--executable", str(executable)],
+                "--output", str(root), "--worker", str(index), "--executable", str(executable),
+                *(["--device-port", str(server.server_port)] if issuer else [])],
                 env=env, stdout=output, stderr=subprocess.STDOUT))
         deadline = time.monotonic() + 240
         for index, process in enumerate(processes):
@@ -202,6 +237,9 @@ def main():
         probe.require(len(set(thread_ids)) == args.count, "separate processes reused a conversation")
         probe.require(hashlib.sha256(executable.read_bytes()).hexdigest() == executable_hash,
                       "the tested executable changed during qualification")
+        if issuer:
+            probe.require(issuer.steps == [3] * args.count, "incomplete fixture device login")
+            report["loopbackDeviceLogins"] = args.count
         for path, expected in auth_hashes.items():
             probe.require(hashlib.sha256(path.read_bytes()).hexdigest() == expected,
                           "a separate login was overwritten")

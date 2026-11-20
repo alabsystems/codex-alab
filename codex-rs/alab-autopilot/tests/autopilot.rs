@@ -1833,6 +1833,21 @@ fn a_daybreak_policy_refusal_continues_independent_work_without_repeating_the_re
 }
 
 #[test]
+fn a_misalignment_finding_waits_for_the_person_before_another_request() {
+    big_stack(|| async {
+        assert_refusal_recovers_after_correction(
+            responses::sse_response(responses::sse_failed(
+                "refused",
+                "misalignment_policy_violation",
+                "Review the previous cleanup.",
+            )),
+            codex_protocol::protocol::CodexErrorInfo::MisalignmentPolicyViolation,
+        )
+        .await;
+    });
+}
+
+#[test]
 fn a_denied_account_waits_for_the_person_and_their_corrected_turn_succeeds() {
     big_stack(|| async {
         assert_refusal_recovers_after_correction(

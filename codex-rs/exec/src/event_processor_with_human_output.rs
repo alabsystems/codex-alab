@@ -142,10 +142,9 @@ impl EventProcessorWithHumanOutput {
                         );
                     }
                     CommandExecutionStatus::Failed => {
-                        let exit_code = exit_code.unwrap_or(1);
                         eprintln!(
                             "{}",
-                            format!(" exited {exit_code}{duration_suffix}:").style(self.red)
+                            alab_renderer::failed_command_line(exit_code, &duration_suffix).style(self.red) // ALAB(shell-output): show the process code only when observed.
                         );
                     }
                     CommandExecutionStatus::Declined => {
@@ -256,6 +255,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 eprintln!("{}", notification.message.style(self.green));
                 CodexStatus::Running
             }
+            ServerNotification::Error(n) if codex_alab_core::active() && n.will_retry => self.process_warning(alab_renderer::retry_message(n.error)), // ALAB(capacity): show the pending retry and its details on stderr.
             ServerNotification::Error(notification) => {
                 eprintln!(
                     "{} {}",
@@ -469,10 +469,14 @@ fn config_summary_entries(
         ),
     ];
     if config.model_provider.wire_api == WireApi::Responses {
+        let reasoning_effort = if codex_alab_core::active() { // ALAB(model-resume): the server reports the effective thread setting.
+            &session_configured_event.reasoning_effort
+        } else {
+            &config.model_reasoning_effort
+        };
         entries.push((
             "reasoning effort",
-            config
-                .model_reasoning_effort
+            reasoning_effort
                 .as_ref()
                 .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "none".to_string()),

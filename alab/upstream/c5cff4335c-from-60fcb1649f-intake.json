@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "base": "60fcb1649f0c3213d9d44c7c0caaca6459fb7c6c",
+  "target": "c5cff4335c1e4675227c8b89520aaf09564b9aa7",
+  "frontier": "60fcb1649f0c3213d9d44c7c0caaca6459fb7c6c",
+  "commits": [
+    {
+      "sha": "097a8a7439e77c2858aab2d3772bcbb1980cbd10",
+      "subject": "Add a shared sandbox launcher for Linux and macOS (#62353)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/cli/Cargo.toml",
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/cli/src/lib.rs",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/src/shared_sandbox_launcher.rs",
+        "codex-rs/cli/tests/shared_sandbox_launcher.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt the host sandbox launcher and preserve the fork’s original retained process entry and conversation restoration rules.",
+      "evidence": [
+        "At integration 411ff299b7 the new supervisor, its integration tests and the debug sandbox module match upstream byte for byte. The shared helper selects piped streams and the ordinary sandbox command retains inherited streams. The fork keeps its original startup ownership checks and refuses the helper route when a conversation checkpoint requires explicit local resume.",
+        "On a macOS host with working Seatbelt, the preceding b8a4 development CLI preserved stdin including a NUL byte, separate stdout and stderr, and exit status 23 through the normal sandbox command. The d9cbdf2e4 development CLI also preserved normal streams, EOF and exit status. These results cover the old public entry point.",
+        "The new protocol has an ordinary-host runtime check for two simultaneously running helpers, exact independent streams and status, and child cleanup after controller EOF. Linux and macOS share the protocol but retain platform-specific sandbox creation. Candidate and platform execution remain separate from this source review."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "c5cff4335c1e4675227c8b89520aaf09564b9aa7",
+      "subject": "Treat statusless bio and cyber policy errors as terminal (#62354)",
+      "paths": [
+        "codex-rs/codex-api/src/error.rs",
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/codex-api/src/sse/responses_error.rs",
+        "codex-rs/core/tests/suite/client_websockets.rs"
+      ],
+      "classes": [
+        "fix",
+        "security",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery",
+        "security-notices"
+      ],
+      "decision": "adopt",
+      "reason": "Deliver an explicit service policy refusal immediately over SSE and WebSocket, including when the error lacks an HTTP status, and preserve its category and message.",
+      "evidence": [
+        "Genuine b8a4 app-server traffic reproduced the old failure with the benign prompt “Please say hello.” and a loopback service. For each of the two codes the open stream led to six same-thread POSTs and a generic idle timeout after about 36 seconds.",
+        "The ordered 96 added and removed lines in b360b8e45f match the upstream change in all four files. The surrounding ALab SSE terminal telemetry and capacity handling remain present. The upstream tests include both statusless codes on SSE and WebSocket and leave the transport open so EOF cannot supply the terminal signal.",
+        "The candidate runtime comparison requires a single benign request, the original typed refusal, and completion before the configured first idle timeout. A passing parser alone does not establish that application behavior."
+      ],
+      "revisit": ""
+    }
+  ]
+}

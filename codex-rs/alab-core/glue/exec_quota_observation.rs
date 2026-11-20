@@ -31,6 +31,34 @@ pub struct ExecQuotaWatch {
     events: Arc<Events>,
 }
 
+/// Authorizes the drain only while the root tree selects this exact request, and retains
+/// the output owner from the instant draining begins.
+pub struct ExecQuotaDrain {
+    wall: Arc<ExecQuotaWall>,
+    handling: Arc<AtomicBool>,
+}
+
+impl ExecQuotaDrain {
+    pub fn new(wall: Arc<ExecQuotaWall>, handling: Arc<AtomicBool>) -> Self {
+        Self { wall, handling }
+    }
+
+    pub fn observation(&self) -> Weak<ExecQuotaWall> {
+        Arc::downgrade(&self.wall)
+    }
+
+    pub fn current(&self, watch: &ExecQuotaWatch) -> bool {
+        watch.observes(&self.wall)
+    }
+
+    pub fn commit(&self, watch: &ExecQuotaWatch, drain: impl FnOnce()) -> bool {
+        watch.commit_if_observed(&self.wall, || {
+            self.handling.store(true, Ordering::Release);
+            drain();
+        })
+    }
+}
+
 impl std::ops::Deref for ExecQuotaWatch {
     type Target = watch::Receiver<Option<Arc<ExecQuotaWall>>>;
     fn deref(&self) -> &Self::Target {
@@ -45,6 +73,30 @@ impl std::ops::DerefMut for ExecQuotaWatch {
 }
 
 impl ExecQuotaWatch {
+    /// The exact still-authorized observation selected by this tree. An observation from
+    /// another child can stay live after a higher-priority or newer wall supersedes it.
+    pub fn observes(&self, wall: &ExecQuotaWall) -> bool {
+        self.borrow()
+            .as_ref()
+            .is_some_and(|selected| std::ptr::eq(selected.as_ref(), wall))
+            && wall.current()
+    }
+
+    /// Commit a synchronous drain only while this tree still selects the authenticated request.
+    /// The observation lock serializes replacement and lease retirement with the actual commit.
+    fn commit_if_observed(&self, wall: &ExecQuotaWall, commit: impl FnOnce()) -> bool {
+        let _observations = self
+            .events
+            .observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.observes(wall) {
+            return false;
+        }
+        commit();
+        true
+    }
+
     /// Snapshot the root's regular turn or registered review consumer. Suspension
     /// must later validate this exact turn before any replacement can execute.
     pub async fn root_options(&self) -> Option<ExecRecoveryOptions> {
@@ -188,6 +240,7 @@ impl Events {
             .observed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wall.active.store(false, Ordering::Release);
         walls.retain(|old| !Arc::ptr_eq(old, wall));
         self.refresh(&mut walls);
     }
@@ -227,14 +280,12 @@ impl Events {
 ///   host-kept wall of the same tree gets no verdict of its own: unless a grant for the root turn
 ///   is held, it ends at its second refusal, as an unanswered one does
 ///   (`codex_alab_core::exec_wall`);
-/// - last a model's own limit, which no host is asked about ([`WallKind::asked`]).
+/// - last a model's own limit, which only an explicitly capable host can move.
 fn precedence(kind: &WallKind) -> u8 {
-    if !kind.asked() {
-        2
-    } else if kind.host_kept() {
-        1
-    } else {
-        0
+    match kind {
+        WallKind::Ordinary => 0,
+        WallKind::Workspace(_) => 1,
+        WallKind::Limit(_) => 2,
     }
 }
 
@@ -245,7 +296,6 @@ pub(crate) struct WaitLease {
 
 impl Drop for WaitLease {
     fn drop(&mut self) {
-        self.wall.active.store(false, Ordering::Release);
         self.events.remove(&self.wall);
     }
 }
@@ -619,7 +669,11 @@ mod tests {
     fn an_ordinary_wall_stays_current_while_a_member_waits_at_another_kind() {
         use codex_alab_core::wall_kind::Workspace;
         let events = Arc::new(Events::default());
-        let mut runtime = events.current.subscribe();
+        let mut runtime = ExecQuotaWatch {
+            receiver: events.subscribe(),
+            root: Weak::new(),
+            events: Arc::clone(&events),
+        };
         let current = || {
             events
                 .current
@@ -647,6 +701,15 @@ mod tests {
             "a model's limit hides nothing"
         );
         assert!(!runtime.has_changed().unwrap(), "nor wakes the runtime");
+        assert!(
+            limit.wall.current(),
+            "the named request itself is still current"
+        );
+        assert!(
+            !runtime.observes(&limit.wall),
+            "only the selected wall can move"
+        );
+        assert!(runtime.observes(&ordinary.wall));
         let workspace = at(2, &credits);
         assert_eq!(current(), WallKind::Ordinary, "nor does a workspace's wall");
         assert!(!runtime.has_changed().unwrap());
@@ -658,6 +721,11 @@ mod tests {
         );
         drop(workspace);
         assert_eq!(current(), model);
+        assert!(runtime.observes(&limit.wall));
+        let another = at(3, &WallKind::Limit("codex_second".into()));
+        assert!(limit.wall.current() && !runtime.observes(&limit.wall));
+        assert!(runtime.observes(&another.wall));
+        drop(another);
 
         // The other order: each more pressing wall takes the watch.
         let workspace = at(2, &credits);

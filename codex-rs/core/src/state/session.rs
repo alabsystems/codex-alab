@@ -99,6 +99,7 @@ pub(crate) struct SessionState {
     /// Latest task admitted in this runtime, retained across completion and history edits.
     /// Cleared by standalone settings changes to invalidate pending continuation.
     pub(crate) last_started_turn_id: Option<String>,
+    pub(crate) alab_queue_review: Option<String>, // ALAB(queue-review): the native finding still awaiting new user input.
     /// Latest regular turn, retained across completion, settings changes, and compaction.
     pub(crate) turn_attribution: Option<TurnAttribution>,
     /// Explicit namespaces from the recovered turn's own rollout record.
@@ -158,6 +159,7 @@ impl SessionState {
             additional_context: AdditionalContextStore::default(),
             previous_turn_settings: None,
             last_started_turn_id: None,
+            alab_queue_review: None, // ALAB(queue-review): only a typed terminal finding holds automatic dispatch.
             turn_attribution: None,
             restored_turn_routing: None,
             auto_compact_window: AutoCompactWindow::new_with_ids(auto_compact_window_ids),

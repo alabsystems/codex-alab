@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "base": "7066a55a7b94345757758385a538c72fda571b84",
+  "target": "18d82cf7eb77d4047d79909e1ecae0b5ee22f0af",
+  "frontier": "7066a55a7b94345757758385a538c72fda571b84",
+  "commits": [
+    {
+      "sha": "c90234de95857bf9e0d6b9073786f0419aceb5d1",
+      "subject": "Isolate auth storage attribution tests from account switches (#62131)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/account.rs",
+        "codex-rs/app-server/tests/suite/v2/auth_storage_originator_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Retain the isolated attribution controls. A successful account switch can revoke pending telemetry requests during the assertion.",
+      "evidence": [
+        "Exact parent-to-commit full-index binary patch SHA256 8ab8ee260c65753b8c3770627aa135e66a4d1d157b0950814610b9a3ef77c761.",
+        "Only two app-server test sources change. The success scenario still requires a writable device-login store. The new blocked-save scenario puts a directory at auth.json and checks that the failed async write carries the requesting client's originator.",
+        "The three-client attribution test seeds one API-key identity, disables online API-key model discovery in the fixture and routes turn-cost requests to its loopback server. These are test settings; packaged discovery defaults are unaffected."
+      ],
+      "revisit": "Run login_account_chatgpt_device_code_succeeds_and_notifies, device_code_login_reports_failed_save_with_client_originator and concurrent_connections_export_their_own_storage_originator alongside ALab's existing account-switch and revocation controls."
+    },
+    {
+      "sha": "3bf4e138fe0b27aed7dfa3ea5e0a382e3ac5bf1f",
+      "subject": "Stream partial thread search results and support cancellation (#62132)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/app-server-client/src/lib.rs",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadSearchPartialNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts",
+        "codex-rs/app-server-protocol/schema/typescript/ServerNotificationEnvelope.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadSearchPartialNotification.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/index.ts",
+        "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/log_write_warning.rs",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/notification_media.rs",
+        "codex-rs/app-server/src/outgoing_message.rs",
+        "codex-rs/app-server/src/request_processors.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/transport.rs",
+        "codex-rs/app-server/src/transport_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/connection_handling_websocket.rs",
+        "codex-rs/app-server/tests/suite/v2/mod.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_list.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_search_streaming_tests.rs",
+        "codex-rs/rollout/Cargo.toml",
+        "codex-rs/rollout/src/compression_tests.rs",
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/search.rs",
+        "codex-rs/rollout/src/search/compressed.rs",
+        "codex-rs/rollout/src/search/snippet_matcher.rs",
+        "codex-rs/rollout/src/search_tests.rs",
+        "codex-rs/thread-store/src/lib.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/search_progress.rs",
+        "codex-rs/thread-store/src/local/search_threads.rs",
+        "codex-rs/thread-store/src/local/search_threads_tests.rs",
+        "codex-rs/thread-store/src/store.rs",
+        "codex-rs/thread-store/src/types.rs",
+        "codex-rs/tui/src/app/app_server_event_targets.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/voice_owner.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/task_mentions.rs",
+        "codex-rs/tui/src/task_mentions_tests.rs",
+        "sdk/python/src/openai_codex/generated/notification_registry.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "history-pagination",
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Integrate upstream's bounded incremental search and scoped cancellation while preserving the fork's original request ownership and retained history across connection changes.",
+      "evidence": [
+        "Exact parent-to-commit full-index binary patch SHA256 adc11be8dec27c149cef590476965b8c6dd826f093cd01dd25e97df3669e136c.",
+        "The experimental streaming request sends best-effort partials to its owning connection. The existing search keeps its final response. Cancellation captures the connection, request ID and search kind at ordered ingress to avoid targeting a later reuse of the same ID.",
+        "Partial rows start from discovered rollout paths, use the account and source filters, and verify the snippet before emission. The final response remains authoritative. The TUI cancels replaced searches, drops in-process requests, issues bounded detached cancellation on remote connections and avoids unsupported Cloud search.",
+        "The fork carries original request identities and retained side delivery through message_processor.rs, the client facade and TUI dispatch. A partial search batch has no turn-item completion or transcript authority. Regenerate the stable and experimental protocol exports with the merged schema exporter."
+      ],
+      "revisit": "Run streaming_search_is_incremental_filtered_and_matches_final_response, search_cancel_and_disconnect_stop_only_the_owning_search, optional_search_progress_does_not_disconnect_a_slow_connection, streaming_search_never_reports_undiscovered_rows_from_a_shared_database and the remote task search cancellation controls. Exercise account changes and retained ownership with concurrent searches before qualifying the merge."
+    },
+    {
+      "sha": "c2595ad3438311ce3070b1a7eef05cd0da8ad631",
+      "subject": "Add live evidence retrieval for Guardian v3 reviewers (#62133)",
+      "paths": [
+        "codex-rs/core/src/guardian/review.rs",
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/core/src/guardian/review_session_tests.rs",
+        "codex-rs/core/src/guardian/reviewer_config.rs",
+        "codex-rs/core/src/guardian/tests.rs",
+        "codex-rs/core/src/guardian_review.rs",
+        "codex-rs/core/tests/suite/guardian_review.rs",
+        "codex-rs/ext/guardian-reviewer/src/instructions.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/extension_tests.rs",
+        "codex-rs/ext/guardian-v2/src/sync_reviewer/mod.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/src/retrieval_tools.rs",
+        "codex-rs/ext/guardian-v3/src/selection.rs",
+        "codex-rs/ext/guardian-v3/src/subscription_tools.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/delivery.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/selection.rs",
+        "codex-rs/message-board/src/api.rs",
+        "codex-rs/message-board/src/local/queries.rs",
+        "codex-rs/message-board/src/tools.rs",
+        "codex-rs/message-board/src/tools/arguments.rs",
+        "codex-rs/message-board/src/tools/selection.rs",
+        "codex-rs/message-board/src/tools/spec.rs"
+      ],
+      "classes": [
+        "feature",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Retain live evidence retrieval inside the existing Guardian v3 feature. Keep the isolated reviewer's board and self-subscriptions tied to the originating actor.",
+      "evidence": [
+        "Exact parent-to-commit full-index binary patch SHA256 21e4835b8351ec7667b29c751fa032dd38b43da24475fd73614ec9f8d27299aa.",
+        "LiveRetrievalBinding requires the Guardian storage namespace. Live tools can search later or unsubscribed evidence and change only the bound caller's subscriptions. The captured binding retains its separate cutoff. The retrieval instructions distinguish original messages, quotations and channel descriptions.",
+        "ReviewRetrieval selects the extension guidance for v3 and preserves native conversation-history selection for other reviewers. The fork's prepared reviewer startup carries its parent's assignment lease and ephemeral history owner. Those bindings must accompany the selected retrieval mode."
+      ],
+      "revisit": "Run the fixed-cutoff and live-later-post variants of searches_guardian_evidence, lists_only_the_reviewers_own_subscriptions_across_pages and subscription_tools_only_change_the_callers_channels. Verify source-account ownership, history handoff and an unbound isolated reviewer after integration."
+    },
+    {
+      "sha": "18d82cf7eb77d4047d79909e1ecae0b5ee22f0af",
+      "subject": "Add reusable per-agent reviewer conversations to Guardian v3 (#62134)",
+      "paths": [
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/ext/guardian-v3/src/actor.rs",
+        "codex-rs/ext/guardian-v3/src/conversation.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs"
+      ],
+      "classes": [
+        "feature",
+        "background"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep per-actor conversation reuse under the default-off Guardian v3 feature. The reviewer may be reused only while its settings, owner and reset lifecycle remain valid.",
+      "evidence": [
+        "Exact parent-to-commit full-index binary patch SHA256 f0f0928d4a68c5e1a97b62d95ef9566ec3a0ada96972651f36c0658be2c1c3e2.",
+        "ActorReviewer serializes reservations with an actor-local slot. Only an explicit Reusable disposition returns the conversation. Dropping a reservation or discarding it releases the thread's stop guard. Reservation observes cancellation, actor shutdown and the prepared history reset.",
+        "matches_session_configuration keeps the reset version while allowing ordinary parent-history and review revisions to differ. A new reviewer starts with fresh history, an isolated registry, no inherited client MCP extensions and the board tool policy. The host excludes internal and ephemeral agents and skips legacy children without an agent path.",
+        "The native test exercises actual reviewer identity across reuse, drop and discard with paginated history. It contains a network-availability skip. This review records source behavior only."
+      ],
+      "revisit": "Run retains_only_reusable_reviewer_conversations with its mock endpoint active. Exercise different actor and account owners, history resets, configuration changes and cancellation of a waiting reservation. Confirm the fork's account lease and ephemeral owner survive the isolated startup path and block reuse when ownership changes."
+    }
+  ]
+}

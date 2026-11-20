@@ -1438,6 +1438,7 @@ mod tests {
             token_usage: Some(usage.clone()),
             usage_metadata: None,
             reasoning_removals: None,
+            interrupted: false, // ALAB(shell-invocation): the fixture models a completed provider generation.
             end_turn: Some(true),
         })]);
         let result = collect_compaction_output(
@@ -1491,6 +1492,7 @@ mod tests {
                     metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
                 }),
                 reasoning_removals: None,
+                interrupted: false, // ALAB(shell-invocation): the fixture models a completed provider generation.
                 end_turn: Some(true),
             }),
         ]);

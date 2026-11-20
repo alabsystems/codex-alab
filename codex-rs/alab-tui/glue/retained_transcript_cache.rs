@@ -212,25 +212,19 @@ impl Data {
             })
             .collect::<io::Result<_>>()?;
         if entries.len() > 1 {
-            let bytes = entries.iter().try_fold(0usize, |total, entry| {
-                total
-                    .checked_add(entry.layout.text().len())
-                    .and_then(|total| {
-                        total.checked_add(
-                            entry
-                                .layout
-                                .image
-                                .as_ref()
-                                .map_or(0, |image| image.pixels.len()),
-                        )
-                    })
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "native layout cache byte overflow",
-                        )
-                    })
-            })?;
+            let bytes = entries
+                .iter()
+                .flat_map(|entry| {
+                    std::iter::once(entry.layout.text().len())
+                        .chain(entry.layout.images.iter().map(|image| image.pixels.len()))
+                })
+                .try_fold(0usize, usize::checked_add)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "native layout cache byte overflow",
+                    )
+                })?;
             if bytes > MAX_CACHED_LAYOUT_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

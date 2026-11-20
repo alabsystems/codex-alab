@@ -188,7 +188,8 @@ def guardian(spec):
                                 os.write(master, base64.b64decode(command['write'], validate=True))
                             elif 'resize' in command:
                                 rows, cols = command['resize']
-                                require(rows == 32 and cols in (38, 76), 'unexpected resize')
+                                # Narrow sizes exercise history and resume; wide sizes render both side-chat panes.
+                                require(rows == 32 and cols in (38, 76, 90, 228, 232), 'unexpected resize')
                                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
                             else:
                                 raise RuntimeError('unknown parent command')

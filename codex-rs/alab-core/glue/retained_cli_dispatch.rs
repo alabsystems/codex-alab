@@ -165,10 +165,10 @@ mod owned {
         // Native retirement; final shutdown withdraws only after all owners.
         let mut cleanup = source_shutdown.drain().await;
         for mut owner in owners {
-            if let Err(error) = owner.shutdown().await {
-                if cleanup.is_ok() {
-                    cleanup = Err(error);
-                }
+            if let Err(error) = owner.shutdown().await
+                && cleanup.is_ok()
+            {
+                cleanup = Err(error);
             }
         }
         let backend = state.bound.shutdown().await;

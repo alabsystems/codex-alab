@@ -104,6 +104,7 @@ impl App {
         let items = app_server
             .apply_older_history_page(thread_id, cursor, page, &mut turns)
             .await?;
+        store.lock().await.alab_refresh_turn_history(&turns); // ALAB(misalignment-review): older pages also establish which turns have already ended.
         let hidden_item_ids = hidden_review_item_ids(&turns);
         let visibility = if self.config.show_raw_agent_reasoning {
             RawReasoningVisibility::Visible

@@ -160,6 +160,7 @@ mod experimental_features_view;
 mod file_search_popup;
 mod footer;
 mod list_selection_view;
+#[path = "../../../alab-tui/glue/autopilot_picker_pointer.rs"] mod alab_picker_pointer; // ALAB(interface): deliver row clicks to the current Autopilot view and settle its native completion.
 #[path = "../../../alab-tui/glue/task_view_state.rs"] mod alab_tasks; // ALAB(tasks): observe native list state before applying a queued refresh
 mod memories_settings_view;
 mod mention_usage;
@@ -779,6 +780,7 @@ impl BottomPane {
 
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.key_chord_reset_requested = true;
+        self.alab_cancel_picker_mouse(); // ALAB(interface): a covered picker relinquishes its painted targets and unfinished click.
         self.view_stack.push(view);
         self.schedule_active_view_frame();
         self.request_redraw();
@@ -808,6 +810,7 @@ impl BottomPane {
     }
 
     fn on_view_stack_depth_decreased(&mut self) {
+        self.alab_cancel_picker_mouse(); // ALAB(interface): a newly exposed picker must repaint after serving as a dialog backdrop.
         self.key_chord_reset_requested = true;
         if self.view_stack.is_empty() {
             self.on_active_view_complete();
@@ -1762,6 +1765,7 @@ impl BottomPane {
 
         self.key_chord_reset_requested = true;
         self.view_stack.pop();
+        self.alab_cancel_picker_mouse(); // ALAB(interface): retiring the visible dialog invalidates the backdrop picker’s targets.
         self.request_redraw();
         true
     }
@@ -1779,6 +1783,7 @@ impl BottomPane {
         let removed_active_view = index + 1 == self.view_stack.len();
         self.view_stack.remove(index);
         if removed_active_view {
+            self.alab_cancel_picker_mouse(); // ALAB(interface): targeted dismissal can uncover a picker drawn beneath a dialog.
             self.key_chord_reset_requested = true;
             self.schedule_active_view_frame();
         }

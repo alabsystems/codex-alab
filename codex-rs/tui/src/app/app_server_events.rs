@@ -518,6 +518,7 @@ impl App {
 
         match target {
             ServerNotificationThreadTarget::Thread(thread_id) => {
+                if self.alab_stale_lifecycle(thread_id, &notification, Some(app_server_client.backend_id())).await { return; } // ALAB(misalignment-review): a late receipt cannot override a saved thread refresh.
                 if self.saved_openings.observe(
                     app_server_client.backend_id(),
                     thread_id,

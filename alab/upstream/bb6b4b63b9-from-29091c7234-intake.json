@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "base": "29091c7234b0e58d4e5474841dd69474d6116ce0",
+  "target": "bb6b4b63b9df5432f4f45c90072d7823764ced00",
+  "frontier": "29091c7234b0e58d4e5474841dd69474d6116ce0",
+  "commits": [
+    {
+      "sha": "b65d9a3b2ddb413e38847626863189d1c12171af",
+      "subject": "Stabilize app-server `app/list` integration tests (#62162)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/app_list.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "qualification-fixtures",
+        "model-discovery",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Use a watch gate to make mock directory response ordering deterministic and a bundled model catalog to keep connector tests from performing unrelated discovery.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 b574d333da64d28f0bfee9924db28d2d475fe79e681ed0efef50a2796352b30f.",
+        "The fixture holds directory responses until the accessible-only tools update is observed. During forced refresh, it then requires the very next update to include the fresh directory. The config rewrite retains the explicit local model catalog."
+      ],
+      "revisit": "Run the app/list notification-order and thread feature-flag fixtures with the maintained suite timeout."
+    },
+    {
+      "sha": "bb6b4b63b9df5432f4f45c90072d7823764ced00",
+      "subject": "Move the app-server socket relay into the Codex CLI (#62163)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "codex-rs/cli/Cargo.toml",
+        "codex-rs/cli/src/app_server_proxy.rs",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/tests/app_server_proxy.rs",
+        "codex-rs/stdio-to-uds/BUILD.bazel",
+        "codex-rs/stdio-to-uds/Cargo.toml",
+        "codex-rs/stdio-to-uds/README.md",
+        "codex-rs/stdio-to-uds/src/lib.rs",
+        "codex-rs/stdio-to-uds/src/main.rs",
+        "codex-rs/stdio-to-uds/tests/stdio_to_uds.rs"
+      ],
+      "classes": [
+        "refactor",
+        "packaging"
+      ],
+      "features": [
+        "native-session",
+        "build-and-adoption",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Move the relay into its only supported command and drop the unused standalone crate and hidden subcommand. Keep app-server proxy endpoint selection and the byte forwarding behavior.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 941d5c4e53941a6c550a7b3d29b8d9bf6432cba42931881daa5efab363224412.",
+        "The original relay body moves into the CLI. The caller still resolves an explicit socket path or the app-server control socket under the current CODEX_HOME. No ALab-owned packaging or runtime caller references the removed command or crate at main 03e3970327."
+      ],
+      "revisit": "Run the new app_server_proxy integration test and check the default control socket path in the native CLI."
+    }
+  ]
+}

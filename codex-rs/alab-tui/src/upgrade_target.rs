@@ -9,6 +9,8 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
+/// Released 0.11 callers send no dialect argument and reject unknown top-level
+/// fields. Add optional capabilities to `extensions` on this wire format.
 pub const PROTOCOL: u32 = 3;
 
 /// Typed CLI entry, kept out of upstream's argument implementation.
@@ -100,23 +102,20 @@ impl Response {
             && self.runtime_readers.contains(&self.full_runtime)
     }
 
-    fn current() -> std::io::Result<Self> {
+    fn current(exec_custody: u32) -> std::io::Result<Self> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let metadata = std::fs::metadata(&executable)?;
+        let supports_runtime = exec_custody == crate::upgrade_exec_custody::PROTOCOL;
         Ok(Self {
             protocol: PROTOCOL,
-            exec_custody: crate::upgrade_exec_custody::startup_protocol(),
-            full_runtime: if crate::upgrade_exec_custody::startup_protocol()
-                == crate::upgrade_exec_custody::PROTOCOL
-            {
+            exec_custody,
+            full_runtime: if supports_runtime {
                 crate::upgrade_state::VERSION
             } else {
                 0
             },
-            runtime_readers: if crate::upgrade_exec_custody::startup_protocol()
-                == crate::upgrade_exec_custody::PROTOCOL
-            {
-                vec![crate::upgrade_state::VERSION]
+            runtime_readers: if supports_runtime {
+                crate::upgrade_state::reader_versions()
             } else {
                 Vec::new()
             },
@@ -136,7 +135,7 @@ impl Command {
     /// A CLOEXEC caller pipe makes successful exec release this helper naturally.
     pub fn run(self) -> std::io::Result<()> {
         respond(
-            &Response::current()?,
+            &Response::current(crate::upgrade_exec_custody::startup_protocol())?,
             self.hold,
             &mut std::io::stdin().lock(),
             &mut std::io::stdout().lock(),
@@ -181,6 +180,42 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
+    fn default_frame_is_readable_by_the_released_0_11_caller() {
+        let response = Response::current(crate::upgrade_exec_custody::PROTOCOL).unwrap();
+        let mut bytes = Vec::new();
+        respond(&response, false, &mut std::io::empty(), &mut bytes).unwrap();
+        let mut frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let readers: Vec<u32> = serde_json::from_value(frame["runtime_readers"].clone()).unwrap();
+        let writer: u32 = serde_json::from_value(frame["full_runtime"].clone()).unwrap();
+        assert!(readers.contains(&2), "0.11 writes runtime state version 2");
+        assert!(readers.contains(&writer));
+        assert!(readers.first().is_some_and(|version| *version > 0));
+        assert!(readers.windows(2).all(|pair| pair[0] < pair[1]));
+        if let Some(extensions) = frame.as_object_mut().unwrap().remove("extensions") {
+            assert!(extensions.is_object());
+        }
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let metadata = std::fs::metadata(&executable).unwrap();
+        // These field names and wire versions are from the shipped caller. A
+        // round trip through today's Response would accept coordinated breaks.
+        assert_eq!(
+            frame,
+            serde_json::json!({
+                "protocol": 3,
+                "exec_custody": 2,
+                "full_runtime": writer,
+                "runtime_readers": readers,
+                "exec_custody_adopted": crate::upgrade_exec_custody::adopted(),
+                "pid": std::process::id(),
+                "executable": executable,
+                "device": metadata.dev(),
+                "inode": metadata.ino(),
+                "product_version": crate::session::version(),
+            })
+        );
+    }
+
+    #[test]
     fn handshake_arrives_before_the_hold_and_eof_releases_it() {
         let (caller, mut target) = UnixStream::pair().unwrap();
         caller
@@ -188,7 +223,12 @@ mod tests {
             .unwrap();
         let mut input = target.try_clone().unwrap();
         let worker = std::thread::spawn(move || {
-            respond(&Response::current().unwrap(), true, &mut input, &mut target)
+            respond(
+                &Response::current(0).unwrap(),
+                true,
+                &mut input,
+                &mut target,
+            )
         });
         let mut reader = std::io::BufReader::new(caller);
         let mut frame = String::new();
@@ -211,7 +251,7 @@ mod tests {
 
     #[test]
     fn unexpected_input_or_an_oversized_frame_refuses() {
-        let response = Response::current().unwrap();
+        let response = Response::current(0).unwrap();
         assert!(respond(&response, true, &mut &b"unexpected"[..], &mut Vec::new()).is_err());
         let mut response = response;
         response.product_version = "x".repeat(16 * 1024);

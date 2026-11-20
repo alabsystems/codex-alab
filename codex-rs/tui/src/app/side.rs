@@ -516,23 +516,24 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
-        let close = app_server.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): capture exact close owner before original interrupt awaits.
-        if let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
+        let (interrupt, close) = app_server.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): recovery reads the original result without interrupting a later turn.
+        if interrupt && let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
             tracing::warn!("{message}");
             self.add_agents_overview_error(message);
             return false;
         }
-        if let Err(err) = close.await {
+        let (result, ack) = close.await; // ALAB(side-boundary): only the received reply carries its exact acknowledgement.
+        if let Err(err) = result {
             let message =
                 format!("Failed to close side conversation {thread_id}; it is still open: {err}");
             tracing::warn!("{message}");
             self.add_agents_overview_error(message);
-            if let Err(error)=app_server.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): preserve actual failed close after original error application.
+            crate::app_server_session::SideCloseAck::after_application(ack).await; // ALAB(side-boundary): acknowledge an original rejection after applying it.
             return false;
         }
         self.abandoned_side_threads.insert(thread_id);
         self.discard_thread_local_state(thread_id).await;
-        if let Err(error)=app_server.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): cleanup follows actual original UI removal.
+        crate::app_server_session::SideCloseAck::after_application(ack).await; // ALAB(side-boundary): acknowledge this reply after removing its pane.
         true
     }
 
@@ -558,16 +559,17 @@ impl App {
             .map(|side| side.parent_thread_id);
         self.discard_thread_local_state(thread_id).await;
 
-        let close=view.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): same retained operation before spawned original cleanup.
+        let (interrupt, close) = view.alab_unsubscribe_side_view(thread_id); // ALAB(side-boundary): only the first close owns the interrupt.
         let cleanup = tokio::spawn(async move {
-            if let Err(error) = interrupt_for_close(&mut view, thread_id, turn_id, attachment).await
+            if interrupt && let Err(error) = interrupt_for_close(&mut view, thread_id, turn_id, attachment).await
             {
                 tracing::warn!(%error, "failed to interrupt side conversation");
             }
-            if let Err(error) = close.await {
+            let (result, ack) = close.await; // ALAB(side-boundary): this cleanup retains the exact original reply.
+            if let Err(error) = result {
                 tracing::warn!(%error, "failed to unsubscribe side conversation");
             }
-            if let Err(error)=view.alab_observe_side_close(thread_id).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): original local pane was already removed before cleanup.
+            crate::app_server_session::SideCloseAck::after_application(ack).await; // ALAB(side-boundary): the originating pane was already removed.
         });
         if let Some(parent) = saved_parent {
             self.sidebars

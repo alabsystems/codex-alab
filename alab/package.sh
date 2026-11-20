@@ -73,7 +73,8 @@
 #      probes in codex-rs and the cache must record the same compiler;
 #      then a certified release build including every compiler-capable dependency (the
 #      lockfile locked, STABLE_GIT_COMMIT=<rev>, CODEX_ALAB_BUILD_VERSION the client version,
-#      CODEX_ALAB_PRODUCT_VERSION the version), with upstream's pinned rusty_v8 archives
+#      CODEX_ALAB_PRODUCT_VERSION the version, CODEX_ALAB_BASELINE its numeric baseline),
+#      with upstream's pinned rusty_v8 archives
 #      (scripts/codex_package/v8.py, verified against third_party/v8/*_release_manifests.sha256,
 #      read-only to the build), contained (lib.sh, alab_contained), with a persistent
 #      rust-release-<target>-<compiler id>.noindex target under the locked private package
@@ -140,6 +141,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=alab/lib.sh
 . "${repo_root}/alab/lib.sh"
+
+# The certified controller belongs to this caller, independently of the source
+# being packaged. Admit its exact inputs read-only; an older target must not
+# supply a weaker policy, and the rest of the controller checkout stays unreadable.
+package_verified_contained() {
+  alab_verified_contained --read "${ATPKG_PROJECT_FRONT}" --read "${compiler_root}" --read "${cargo}" \
+    --read "${repo_root}/alab/certified-build.sh" --read "${repo_root}/alab/lib.sh" \
+    --read "${repo_root}/alab/proof-policy.toml" "$@"
+}
 
 # Publication is reached only after every smoke check passed. A failed rename cannot
 # attempt selection, and --no-promote leaves both the selected package and its link alone.
@@ -640,7 +650,7 @@ package_origin_main() {
 ledger is checked along origin/main as origin has it now (alab/README.md, Decision 8)"
   alab_say "fetching origin's main (refs/heads/main:refs/remotes/origin/main, fast-forward only)"
   "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/command_guard.py" \
-    --inherited-group-timeout 120 -- "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
+    --inherited-group-timeout 120 --retire-on-term -- "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
     "${repo_root}/alab/github.py" --repo "${repo_root}" fetch origin \
     refs/heads/main:refs/remotes/origin/main || alab_die "fetching origin's main failed \
 (above): the version ledger is checked along it. If git refused a non-fast-forward, origin's \
@@ -730,17 +740,20 @@ spec_main="$(git config --get-all remote.upstream.fetch | grep -m1 ':refs/remote
 [[ -n "${spec_tags}" && -n "${spec_main}" ]] || alab_die "the upstream remote has no refspec for \
 its release tags (refs/upstream-tags/) or main: run alab/setup.sh"
 alab_say "fetching upstream's release tags and main (${spec_tags}, ${spec_main})"
-# Keep Git and its helpers in the existing guardian's leased group. A timeout
-# fails this transaction immediately, so that guardian stops the remaining group
-# before any cache unlock; compilation itself has no added deadline.
+# Stop the release controller at the network deadline. It retires native Git
+# writers before returning to the guardian that holds the package lock.
 "${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/command_guard.py" \
-  --inherited-group-timeout 120 -- "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
+  --inherited-group-timeout 120 --retire-on-term -- "${ALAB_PYTHON:-/usr/bin/python3}" -I -B \
   "${repo_root}/alab/github.py" --repo "${repo_root}" --anonymous fetch upstream \
   "${spec_tags}" "${spec_main}" || alab_die "fetching upstream \
 failed (above): the version rule needs its current tags and main. If git refused a \
 non-fast-forward of upstream/main, upstream rewrote its history: a person decides (alab/README.md)"
 git rev-parse -q --verify refs/remotes/upstream/main >/dev/null \
   || alab_die "no upstream/main here: run alab/setup.sh, then git fetch upstream"
+
+# A release leaf pins its exact official object independently of the package's version floor.
+pinned_release="$("${ALAB_PYTHON:-/usr/bin/python3}" -I -B "${repo_root}/alab/upstream_intake.py" \
+  pinned-release --repo "${repo_root}" --source "${commit}")" || alab_die "cannot authenticate upstream release for ${sha9}"
 
 # The newest stable upstream tag (rust-vX.Y.Z, no pre-release) whose branch point the commit
 # has merged. A release tag is never an ancestor of upstream/main (alab/README.md, "What
@@ -965,21 +978,28 @@ fi
 # The upstream base: provenance beside the version, never part of it (Decision 8). Read
 # once, for the binary (the release build's CODEX_ALAB_UPSTREAM_VERSION and _COMMIT, which
 # alab-core's version.rs compiles in for the session header), alab-build.json's "upstream"
-# and the release line (--upstream-base). <n> counts the upstream commits past the stable's
-# branch point, which the merged commit has as an ancestor (upstream's history is linear).
-upstream_at="$(git merge-base "${commit}" refs/remotes/upstream/main 2>/dev/null)" || upstream_at=""
+# and the release line (--upstream-base). A marked leaf counts from the official release
+# itself. An ordinary mainline build counts from the stable release's branch point.
+upstream_version="${base_tag}" upstream_count_from="${base_bp}"
+if [[ -n "${pinned_release}" ]]; then
+  read -r upstream_version upstream_at <<< "${pinned_release}"
+  upstream_version="${upstream_version#rust-v}"
+  upstream_count_from="${upstream_at}"
+else
+  upstream_at="$(git merge-base "${commit}" refs/remotes/upstream/main 2>/dev/null)" || upstream_at=""
+fi
 upstream_date="" upstream_base=""
 if [[ -n "${upstream_at}" ]]; then
   upstream_date="$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd \
     "${upstream_at}")" || alab_die "cannot read the date of upstream ${upstream_at:0:12}"
   upstream_said="openai/codex@${upstream_at:0:12} (${upstream_date}), the upstream commit \
 ${sha9} merged last"
-  if [[ -n "${base_tag}" ]]; then
-    since="$(git rev-list --count "${base_bp}..${upstream_at}")" \
-      || alab_die "cannot count upstream's commits from ${base_bp:0:9} to ${upstream_at:0:9}"
+  if [[ -n "${upstream_version}" ]]; then
+    since="$(git rev-list --count "${upstream_count_from}..${upstream_at}")" \
+      || alab_die "cannot count upstream's commits from ${upstream_count_from:0:9} to ${upstream_at:0:9}"
     commits=commits
     [[ "${since}" != 1 ]] || commits=commit
-    upstream_base="Based on upstream openai/codex rust-v${base_tag} + ${since} ${commits} \
+    upstream_base="Based on upstream openai/codex rust-v${upstream_version} + ${since} ${commits} \
 (${upstream_at:0:12}, ${upstream_date%%T*})"
   fi
 else
@@ -1224,9 +1244,6 @@ package_contained() {
   # The selected wrapper belongs to the caller, outside the packaged source tree.
   alab_contained --read "${ATPKG_PROJECT_FRONT}" --read "${compiler_root}" --read "${cargo}" "$@"
 }
-package_verified_contained() {
-  alab_verified_contained --read "${ATPKG_PROJECT_FRONT}" --read "${compiler_root}" --read "${cargo}" "$@"
-}
 alab_say "compiler ${compiler_id}: $(sed -n 's/.*"rustc": "\([^"]*\)".*/\1/p' "${cfacts}/trusted.json"), \
 $(sed -n 's/.*"sysroot": "\([^"]*\)".*/\1/p' "${cfacts}/trusted.json") (${cargo_said}: ${cargo})"
 package_record_native_compiler "${python}" "${cfacts}/trusted.json" "${ATPKG_PROJECT_EXECUTION}" \
@@ -1263,8 +1280,8 @@ proof_root="$(mktemp -d "${CARGO_TARGET_DIR}/alab-certified.XXXXXX")" \
 alab_say "building ${package_first_party[*]} (release) at ${sha9}"
 (cd "${wt}/codex-rs" && package_verified_contained --read "${v8_cache}" "${CARGO_TARGET_DIR}" -- /usr/bin/env \
   STABLE_GIT_COMMIT="${commit}" CODEX_ALAB_BUILD_VERSION="${client_version}" \
-  CODEX_ALAB_PRODUCT_VERSION="${version}" \
-  CODEX_ALAB_UPSTREAM_VERSION="${base_tag}" CODEX_ALAB_UPSTREAM_COMMIT="${upstream_at}" \
+  CODEX_ALAB_PRODUCT_VERSION="${version}" CODEX_ALAB_BASELINE="${baseline}" \
+  CODEX_ALAB_UPSTREAM_VERSION="${upstream_version}" CODEX_ALAB_UPSTREAM_COMMIT="${upstream_at}" \
   RUSTY_V8_ARCHIVE="${v8_archive}" RUSTY_V8_SRC_BINDING_PATH="${v8_binding}" \
   "${repo_root}/alab/certified-build.sh" "${proof_root}/report" \
   "${commit}" --release --locked "${package_cargo_args[@]}") \
@@ -1370,7 +1387,7 @@ done
 # the release build compiled in.
 recorded_client=""
 [[ "${own_line}" -eq 0 ]] || recorded_client="${client_version}"
-CODEX_ALAB_UPSTREAM_VERSION="${base_tag}" CODEX_ALAB_UPSTREAM_COMMIT="${upstream_at}" \
+CODEX_ALAB_UPSTREAM_VERSION="${upstream_version}" CODEX_ALAB_UPSTREAM_COMMIT="${upstream_at}" \
   CODEX_ALAB_UPSTREAM_SINCE="${since:-}" CODEX_ALAB_UPSTREAM_DATE="${upstream_date}" \
   CODEX_ALAB_CLIENT_VERSION="${recorded_client}" CODEX_ALAB_BASELINE="${baseline}" \
   alab_build_json "${python}" "${staged}/alab-build.json" \

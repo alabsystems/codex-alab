@@ -104,33 +104,33 @@ fn an_http_policy_refusal_keeps_receiving_later_independent_goal_turns() {
     ));
 }
 
+#[derive(Default)]
+pub(super) struct ThirdTurnGate {
+    starts: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    pub(super) release: tokio::sync::Notify,
+}
+
+impl TurnLifecycleContributor for ThirdTurnGate {
+    fn on_turn_start<'a>(
+        &'a self,
+        _input: codex_extension_api::TurnStartInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if self
+                .starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 2
+            {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+        })
+    }
+}
+
 fn assert_goal_continues_after_refusal(refusal: wiremock::ResponseTemplate) {
     big_stack(move || async move {
-        #[derive(Default)]
-        struct ThirdTurnGate {
-            starts: std::sync::atomic::AtomicUsize,
-            entered: tokio::sync::Notify,
-            release: tokio::sync::Notify,
-        }
-
-        impl TurnLifecycleContributor for ThirdTurnGate {
-            fn on_turn_start<'a>(
-                &'a self,
-                _input: codex_extension_api::TurnStartInput<'a>,
-            ) -> codex_extension_api::ExtensionFuture<'a, ()> {
-                Box::pin(async move {
-                    if self
-                        .starts
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                        == 2
-                    {
-                        self.entered.notify_one();
-                        self.release.notified().await;
-                    }
-                })
-            }
-        }
-
         let gate = Arc::new(ThirdTurnGate::default());
         let h = harness_login_with_error_hook(
             Mode::Current,

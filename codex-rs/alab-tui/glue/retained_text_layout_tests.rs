@@ -208,26 +208,47 @@ fn exact_image_raster_protocol_and_shared_alias_survive_without_file_reload() ->
         cell_width: 8,
         cell_height: 16,
     });
+    let other = Arc::new(TranscriptImage {
+        protocol: image.protocol,
+        columns: 1,
+        rows: 1,
+        pixels: RgbaImage::from_pixel(1, 1, image::Rgba([4, 3, 2, 1])),
+        cell_width: 8,
+        cell_height: 16,
+    });
     let mut first = TextLayout::new(vec![HyperlinkLine::from(Line::from("image"))], 4);
-    first.image = Some(image.clone());
+    first.images = vec![image.clone(), other.clone(), image.clone()];
     let mut second = TextLayout::new(Vec::new(), 4);
-    second.image = Some(image);
+    second.images.push(other);
     let mut capture = Capture::default();
+    let external = capture.lines().image(&image)?;
     let a = capture.intern(&Arc::new(first))?;
     let b = capture.intern(&Arc::new(second))?;
-    let recovered = Restored::decode(&capture.encode(BUDGET)?, BUDGET)?;
+    let c = capture.intern(&Arc::new(TextLayout::new(Vec::new(), 4)))?;
+    let bytes = capture.encode(BUDGET)?;
+    let mut wire: serde_json::Value = serde_json::from_slice(&bytes).map_err(native::invalid)?;
+    // Empty and single-image records retain the exact original nullable field.
+    assert_eq!(wire["layouts"][1]["image"], serde_json::json!(1));
+    assert_eq!(wire["layouts"][2]["image"], serde_json::Value::Null);
+    for index in [1, 2] {
+        assert!(wire["layouts"][index].get("additionalImages").is_none());
+    }
+    let mut recovered = Restored::decode(&bytes, BUDGET)?;
     let a = recovered.layout(a)?;
     let b = recovered.layout(b)?;
-    let a_image = a
-        .image
-        .as_ref()
-        .ok_or_else(|| native::invalid("missing actual image"))?;
-    assert!(Arc::ptr_eq(
-        a_image,
-        b.image
-            .as_ref()
-            .ok_or_else(|| native::invalid("missing actual image"))?
-    ));
+    assert!(recovered.layout(c)?.images.is_empty());
+    assert_eq!(a.images.len(), 3);
+    assert_eq!(b.images.len(), 1);
+    let a_image = &a.images[0];
+    assert!(Arc::ptr_eq(a_image, &recovered.lines().image(external)?));
+    assert!(Arc::ptr_eq(a_image, &a.images[2]));
+    assert!(Arc::ptr_eq(&a.images[1], &b.images[0]));
+    assert_eq!(a.images[1].pixels.as_raw(), &[4, 3, 2, 1]);
+
+    wire["layouts"][0]["additionalImages"][1] = serde_json::json!(99999);
+    assert!(
+        Restored::decode(&serde_json::to_vec(&wire).map_err(native::invalid)?, BUDGET).is_err()
+    );
     assert_eq!(a_image.protocol, ImageProtocol::KittyLocalFile);
     assert_eq!(a_image.pixels.as_raw(), &[1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!((a_image.cell_width, a_image.cell_height), (8, 16));

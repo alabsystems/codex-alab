@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "base": "bd3eaf7829187f18d05205222bf2f67c0af80fb4",
+  "target": "bd00a8a42ece6ea9d22d406b2e6923218c02e282",
+  "frontier": "bd3eaf7829187f18d05205222bf2f67c0af80fb4",
+  "commits": [
+    {
+      "sha": "bd00a8a42ece6ea9d22d406b2e6923218c02e282",
+      "subject": "Preserve pending realtime speech when a call ends (#62299)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server/tests/suite/v2/realtime_conversation.rs",
+        "codex-rs/core/src/context_manager/history.rs",
+        "codex-rs/core/src/context_manager/history_tests.rs",
+        "codex-rs/core/src/realtime_conversation.rs",
+        "codex-rs/core/src/realtime_conversation/caller_sideband.rs",
+        "codex-rs/core/src/realtime_conversation/sideband.rs",
+        "codex-rs/core/src/realtime_conversation/transcript_tail.rs",
+        "codex-rs/core/src/realtime_conversation_tests.rs",
+        "codex-rs/core/src/realtime_history.rs",
+        "codex-rs/core/src/realtime_history/handoff.rs",
+        "codex-rs/core/src/realtime_history_tests.rs",
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/inject.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/realtime_handoff.rs",
+        "codex-rs/core/src/session/realtime_history.rs",
+        "codex-rs/core/src/session/rollout_reconstruction.rs",
+        "codex-rs/core/src/session/rollout_reconstruction_tests.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/thread_rollout_truncation.rs",
+        "codex-rs/core/tests/suite/hooks.rs",
+        "codex-rs/core/tests/suite/realtime_attachment.rs",
+        "codex-rs/core/tests/suite/realtime_conversation.rs",
+        "codex-rs/core/tests/suite/realtime_history_store.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__realtime_turn_input_accepted_context.snap",
+        "codex-rs/history/src/lib.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/rollout/src/persistence_metrics.rs",
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/realtime_input_tests.rs",
+        "codex-rs/thread-store/src/local/rollout_migration/rollback.rs",
+        "codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs",
+        "codex-rs/thread-store/src/local/rollout_migration_tests.rs",
+        "codex-rs/tui/src/app/tests/realtime_requests.rs",
+        "codex-rs/tui/src/app_server_session/realtime.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "history-pagination",
+        "native-ui"
+      ],
+      "decision": "adapt",
+      "reason": "Carry the V3 call lifecycle and durable speech recovery. Keep the original Core responsible for draining and settling ongoing writes before process replacement, and retain terminal-owned voice negotiation while preserving ordinary client reattachment.",
+      "evidence": [
+        "Authenticated official main identified bd00a8a42ece6ea9d22d406b2e6923218c02e282 as the sole child after bd3eaf7829187f18d05205222bf2f67c0af80fb4 in this batch. Reviewed 39 paths, including the stable export. Binary diff SHA-256 3a29605e5b6d6926f933a82f10f8ad5e491b795fad9f3e9dc8d5455f1bbd2c7e.",
+        "Closes the activation item from #62288. The actual RealtimeHandoffAdmission fanout now calls Session::route_realtime_handoff. With frame enrollment, it reserves transcript input, waits for the original turn hook and durable annotated write, and reconciles unresolved outcome. Without the durable path it preserves ordinary realtime text routing. Do not substitute a copied input UUID for the original reservation or storage outcome.",
+        "For a reconnectable enrolled V3 call, ordinary transport loss/detach drains admitted events and preserves an open logical call. Explicit End first settles admitted input, then persists remaining speech and the session close. Reattachment restores known pending frames. TUI existing-call attachments now use the actual call ID so successive calls on one thread remain distinct.",
+        "An end-of-call receipt records speech as model context once and is excluded from rollback turn counting and pre-turn truncation. LiveThread and the local writer use stable record identity for a retried carryover seal. Already durable history can be recovered without creating another user turn or inventing an acceptance. The fork must retain its observation-clock serialization, sampling metadata, side-channel receipt and chronological history projection.",
+        "Process replacement must account for the installed Core transport and draining context in every included tree member. Terminal replacement also has to preserve a parked or foreground voice peer. Failed reads, unknown seals, or timeouts can require recovery with no active transport. A clean detached-open call or definite retryable store refusal is independently recoverable and must not create a permanent upgrade hold.",
+        "The live fanout reserves a handoff and calls the turn handler directly. It runs outside the fork's ordinary submission admission. End without an installed transport sets manager closing and spawns end_persisted_session, then returns from dispatch while the actual storage owner still runs. Protect both lifetimes with the original source mutation and shutdown ownership or exclude them under the committed native cut. An early running/context/closing snapshot alone cannot exclude a reservation or detached close that starts before commit. Check closing and recovery under that exclusion before any destructive transition.",
+        "Upstream includes same-call reconnect and distinct-call input history tests, pending hook timeout and failed close recovery, annotated replay/carryover rollback, and idempotent retry after a directory sync error. Those are donor source tests. Native execution and ALab-specific process-handoff interleavings require exact combined-source observations.",
+        "On integrated source f126236a32e7e4c0441c3c3fd6616636fa169463, the entire native thread-store library suite passed all 322 tests. The local writer exercised retry after an uncertain carryover append and retry after an uncertain input append. Migration exercised a session-end input inside checkpoint rollback. The retained-writer control exercised a cold store and shutdown of the original writer. The runtime log has SHA-256 3512866ea65b8177530e2a852f4f3bbf8d633408f88af7ac991cc8be2e1c2afe.",
+        "The native protocol generator on f126236a reproduced the committed stable archive byte for byte, SHA-256 d80f8636e32d2a3e310776f7e4a74e5c74800a90236bc526fa50454bdcebce56. Its stable fixture parity and experimental export parity tests both passed. The runtime log has SHA-256 a8f5fe3c41d076518e37d5cd2f4a399c00255b64bf0f0978f6c47d68d049f1f8.",
+        "On 67df8ce9da63742066598497ca400cedc14e9002, five native Core unit cases passed, including natural and requested transport close, asynchronous detached End held at its writer, and uncertain history settlement. All five app-server scenarios passed, including both history modes with both expectation values. Ten of eleven Core integration cases passed, covering carryover order, reconnect, failed close, timeouts and distinct calls. The remaining test exposed a hosted-store fixture that could not read the full journal during cold resume. Native observation SHA-256 f8643c8a2b6c9815a071bdeb1324f4973fadc9a39515904e8115841078082da8.",
+        "On 1b7d52355098ff077d000aea1ba2b94799107abe, the repaired uncertain_persisted_end_refuses_source_replacement_without_replaying_close test passed. After an ambiguous durable End, the old Core refused replacement twice. After shutdown and unregistration, ordinary same-ID resume created a new Core from the whole journal and admitted capture. Exactly one committed speech record survived across retry. A new injected failure held the new owner again. Native log SHA-256 1f5ab11c5d56027d4c4d931c4fdd8741cbfe2812afa0bbf721a8c8449d1318f1.",
+        "On c7fb9bae6f0c0a4da5898727b07a37d33ce363fd, the real app-server returned distinct native submission IDs for Start and Stop. The backend error matched Start and the requested close matched Stop. Idle audio, text and speech operations each returned their original badRequest. Ordinary final unsubscribe in a separate run closed the idle thread after 1.006 seconds with a one-second idle timeout. The same running process reported the thread unloaded, reopened its original ID and prior user and assistant history, and included the previous user input in its next real model request. Wire and idle-reload observation SHA-256s are 04f315a37fb70ad35c44753b7a05776d73c8de4608def5518436a089002e2e16 and 2afd48ec27ef59411a04ed2860be8296f168ff241b83938dead1690566aa6db7.",
+        "On ca3b9e2838c97b617a7356a9cffda29fa9c71b1a, all eight focused native TUI tests passed. A parked negotiating call deferred destructive replacement. A stale fatal notification could not authorize its successor, and the current stop released the hold for retry. Released empty responses and missing notification IDs retained their compatibility behavior. Other cases kept mute across a fresh attempt, waited for the preceding call to close, cleared a rejected stop, and retained the misalignment block. The independent side-dispatch case preserved its queue and accepted an empty EOF. Native log SHA-256 181c8c00b9b0bcb7b7820e6ad7a425f04330338c525769380fa9dd165465dfc2."
+      ],
+      "revisit": "Qualify reserved and uncertain handoff settlement, live and reloaded session End, normal detach/reattach and post-close capture eligibility, recovery before replacement, exactly-once carryover across retry, rollback turn counting, and stable plus experimental generated exports on the composed source. Hold a real persisted End at its store boundary after the dispatcher returns and exercise both orderings against native source commitment. Require that a blocked or uncertain original owner prevents destructive capture, a settled owner releases the hold, and the destination never publishes the same speech twice."
+    }
+  ]
+}

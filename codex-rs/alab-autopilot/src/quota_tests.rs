@@ -5,11 +5,18 @@ use super::upgrade_handoff_tests::Harness;
 use super::upgrade_handoff_tests::native_test;
 use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
+use codex_alab_core::retained_goal_gate::Gate;
+use codex_alab_core::retained_goal_gate::Owner;
 use codex_alab_core::session::Pace;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
 use codex_alab_core::session::WallMark;
+use codex_alab_core::wake::Reading;
+use codex_alab_core::wall_kind::LimitClass;
+use codex_state::ThreadGoalStatus;
 use core_test_support::responses::received_responses_requests;
+use std::future::Future;
+use std::task::Poll;
 
 fn identity(account: &str, owner: u64) -> QuotaIdentity {
     QuotaIdentity {
@@ -167,6 +174,7 @@ async fn relaunched_at(current: QuotaIdentity, carried: Carried) -> Relaunched {
         Carried::Usage | Carried::UsageRetried => {
             let reset_ms = written_at + 3 * DAY_MS;
             let wall = RecoveryWall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at_ms: Some(reset_ms),
                 reset_label: Some("the old login's reset".into()),
                 quota: scope(false),
@@ -877,6 +885,7 @@ fn accepted_post_wall_allowance_wakes_one_native_recovery_before_reset() {
             *lock(&h.autopilot.quota_test_identity) = Some(identity("account", 0));
             h.rt.with_state(|state| {
                 state.point.as_mut().unwrap().wall = Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: Some(wall_at + Duration::from_secs(7 * 86400)),
                     reset_label: None,
                 });
@@ -927,6 +936,455 @@ fn accepted_post_wall_allowance_wakes_one_native_recovery_before_reset() {
     });
 }
 
+#[test]
+fn an_unread_goal_keeps_the_original_quota_retry() {
+    native_test(|| async {
+        for status in [ThreadGoalStatus::UsageLimited, ThreadGoalStatus::Paused] {
+            tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
+                let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+                h.fake.set_policy_key("upgrade", "false");
+                wait_for_supervisor(|| h.autopilot.sup.policy().is_some_and(|p| !p.upgrade)).await;
+                h.immediate_point().await;
+                h.hold_model_response().await;
+                let db = h.test.codex.state_db().expect("native goal database");
+                let original = db
+                    .thread_goals()
+                    .replace_thread_goal(h.rt.id, "continue the original quota goal", status, None)
+                    .await
+                    .expect("write original goal");
+                // Entitlement uses the quota ladder's typed try. A usage window
+                // uses ResumeLimit and does not pass through this admission.
+                h.rt.with_state(|state| {
+                    let point = state.point.as_mut().expect("fixture decision point");
+                    point.at = clock() - Duration::from_secs(24 * 60 * 60);
+                    point.wall = Some(Wall::Entitlement);
+                });
+                let before = h.rt.state();
+                let decision = decide::decide(
+                    &before,
+                    &h.autopilot.sup.policy().expect("proven policy"),
+                    &h.autopilot.timing,
+                    clock(),
+                    h.rt.jitter,
+                );
+                assert!(decide::quota_try(&decision.act));
+                assert!(decision.not_before.is_none_or(|at| at <= clock()));
+
+                let asleep = Arc::new(Mutex::new(Duration::ZERO));
+                let reading = Arc::clone(&asleep);
+                h.autopilot.set_wake_read(Arc::new(move || {
+                    Some(Reading {
+                        asleep: *lock(&reading),
+                        last: None,
+                    })
+                }));
+                let unread = status == ThreadGoalStatus::UsageLimited;
+                if unread {
+                    super::description_goal_read_tests::saved_status(&db, h.rt.id, "unreadable")
+                        .await;
+                }
+                let (observed, reached) = tokio::sync::oneshot::channel();
+                let (release, paused) = tokio::sync::oneshot::channel();
+                *lock(&h.rt.after_quota_goal_read) = Some((observed, paused));
+                let evaluator = Arc::clone(&h.autopilot);
+                let runtime = Arc::clone(&h.rt);
+                let mut evaluating = tokio::spawn(async move { evaluator.evaluate(runtime).await });
+                tokio::select! {
+                    read = reached => assert_eq!(read.expect("quota admission read"), unread),
+                    result = &mut evaluating => panic!("quota evaluation ended before admission: {result:?}"),
+                }
+                let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+                let accepted_before = h.rt.accepted_turns.load(Ordering::SeqCst);
+                if unread {
+                    // Repair before releasing admission, so any second read
+                    // would now see a valid UsageLimited goal.
+                    super::description_goal_read_tests::saved_status(&db, h.rt.id, status.as_str())
+                        .await;
+                }
+                let mut next = Box::pin(h.rt.hold_eval_when_free());
+                std::future::poll_fn(|cx| {
+                    assert!(next.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                release.send(()).expect("release quota admission");
+                let next = next.await;
+                evaluating.await.expect("finish first quota evaluation");
+                assert_eq!(
+                    db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(),
+                    Some(original.clone())
+                );
+                assert_eq!(h.rt.state().point_at(), before.point_at());
+                assert_eq!(h.rt.state().wall, before.wall);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before);
+                assert!(h.fake.acts().is_empty());
+                assert!(received_responses_requests(&h._server).await.is_empty());
+                assert_eq!(
+                    h.rt.timer_seq.load(Ordering::SeqCst),
+                    timer_before + u64::from(unread),
+                    "an unread goal rechecks; a healthy pause parks"
+                );
+
+                // Let the normal recheck timer account for elapsed host sleep.
+                *lock(&asleep) = RECHECK * 2;
+                drop(next);
+                if unread {
+                    wait_for_supervisor(|| h.fake.acts().contains(&words::RULE_LIMIT_RESUME.into()))
+                        .await;
+                    loop {
+                        let requests = received_responses_requests(&h._server).await;
+                        if !requests.is_empty() {
+                            assert_eq!(requests.len(), 1);
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let resumed = db
+                        .thread_goals()
+                        .get_thread_goal(h.rt.id)
+                        .await
+                        .expect("read resumed goal")
+                        .expect("original goal remains");
+                    assert_eq!(resumed.goal_id, original.goal_id);
+                    assert_eq!(resumed.objective, original.objective);
+                    assert_eq!(resumed.status, ThreadGoalStatus::Active);
+                    assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before + 1);
+                }
+                Autopilot::cancel_timer(&h.rt).await;
+                h.test.codex.shutdown_and_wait().await.expect("native Core shutdown");
+            })
+            .await
+            .expect("quota goal admission hang detector");
+        }
+    });
+}
+
+/// A failed goal read still owes a readiness retry after its dispatch allowance is lost.
+/// That retry reads quota again: no allowance restores the ordinary future backoff, while
+/// a later genuine allowance wakes the original native goal before that backoff is due.
+#[test]
+fn an_unread_goal_rechecks_after_its_quota_allowance_is_invalidated() {
+    native_test(|| async {
+        tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
+            let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+            h.fake.set_policy_key("upgrade", "false");
+            wait_for_supervisor(|| h.autopilot.sup.policy().is_some_and(|p| !p.upgrade)).await;
+            h.immediate_point().await;
+            h.hold_model_response().await;
+            let db = h.test.codex.state_db().expect("native goal database");
+            let original = db
+                .thread_goals()
+                .replace_thread_goal(
+                    h.rt.id,
+                    "continue the original quota goal after the read recovers",
+                    ThreadGoalStatus::UsageLimited,
+                    None,
+                )
+                .await
+                .expect("write original limited goal");
+            h.rt.with_state(|state| {
+                let point = state.point.as_mut().expect("fixture decision point");
+                point.at = clock();
+                point.wall = Some(Wall::Entitlement);
+            });
+            let before = h.rt.state();
+            let policy = h.autopilot.sup.policy().expect("proven policy");
+            let blind = decide::decide(&before, &policy, &h.autopilot.timing, clock(), h.rt.jitter);
+            assert!(decide::quota_try(&blind.act));
+            assert!(blind.not_before.is_some_and(|at| at > clock() + RECHECK * 2));
+            let restored = decide::decide_with_usage(
+                &before,
+                &policy,
+                &h.autopilot.timing,
+                clock(),
+                h.rt.jitter,
+                true,
+            );
+            assert!(decide::quota_try(&restored.act));
+            assert!(restored.not_before.is_none_or(|at| at <= clock()));
+
+            let asleep = Arc::new(Mutex::new(Duration::ZERO));
+            let reading = Arc::clone(&asleep);
+            h.autopilot.set_wake_read(Arc::new(move || {
+                Some(Reading {
+                    asleep: *lock(&reading),
+                    last: None,
+                })
+            }));
+            let quota = h.shared.quota();
+            let owner = identity("account", 0);
+            *lock(&h.autopilot.quota_test_identity) = Some(owner.clone());
+            let generation = quota.select_owner("account", Some("native-user"), 0);
+            let wall = quota.wall_for("account".into(), "codex".into(), clock());
+            *lock(&h.rt.quota_wall) = Some(QuotaWall {
+                wall: wall.clone(),
+                identity: owner.clone(),
+            });
+            super::description_goal_read_tests::saved_status(&db, h.rt.id, "unreadable").await;
+            quota.start_read(1, clock());
+            quota.accept_observation(1, "account", vec![], Some(false), vec![], clock());
+            quota.start_read(2, clock());
+            quota.accept_observation(
+                2,
+                "account",
+                vec!["codex".into()],
+                Some(true),
+                vec![],
+                clock(),
+            );
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let (observed, reached) = tokio::sync::oneshot::channel();
+            let (release, paused) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.after_quota_goal_read) = Some((observed, paused));
+            let pilot = Arc::clone(&h.autopilot);
+            let runtime = Arc::clone(&h.rt);
+            let mut evaluating = tokio::spawn(async move { pilot.evaluate(runtime).await });
+            tokio::select! {
+                read = reached => assert!(read.expect("the real quota goal read failed")),
+                result = &mut evaluating => panic!("evaluation ended before its goal read: {result:?}"),
+            }
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+            let accepted_before = h.rt.accepted_turns.load(Ordering::SeqCst);
+            assert!(!h.rt.timer_pending());
+            // Invalidation changes no owner and emits no evaluation wake. The
+            // already captured error must retain its independent readiness retry.
+            quota.invalidate();
+            assert_eq!(quota.generation(), generation);
+            assert_eq!(h.autopilot.quota_identity(), Some(owner.clone()));
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            super::description_goal_read_tests::saved_status(&db, h.rt.id, original.status.as_str())
+                .await;
+            let mut next = Box::pin(h.rt.hold_eval_when_free());
+            std::future::poll_fn(|cx| {
+                assert!(next.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            let earliest_retry = clock() + RECHECK;
+            release.send(()).expect("release the captured read error");
+            let next = next.await;
+            evaluating.await.expect("finish the failed goal read");
+            assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+            assert!(h.rt.timer_due().is_some_and(|at| at >= earliest_retry));
+            assert_eq!(h.rt.state().point_at(), before.point_at());
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before);
+            assert_eq!(db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(), Some(original.clone()));
+            assert!(h.fake.acts().is_empty());
+            assert!(received_responses_requests(&h._server).await.is_empty());
+
+            // Observe the actual delayed timer's healthy read, then let its
+            // completed decision restore the future blind entitlement backoff.
+            let (observed_retry, retry_read) = tokio::sync::oneshot::channel();
+            let (release_retry, paused_retry) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.after_quota_goal_read) = Some((observed_retry, paused_retry));
+            *lock(&asleep) = RECHECK * 2;
+            drop(next);
+            assert!(!retry_read.await.expect("the readiness timer rereads the real goal"));
+            let mut after_retry = Box::pin(h.rt.hold_eval_when_free());
+            std::future::poll_fn(|cx| {
+                assert!(after_retry.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            release_retry.send(()).expect("finish the healthy readiness recheck");
+            let after_retry = after_retry.await;
+            let owed = h.rt.owed_timer().expect("ordinary entitlement backoff");
+            assert_eq!(owed.rule, words::RULE_LIMIT_RESUME);
+            assert!(owed.not_before > clock() + RECHECK);
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            assert_eq!(db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(), Some(original.clone()));
+            assert_eq!(h.rt.state().point_at(), before.point_at());
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before);
+            assert!(h.fake.acts().is_empty());
+            assert!(received_responses_requests(&h._server).await.is_empty());
+
+            // Install the actual quota waker only after the no-allowance
+            // verdict. The new grant must wake work before its blind deadline.
+            h.autopilot.watching.store(false, Ordering::SeqCst);
+            h.autopilot.watch_claims();
+            quota.start_read(3, clock());
+            quota.accept_observation(
+                3,
+                "account",
+                vec!["codex".into()],
+                Some(true),
+                vec![],
+                clock(),
+            );
+            assert_eq!(h.autopilot.quota_identity(), Some(owner));
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            assert!(owed.not_before > clock() + RECHECK);
+            drop(after_retry);
+            wait_for_supervisor(|| h.fake.acts().contains(&words::RULE_LIMIT_RESUME.into())).await;
+            loop {
+                let requests = received_responses_requests(&h._server).await;
+                if !requests.is_empty() {
+                    assert_eq!(requests.len(), 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let resumed = db
+                .thread_goals()
+                .get_thread_goal(h.rt.id)
+                .await
+                .expect("read the resumed original goal")
+                .expect("original goal remains");
+            assert_eq!(resumed.goal_id, original.goal_id);
+            assert_eq!(resumed.objective, original.objective);
+            assert_eq!(resumed.status, ThreadGoalStatus::Active);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before + 1);
+            Autopilot::cancel_timer(&h.rt).await;
+            h.test.codex.shutdown_and_wait().await.expect("native Core shutdown");
+        })
+        .await
+        .expect("lost quota goal-read retry hang detector");
+    });
+}
+
+/// With a real retained gate held, the refusal still owes a fresh decision
+/// after the now-stale quota allowance can no longer authorize submission.
+#[test]
+fn retained_goal_admission_rechecks_after_its_quota_allowance_is_invalidated() {
+    native_test(|| async {
+        tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
+            let (_owner, gate, _hold) = Owner::new_held();
+            let h = Harness::new_with_retained_goal_gate(gate.clone()).await;
+            for (key, value) in [
+                ("upgrade", "false"),
+                ("resume_limits", "true"),
+                ("limit_wait", "true"),
+                ("probe_api", "false"),
+            ] {
+                h.fake.set_policy_key(key, value);
+            }
+            wait_for_supervisor(|| {
+                h.autopilot.sup.policy().is_some_and(|policy| {
+                    !policy.upgrade && policy.resume_limits && policy.limit_wait && !policy.probe_api
+                })
+            })
+            .await;
+            h.immediate_point().await;
+            let store = h.test.codex.thread_extension_data();
+            assert!(store.get::<Gate>().expect("native retained gate").same(&gate));
+            let runtime = store
+                .get::<codex_goal_extension::GoalRuntimeHandle>()
+                .expect("native goal runtime");
+            let db = h.test.codex.state_db().expect("native goal database");
+            let goals = db.thread_goals();
+            assert!(goals.get_thread_goal(h.rt.id).await.unwrap().is_none());
+
+            let reset = clock() + Duration::from_secs(3600);
+            h.rt.with_state(|state| {
+                let point = state.point.as_mut().expect("fixture decision point");
+                point.wall = Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
+                    reset_at: Some(reset),
+                    reset_label: None,
+                });
+            });
+            let point = h.rt.state().point_at();
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let policy = h.autopilot.sup.policy().expect("proven policy");
+            let state = h.rt.state();
+            let waiting = decide::decide(&state, &policy, &h.autopilot.timing, clock(), h.rt.jitter)
+                .not_before
+                .expect("ordinary future usage reset");
+            assert!(waiting > clock() + RECHECK * 2);
+
+            let asleep = Arc::new(Mutex::new(Duration::ZERO));
+            let reading = Arc::clone(&asleep);
+            h.autopilot.set_wake_read(Arc::new(move || {
+                Some(Reading {
+                    asleep: *lock(&reading),
+                    last: None,
+                })
+            }));
+            let quota = h.shared.quota();
+            let login = identity("account", 0);
+            *lock(&h.autopilot.quota_test_identity) = Some(login.clone());
+            let generation = quota.select_owner(&login.account, login.user.as_deref(), login.owner);
+            let wall = quota.wall_for(login.account.clone(), "codex".into(), clock());
+            *lock(&h.rt.quota_wall) = Some(QuotaWall {
+                wall: wall.clone(),
+                identity: login.clone(),
+            });
+            quota.start_read(1, clock());
+            quota.accept(1, &login.account, vec!["codex".into()], clock());
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+
+            let (arrived, at_submit) = tokio::sync::oneshot::channel();
+            let (resume, paused) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_submit) = Some((arrived, paused));
+            let pilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let mut evaluation = tokio::spawn(async move { pilot.evaluate(rt).await });
+            tokio::select! {
+                reached = at_submit => reached.expect("quota reached actual submit before admission"),
+                result = &mut evaluation => panic!("evaluation ended before submit: {result:?}"),
+            }
+            assert!(matches!(runtime.alab_automatic_input_permit().await,
+                Err(error) if error == "retained frontend continuation remains held"));
+            assert!(!h.rt.timer_pending());
+            let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+            quota.invalidate();
+            assert_eq!(quota.generation(), generation);
+            assert_eq!(h.autopilot.quota_identity(), Some(login));
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+
+            let mut next = Box::pin(h.rt.hold_eval_when_free());
+            std::future::poll_fn(|cx| {
+                assert!(next.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            let earliest_retry = clock() + RECHECK;
+            resume.send(()).expect("continue to actual retained admission");
+            let next = next.await;
+            evaluation.await.expect("finish the refused evaluation");
+            assert!(h.autopilot.sup.journal().iter().any(|note| {
+                note.contains("could not guard goal admission; automatic work waits: retained frontend continuation remains held")
+            }));
+            assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+            assert!(h.rt.timer_due().is_some_and(|at| at >= earliest_retry));
+            assert!(h.rt.owed_timer().is_none(), "only readiness was rearmed");
+            assert_eq!(h.rt.state().point_at(), point);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(h.rt.state().wall, state.wall);
+
+            let (started, retry) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_park) = Some(Box::new(move || {
+                started.send(()).expect("observe the actual readiness evaluation");
+            }));
+            let slept = RECHECK * 2;
+            *lock(&asleep) = slept;
+            drop(next);
+            retry.await.expect("the delayed retry redecides the native point");
+            let settled = h.rt.hold_eval_when_free().await;
+            let owed = h.rt.owed_timer().expect("ordinary usage wait restored");
+            assert_eq!(owed.rule, words::RULE_LIMIT_RESUME);
+            assert_eq!(owed.not_before, waiting - slept);
+            assert!(owed.not_before > clock() + RECHECK);
+            assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 2);
+            assert_eq!(h.rt.state().point_at(), point);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(h.rt.state().wall, state.wall);
+            assert!(goals.get_thread_goal(h.rt.id).await.unwrap().is_none());
+            assert!(matches!(runtime.alab_automatic_input_permit().await,
+                Err(error) if error == "retained frontend continuation remains held"));
+            assert!(h.fake.acts().is_empty());
+            assert!(received_responses_requests(&h._server).await.is_empty());
+
+            Autopilot::cancel_timer(&h.rt).await;
+            drop(settled);
+            h.test.codex.shutdown_and_wait().await.expect("native Core shutdown");
+        })
+        .await
+        .expect("lost quota admission retry hang detector");
+    });
+}
+
 /// A reset that arrives before the recorded deadline must survive the network
 /// preflight's second decision. Checking reachability cannot restore the old wait.
 #[test]
@@ -955,6 +1413,7 @@ fn restored_quota_survives_network_preflight() {
             });
             h.rt.with_state(|state| {
                 state.point.as_mut().unwrap().wall = Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: Some(at + Duration::from_secs(7 * 86400)),
                     reset_label: None,
                 });

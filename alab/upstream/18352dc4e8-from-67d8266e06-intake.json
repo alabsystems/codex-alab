@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "base": "67d8266e06e469e5aef78a23881c7e19c37030b0",
+  "target": "18352dc4e8757d652e4102a17abc76601847b8da",
+  "frontier": "67d8266e06e469e5aef78a23881c7e19c37030b0",
+  "commits": [
+    {
+      "sha": "2f5c413e19776bc684ac781b57dc069e4ab9fa21",
+      "subject": "Batch mouse wheel scrolling in the TUI (#62146)",
+      "paths": [
+        "codex-rs/tui/src/app/link_hover.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/owned_transcript_input_tests.rs",
+        "codex-rs/tui/src/app/side_companion.rs",
+        "codex-rs/tui/src/app/side_companion_tests.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/bottom_pane/textarea/mouse.rs",
+        "codex-rs/tui/src/bottom_pane/textarea/mouse_tests.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/layout.rs",
+        "codex-rs/tui/src/transcript_view_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "native-session"
+      ],
+      "decision": "adopt",
+      "reason": "Keep upstream wheel batching for transcripts, side conversations and multiline drafts. It avoids an immediate repaint for each tick when the previously painted layout can still be used.",
+      "evidence": [
+        "Reviewed the parent-to-commit patch, SHA256 fae534956f1d1c0f45f1b25b3e2a650c815a66e6cb41e921e1b2a0c91cc928ce.",
+        "Cached geometry requires a painted area, stable cell heights and matching tail and live keys. A side companion with buffered answer text forces a paint before scrolling.",
+        "The composer starts movement from effective caret-following scroll after edits. ALab's fragmented-input decoder runs before this dispatch, and the session record already treats wheel movement as presentation-only."
+      ],
+      "revisit": "Exercise wheel bursts after typing and during a streaming side answer, zoom and unzoom, and check that an isolated Escape before a split wheel report is still delivered."
+    },
+    {
+      "sha": "18352dc4e8757d652e4102a17abc76601847b8da",
+      "subject": "Show subagents and their status in the TUI sidebar chooser (#62149)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agent_picker.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_agent_status.rs",
+        "codex-rs/tui/src/app/sidebar_agent_status_tests.rs",
+        "codex-rs/tui/src/app/sidebar_files_tests.rs",
+        "codex-rs/tui/src/app/sidebar_subagents.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__sidebar_subagents__status__tests__subagent_chooser.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__sidebar_subagents__status__tests__subagent_chooser_narrow.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__saved_chat_discovery_states.snap",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Show the primary thread's spawned agents and their observed status in the upstream sidebar. Reuse upstream navigation for selecting an agent and keep ALab's retained listener as the owner of further work.",
+      "evidence": [
+        "Reviewed the parent-to-commit patch, SHA256 a8b870a5a3d7012b424b4a6f094d8ce31909187432c0adabfa364214b12156c1.",
+        "Chooser rows are the intersection of visible navigation entries and the root's registered spawn tree. Discovery and replay distinguish observed completion from current activity; the chooser rechecks visibility before opening the selected ID.",
+        "History and reconnect reconstruct outcomes from saved turns. The UI stores its member and outcome maps on each sidebar, so a binary handoff that retains the application also needs to preserve or reconstruct those maps before presenting the chooser."
+      ],
+      "revisit": "Run the upstream chooser and active-discovery tests, then exercise switching roots, reconnecting, and retaining a live sidebar with both a finished child and a running child."
+    }
+  ]
+}

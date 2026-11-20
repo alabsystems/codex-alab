@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "base": "58ad62ce09dd7da5531cecb15fd69a21aa465332",
+  "target": "c695d267e3ecbe135d7570cd9c6c19792b06868c",
+  "frontier": "58ad62ce09dd7da5531cecb15fd69a21aa465332",
+  "commits": [
+    {
+      "sha": "c695d267e3ecbe135d7570cd9c6c19792b06868c",
+      "subject": "Box the config reload future for persistent MCP tool approvals (#62337)",
+      "paths": [
+        "codex-rs/core/src/mcp_tool_call.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Reduce the ordinary MCP call future's stack footprint while preserving the saved approval and its configuration scope.",
+      "evidence": [
+        "In maybe_persist_mcp_tool_approval the connector and non-app writes still use the requesting turn's config. A failed write returns before reload. Only the successful path heap-pins and awaits the same reload_user_config_layer call.",
+        "The merged Rust patch on 6dd029d1a4 matches upstream. The existing project-scoped, plugin-default and session reload test cases exercise the affected persistence branches."
+      ],
+      "revisit": "Exercise persisted connector and project-local approvals, subsequent calls and plugin activation in the merged native build."
+    }
+  ]
+}

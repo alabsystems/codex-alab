@@ -15,6 +15,9 @@ use codex_alab_aterm::frontend_control::retained_service::RegisteredSourceTransi
 use codex_alab_aterm::frontend_control::retained_service::RuntimeObservationError;
 use codex_alab_aterm::frontend_control::retained_service::SourceTransition;
 
+#[path = "saved_resume_lookup.rs"]
+mod saved_resume_lookup;
+
 #[derive(Clone)]
 enum FrozenPreparation {
     Client(Box<Prepare>),
@@ -67,6 +70,10 @@ struct PreparationProgress {
     finished: bool,
 }
 impl PreparedClient {
+    pub(super) fn saved_opening(&self) -> bool {
+        matches!(&self.arguments, FrozenPreparation::Client(original) if original.saved_opening.is_some())
+    }
+
     pub(super) fn matches(
         &self,
         claim: &crate::outgoing_message::alab_initial_claim::ClientClaim,
@@ -222,6 +229,9 @@ impl InitialSessionOperation {
             .map_err(|_| invalid_request("client preparation Native origin is not current"))?;
         self.open()?;
         let actual = match request {
+            Request::ReadSavedResume { .. } => {
+                return Err(invalid_request("saved resume lookup requires its read-only handler"));
+            }
             Request::Prepare(arguments) => {
                 self.prepare_record(FrozenPreparation::Client(arguments.clone()), &origin)?
             }

@@ -137,7 +137,7 @@ class GateScratchRetentionTests(unittest.TestCase):
         repo = directory / "driver"
         tooling = repo / "alab"
         tooling.mkdir(parents=True)
-        for name in ("check.sh", "lib.sh", "retention.py", "unit-tests.sh"):
+        for name in ("check.sh", "lib.sh", "retention.py", "upstream_intake.py", "unit-tests.sh"):
             if name == "retention.py" and policy == "missing":
                 continue
             with (tooling / name).open("xb") as output:
@@ -169,13 +169,18 @@ if kind == "rm":
     raise SystemExit(0)
 if kind == "git":
     repo = os.environ["GATE_REPO"]
-    if args == ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"]:
+    if args[:4] == ["-c", "core.fsmonitor=false", "-C", repo]:
+        args = args[4:]
+    if args == ["ls-tree", "-z", "1" * 40, "--", "alab/upstream-release"]:
+        pass  # This fixture is an ordinary unmarked mainline checkout.
+    elif args == ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"]:
         if os.environ["GATE_POLICY"] == "git-error":
             raise SystemExit(71)
         sys.stdout.buffer.write(os.fsencode(Path(repo) / ".git") + b"\\n")
     elif args in (["rev-parse", "-q", "--verify", "HEAD^{commit}"],
                    ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{commit}"],
-                   ["merge-base", "HEAD", "upstream/main"],
+                   ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+                   ["merge-base", "--all", "1" * 40, "refs/remotes/upstream/main"],
                    ["rev-parse", "-q", "--verify", "refs/remotes/origin/main^{commit}"]):
         print("1" * 40)
     elif args == ["rev-list", "-1", "1" * 40 + ".." + "1" * 40]:
@@ -291,6 +296,64 @@ class PristineRetentionTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.removesuffix("\n"), str(self.path(revision)))
         return self.path(revision)
+
+    def test_build_preparation_checks_capacity_only_before_creating_a_pristine_tree(self):
+        workspace = self.repo / "codex-rs"
+        workspace.mkdir()
+        checkout = self.path(self.first)
+        calls = self.directory / "checkout-admission"
+        body = """
+refusal="$3" calls="$4" ALAB_CHECK_OUTCOME_FD="${5:-}"
+exec 18<"$1/source" 19<"$1/source"
+alab_build_command() {
+  if [[ "$ALAB_CHECK_OUTCOME_FD" == 19 ]]; then
+    [[ ! -e /dev/fd/18 && ! -e /dev/fd/19 ]] || return 99
+  else
+    [[ -e /dev/fd/18 && -e /dev/fd/19 ]] || return 99
+  fi
+  printf '%s\\0' "$PWD" "$CARGO_TARGET_DIR" "$@" >>"$calls"
+  return "$refusal"
+}
+result=0
+alab_pristine_at "$1" "$2" --for-build || result=$?
+[[ -e /dev/fd/18 && -e /dev/fd/19 ]] || exit 99
+exit "$result"
+"""
+        registered = self.git("worktree", "list", "--porcelain")
+        for status, outcome_fd in ((75, "19"), (143, "")):
+            done = self.shell(body, self.first, status, calls, outcome_fd)
+            self.assertEqual(done.returncode, status, done.stderr)
+            self.assertFalse(checkout.exists())
+            self.assertEqual(self.git("worktree", "list", "--porcelain"), registered)
+        one = [str(workspace), str(workspace / "target"), "--disk-path", str(checkout),
+               "git", "-C", "..", "worktree", "add", "--quiet", "--detach",
+               str(checkout), self.first]
+        self.assertEqual(calls.read_bytes().split(b"\0")[:-1], list(map(os.fsencode, one * 2)))
+        called = calls.read_bytes()
+        self.prepare(self.first)
+        self.assertEqual(self.shell(body, self.first, 75, calls).returncode, 0)
+        self.path(self.second).mkdir()
+        self.assertEqual(self.shell(body, self.second, 75, calls).returncode, 1)
+        self.assertEqual(calls.read_bytes(), called)
+
+    def test_inner_gate_propagates_checkout_resource_and_signal_stops(self):
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        (self.repo / "codex-rs").mkdir()
+        (self.repo / "alab").mkdir()
+        (self.repo / "alab/retention.py").symlink_to(ROOT / "alab/retention.py")
+        body = """
+. "$3/alab/check.sh"
+repo_root="$1" refusal="$2" TMPDIR="$4"
+export TMPDIR
+check_upstream_frontier() { git rev-parse HEAD; }
+alab_contained_scratch_path() { return 0; }
+alab_build_command() { printf '{"target_directory":"%s/codex-rs/target"}\\n' "$repo_root"; }
+alab_pristine_at() { return "$refusal"; }
+check_main
+"""
+        for refusal in (1, 75, 143):
+            done = self.shell(body, refusal, ROOT, self.directory)
+            self.assertEqual(done.returncode, refusal, done.stderr)
 
     def witness(self, tree):
         target = tree / "codex-rs/target"
@@ -533,21 +596,28 @@ class PristineRetentionTests(unittest.TestCase):
         cargo_home = self.directory / "cargo-home"
         scratch.mkdir()
         cargo_home.mkdir()
+        private_home_file = Path(self.environment["HOME"]) / "unrelated-private-fixture"
+        private_home_file.write_bytes(b"unrelated owned home fixture stays private\n")
+        # A direct profile may place scratch beneath the account home. Name
+        # that exact already writable scratch for read admission as well.
         profile = self.shell('alab_contain_profile "$2" "$3" --pristine "$4" '
-                             '--read "$5/alab" "$6"', scratch, cargo_home, tree, ROOT, target)
+                             '--read "$5/alab" "$6" "$2"', scratch, cargo_home, tree, ROOT, target)
         self.assertEqual(profile.returncode, 0, profile.stderr)
         # No alab_contained process-copy preparation: run the system shell directly.
         command = 'set -euo pipefail; . "$1/alab/lib.sh"; alab_pristine_at "$2" "$3"; '
         command += 'alab_pristine "$2" "$3"; '
-        command += 'if printf bad >"$2/.git/not-admitted"; then exit 91; fi'
+        command += 'if printf bad >"$2/.git/not-admitted"; then exit 91; fi; '
+        command += 'if /bin/cat "$4" >/dev/null 2>&1; then exit 92; fi'
         done = subprocess.run(
             ["/usr/bin/sandbox-exec", "-p", profile.stdout, "/bin/bash", "-c", command,
-             "contained-pristine-reuse", str(ROOT), str(self.repo), self.first],
+             "contained-pristine-reuse", str(ROOT), str(self.repo), self.first,
+             str(private_home_file)],
             cwd=self.repo, env={**self.environment, "TMPDIR": str(scratch)},
             capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.removesuffix("\n"), str(tree))
         self.assertFalse((self.repo / ".git/not-admitted").exists())
+        self.assertEqual(private_home_file.read_bytes(), b"unrelated owned home fixture stays private\n")
         self.assertEqual(self.snapshot([tree / "source", index, witness]), before)
 
     def test_same_revision_paths_are_distinct_between_checkouts(self):
@@ -577,10 +647,14 @@ class PristineRetentionTests(unittest.TestCase):
         first = self.prepare(self.first)
         witness = self.witness(first)
         before = self.snapshot([first / "source", witness])
+        (self.repo / "codex-rs").mkdir()
         source = (ROOT / "alab/check.sh").read_text()
         function = 'pristine_upstream() {' + source.split(
             'pristine_upstream() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
-        done = self.shell(function + 'repo_root="$1"; pristine_upstream; printf "%s\\n" "$pristine"')
+        done = self.shell(function + 'repo_root="$1"; '
+                          'alab_build_command() { [[ "$1" == --disk-path ]] || return 99; shift 2; "$@"; }; '
+                          'intake_target="$("$ALAB_PYTHON" -IB "$2/alab/upstream_intake.py" frontier --repo "$1")"; '
+                          'pristine_upstream; printf "%s\\n" "$pristine"', ROOT)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.removesuffix("\n"), str(self.path(self.second)))
         self.assertEqual(self.snapshot([first / "source", witness]), before)

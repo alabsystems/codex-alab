@@ -554,3 +554,6 @@ async fn live_worker_drop_releases_pending_preflight_in_both_modes() {
         assert_shutdown_observation(&observation);
     }
 }
+
+#[path = "models_cross_tab_tests.rs"]
+mod cross_tab;

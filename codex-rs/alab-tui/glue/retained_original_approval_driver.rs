@@ -125,10 +125,10 @@ impl Bindings {
     ) -> crate::app_event_sender::AppEventSender {
         let mut sender = original.clone();
         sender.alab_original_input = self.current.clone();
-        if let Some(item) = &self.current {
-            if let Err(error) = item.bind_native(native) {
-                tracing::warn!(%error, "actual approval remains held on its original callback");
-            }
+        if let Some(item) = &self.current
+            && let Err(error) = item.bind_native(native)
+        {
+            tracing::warn!(%error, "actual approval remains held on its original callback");
         }
         sender
     }

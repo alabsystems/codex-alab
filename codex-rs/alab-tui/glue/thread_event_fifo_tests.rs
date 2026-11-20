@@ -38,7 +38,6 @@ use std::task::Poll;
 use std::time::Duration;
 
 const TURN: &str = "fifo-capacity-turn";
-const NOTICE: &str = "Model is at capacity; retrying automatically (interrupt to stop)...";
 
 fn ready<F: Future>(future: F) -> F::Output {
     // Contended locks or any genuinely asynchronous dependency are setup errors.
@@ -117,9 +116,11 @@ fn retry(thread: ThreadId) -> ServerNotification {
         turn_id: TURN.into(),
         will_retry: true,
         error: TurnError {
-            message: NOTICE.into(),
+            message: codex_alab_core::capacity::CAPACITY_RETRY_NOTICE.into(),
             codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
-            additional_details: None,
+            additional_details: Some(codex_alab_core::capacity::retry_timing(
+                Duration::from_secs(324),
+            )),
             misalignment: None,
         },
     })
@@ -243,12 +244,16 @@ async fn actual_active_ingress_cannot_publish_terminal_ahead_of_an_unpolled_retr
         let earlier = receive(&mut receiver).await;
         assert_eq!(tag(&earlier), "retry");
         app.handle_thread_event_now(earlier);
-        assert!(render(&app).contains("Model is at capacity"));
+        let waiting = render(&app);
+        assert!(waiting.contains("Model is at capacity"));
+        assert!(waiting.contains("Retry scheduled in 324s."));
         let later = receive(&mut receiver).await;
         assert_eq!(tag(&later), "terminal");
         app.handle_thread_event_now(later);
         assert!(!app.chat_widget.is_task_running_for_test());
-        assert!(!render(&app).contains("Model is at capacity"));
+        let completed = render(&app);
+        assert!(!completed.contains("Model is at capacity"));
+        assert!(!completed.contains("Retry scheduled in 324s."));
     }
     Ok(())
 }

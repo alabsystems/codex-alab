@@ -27,11 +27,9 @@ class LockChangeReadTests(unittest.TestCase):
             script = ('set -euo pipefail\n. ' + shlex.quote(str(ROOT / 'alab/lib.sh')) + '\n'
                       + RESOLVE + '\n' + r'''
 wt="$SCRATCH"
-cargo=true
 record() { echo "$1" >>"$SCRATCH/actions"; }
 state_path() { echo "$SCRATCH/auto"; }
-alab_build_target_ready() { echo "$SCRATCH/target"; }
-alab_contained() { record resolver; }
+alab_project_run() { record resolver; }
 exit_with() { exit "$1"; }
 in_wt() {
   case "$1" in

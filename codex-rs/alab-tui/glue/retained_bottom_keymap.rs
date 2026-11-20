@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Exact native binding vectors and immutable aliases. No defaults/config/action factories.
 use super::*;
-pub(crate) use crate::key_hint::alab_retained_keys::Key as KeyData;
 use chords::alab_retained::BindingKey;
 use codex_alab_tui::retained_arc_graph::Capture as Identities;
 use codex_alab_tui::retained_arc_graph::Id;
@@ -300,6 +299,8 @@ impl AppKeymapData {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatKeymapData {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    open_autopilot: Vec<BindingKey>,
     open_presets: Vec<BindingKey>,
     toggle_voice: Vec<BindingKey>,
     toggle_voice_mute: Vec<BindingKey>,
@@ -316,6 +317,7 @@ struct ChatKeymapData {
 impl ChatKeymapData {
     fn capture(actual: &ChatKeymap, graph: &mut Capture) -> io::Result<Self> {
         let ChatKeymap {
+            open_autopilot,
             open_presets,
             toggle_voice,
             toggle_voice_mute,
@@ -330,6 +332,7 @@ impl ChatKeymapData {
             skip_question,
         } = actual;
         Ok(Self {
+            open_autopilot: keys(open_autopilot, "chat", "open_autopilot"),
             open_presets: keys(open_presets, "chat", "open_presets"),
             toggle_voice: keys(toggle_voice, "chat", "toggle_voice"),
             toggle_voice_mute: keys(toggle_voice_mute, "chat", "toggle_voice_mute"),
@@ -358,6 +361,7 @@ impl ChatKeymapData {
     }
     fn restore(self, graph: &Restored) -> io::Result<ChatKeymap> {
         Ok(ChatKeymap {
+            open_autopilot: restore_keys(self.open_autopilot, graph, "chat", "open_autopilot")?,
             open_presets: restore_keys(self.open_presets, graph, "chat", "open_presets")?,
             toggle_voice: restore_keys(self.toggle_voice, graph, "chat", "toggle_voice")?,
             toggle_voice_mute: restore_keys(
@@ -1558,6 +1562,38 @@ mod controls {
         )));
         RuntimeKeymap::from_config(&config).map_err(invalid)
     }
+    #[test]
+    fn retained_autopilot_keymap_restores_custom_and_legacy_bindings() -> io::Result<()> {
+        for configured in [false, true] {
+            let source = if configured {
+                "[chat]\nopen_autopilot = ['f19', 'f20 a']"
+            } else {
+                "[chat]\nopen_presets = 'f20 p'"
+            };
+            let config = toml::from_str(source).map_err(invalid)?;
+            let original = RuntimeKeymap::from_config(&config).map_err(invalid)?;
+            let mut capture = Capture::default();
+            let data = Data::capture(&original, &mut capture)?;
+            let mut wire = serde_json::to_value((data, capture.export()?)).map_err(invalid)?;
+            if !configured {
+                // The previous runtime had neither the binding field nor its dispatch token.
+                assert!(wire[0]["chat"].get("open_autopilot").is_none());
+                let entries = wire[1]["inventory"]["entries"].as_array_mut().unwrap();
+                assert_eq!(entries.last().unwrap()["action"]["name"], "open_autopilot");
+                entries.pop();
+            }
+            let (data, tables): (Data, Tables) = serde_json::from_value(wire).map_err(invalid)?;
+            let restored = data.restore(&Restored::new(tables)?)?;
+            assert_eq!(restored.chat.open_autopilot, original.chat.open_autopilot);
+            assert_eq!(restored.chat.open_presets, original.chat.open_presets);
+            assert_eq!(
+                restored.primary_hint(KeymapContext::Chat, "open_autopilot"),
+                original.primary_hint(KeymapContext::Chat, "open_autopilot")
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn actual_resolved_native_keymap_reuses_raw_dispatch_tokens_and_original_chord_reducer()
     -> io::Result<()> {

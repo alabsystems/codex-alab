@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "base": "b78fa4af8636859f4acc4d57420e41e923c84cdd",
+  "target": "89feadf3cca2a53d01bbf4c35ce53227704b2417",
+  "frontier": "b78fa4af8636859f4acc4d57420e41e923c84cdd",
+  "commits": [
+    {
+      "sha": "89feadf3cca2a53d01bbf4c35ce53227704b2417",
+      "subject": "Preserve saved sandbox permissions when resuming `codex exec` (#62194)",
+      "paths": [
+        "codex-rs/app-server-client/src/lib.rs",
+        "codex-rs/app-server/src/in_process.rs",
+        "codex-rs/app-server/src/message_processor.rs",
+        "codex-rs/app-server/src/request_processors/persisted_resume_settings.rs",
+        "codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_resume.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/exec/src/event_processor.rs",
+        "codex-rs/exec/src/event_processor_with_human_output.rs",
+        "codex-rs/exec/src/event_processor_with_human_output_tests.rs",
+        "codex-rs/exec/src/event_processor_with_jsonl_output.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/exec/src/lib_tests.rs",
+        "codex-rs/exec/tests/suite/resume.rs",
+        "codex-rs/utils/sandbox-summary/src/sandbox_summary.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "exec-handoff",
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve the saved sandbox selection on ordinary exec resume while continuing to enforce current requirements. Keep ALab's direct embedded client, effective loader capture, and separate native recovery operation.",
+      "evidence": [
+        "Reviewed all sixteen paths against parent b78fa4af8636859f4acc4d57420e41e923c84cdd. Binary diff SHA-256 6159140d39a629cd5eb3335c882fc5d9065d4cc0ee942acf28b71a68c0fe018d.",
+        "Use the effective permissions reader on the actual embedded client. Preserve native recovery's typed bootstrap, current authorization intersection, startup report suppression, and no new turn. Adapt the owned title fixture to the expanded reporter arguments.",
+        "An existing saved named profile can still compile when current requirements disallow it. Refuse implicit fallback in that case and require an explicit selection. Preserve re-resolution of an allowed saved name under current definitions."
+      ],
+      "revisit": "Run the first-shell read-only and saved-workspace resume tests, legacy read-only recovery, cold named profile re-resolution and removal, current allowlist and proxy tests, the ALab native inherited authorization fixture, and the title renderer fixture."
+    }
+  ]
+}

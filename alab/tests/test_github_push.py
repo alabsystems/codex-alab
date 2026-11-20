@@ -83,6 +83,13 @@ class PublicationTests(unittest.TestCase):
     def publish(self):
         return PUSH.publish(self.repo, 'origin', self.before, client=self.native)
 
+    def source_state(self):
+        return (git(self.repo, 'rev-parse', 'HEAD'),
+                git(self.repo, 'for-each-ref', '--format=%(refname) %(objectname)'),
+                (self.repo / '.git/config').read_bytes(),
+                (self.repo / '.git/index').read_bytes(),
+                git(self.remote, 'rev-parse', 'refs/heads/main'))
+
     def advance(self):
         git(self.repo, 'checkout', '-q', '--detach', self.before)
         git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'concurrent')
@@ -128,7 +135,129 @@ class PublicationTests(unittest.TestCase):
                          ['refs/alab/candidate', 'refs/remotes/origin/main'])
         self.assertEqual(self.native.calls[0][:3], ('repo', 'fetch', 'fixture/codex'))
         self.assertEqual([source for source, _into in self.native.calls[0][3]],
-                         ['refs/heads/main'])
+                         [self.before])
+
+    @unittest.skipUnless(os.name == 'posix', 'release disk admission uses statvfs')
+    def test_cli_refuses_low_scratch_space_before_loading_candidate_objects(self):
+        from io import StringIO
+        from types import SimpleNamespace
+
+        scratch = (self.root / 'publication scratch').resolve()
+        scratch.mkdir()
+        # Give the source a real tracking ref and a guarded origin. A refusal
+        # must leave both as they were, including the complete set of local refs.
+        git(self.repo, 'update-ref', 'refs/remotes/origin/main', self.before)
+        original = self.source_state()
+        actual_statvfs = os.statvfs
+        measured = []
+
+        def statvfs(path):
+            path = Path(path).resolve()
+            if path == scratch or scratch in path.parents:
+                measured.append(path)
+                return SimpleNamespace(f_frsize=4096, f_bavail=1, f_bfree=1,
+                                       f_blocks=20 * 1024**3 // 4096, f_fsid=1)
+            return actual_statvfs(path)
+
+        spawn = subprocess.Popen
+        def observe_spawn(argv, *args, **kwargs):
+            if Path(argv[0]).name == 'git' and '-C' in argv:
+                verb = argv[argv.index('-C') + 2]
+                self.assertNotIn(verb, ('fetch', 'ls-remote', 'push'),
+                                 'low publication space must stop before any transfer')
+            return spawn(argv, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, {'TMPDIR': str(scratch)}), \
+             mock.patch.object(tempfile, 'tempdir', str(scratch)), \
+             mock.patch.object(os, 'statvfs', side_effect=statvfs), \
+             mock.patch.object(subprocess, 'Popen', side_effect=observe_spawn), \
+             mock.patch.object(G, 'fetch', side_effect=AssertionError('read remote main')), \
+             mock.patch.object(G, 'Agh', return_value=self.native), \
+             mock.patch.object(sys, 'argv', ['github_push.py', '--repo', str(self.repo),
+                                             '--expected', self.before, 'origin']), \
+             mock.patch.object(sys, 'stderr', new_callable=StringIO) as error:
+            status = PUSH.main()
+        self.assertTrue(measured)
+        self.assertEqual(status, 75)
+        self.assertRegex(error.getvalue().lower(), r'disk|space')
+        self.assertEqual(self.native.calls, [])
+        self.assertEqual(self.source_state(), original)
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    @unittest.skipUnless(os.name == 'posix', 'release disk admission uses statvfs')
+    def test_cli_rechecks_candidate_pack_space_during_and_after_preload(self):
+        import fcntl
+        from io import StringIO
+        import shlex
+        from types import SimpleNamespace
+
+        original = self.source_state()
+        for active in (True, False):
+            with self.subTest(active=active):
+                area = (self.root / ('active' if active else 'completed')).resolve()
+                scratch = area / 'scratch'
+                scratch.mkdir(parents=True)
+                ready = area / 'writer-ready'
+                lock = area / 'writer.lock'
+                worker = area / 'upload.py'
+                worker.write_text(
+                    'import fcntl, signal, sys\nfrom pathlib import Path\n'
+                    'signal.alarm(60)\nwith open(sys.argv[1], "xb") as f:\n'
+                    '    fcntl.flock(f, fcntl.LOCK_EX)\n'
+                    '    Path(sys.argv[2]).touch()\n    signal.pause()\n')
+                children = []
+                class CandidateGit(subprocess.Popen):
+                    def __init__(child, argv, **kwargs):
+                        if 'fetch' in argv and self.after + ':refs/alab/candidate' in argv:
+                            if active:
+                                at = argv.index('fetch') + 1
+                                helper = shlex.join([sys.executable, '-IB', str(worker), str(lock), str(ready)])
+                                argv = [*argv[:at], '--upload-pack=' + helper, *argv[at:]]
+                            children.append(child)
+                        super().__init__(argv, **kwargs)
+
+                samples = []
+                real_space = os.statvfs
+                def space(path):
+                    actual = real_space(path)
+                    path = Path(path).resolve()
+                    if path != scratch and scratch not in path.parents:
+                        return actual
+                    low = path.name == 'pack' and bool(children) and (
+                        ready.exists() if active else children[0].returncode == 0)
+                    available = 19 if low else 21
+                    samples.append(available)
+                    return SimpleNamespace(f_bavail=available, f_frsize=2**30)
+
+                cleaned = []
+                cleanup = G._ScratchDirectory.cleanup
+                def observe_cleanup(directory):
+                    if Path(directory.name).parent == scratch:
+                        self.assertEqual(len(children), 1)
+                        self.assertIsNotNone(children[0].returncode)
+                        if active:
+                            with lock.open('rb') as observer:
+                                fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        cleaned.append(directory.name)
+                    return cleanup(directory)
+
+                with mock.patch.object(tempfile, 'tempdir', str(scratch)), \
+                     mock.patch.object(subprocess, 'Popen', CandidateGit), \
+                     mock.patch.object(os, 'statvfs', space), \
+                     mock.patch.object(G._ScratchDirectory, 'cleanup', observe_cleanup), \
+                     mock.patch.object(G, 'Agh', return_value=self.native), \
+                     mock.patch.object(G, 'fetch', side_effect=G.Refused('unexpected authoritative read')) as remote, \
+                     mock.patch.object(sys, 'argv', ['github_push.py', '--repo', str(self.repo),
+                                                     '--expected', self.before, 'origin']), \
+                     mock.patch.object(sys, 'stderr', new_callable=StringIO) as error:
+                    self.assertEqual(PUSH.main(), 75)
+                self.assertIn('20 GiB running floor', error.getvalue())
+                self.assertEqual((samples[0], samples[-1]), (21, 19))
+                remote.assert_not_called()
+                self.assertEqual(self.native.calls, [])
+                self.assertEqual(len(cleaned), 1)
+                self.assertEqual(list(scratch.iterdir()), [])
+                self.assertEqual(self.source_state(), original)
 
     def test_a_candidate_lost_during_local_transfer_refuses_before_any_remote_request(self):
         run_git = G.git
@@ -247,12 +376,13 @@ def run(argv, **kwargs):
     witness['local_git'].append(command[0])
     return real_run(argv, **kwargs)
 original_publish = push.publish
-def supplied_client(repo, remote, expected):
-    return original_publish(repo, remote, expected, client=client)
+def supplied_client(repo, remote, expected, **options):
+    return original_publish(repo, remote, expected, client=client, **options)
 arguments = [str(source), '--repo', str(repo), '--expected', before, 'origin']
 sys.argv = arguments
 try:
-    with mock.patch.object(g.subprocess, 'run', side_effect=run), \
+    with mock.patch('os.statvfs', create=True, return_value=mock.Mock(f_bavail=24, f_frsize=2**30)), \
+         mock.patch.object(g, 'run_transport', side_effect=run), \
          mock.patch.object(g, 'fetch', side_effect=forbidden('authority_fetch')), \
          mock.patch.object(g, 'Agh', side_effect=forbidden('agh_construct')), \
          mock.patch.object(socket, 'socket', side_effect=forbidden('network')), \

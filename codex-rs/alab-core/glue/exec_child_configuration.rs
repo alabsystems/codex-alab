@@ -40,6 +40,47 @@ fn invalid(error: impl std::fmt::Display) -> std::io::Error {
 }
 
 impl ExecConfiguration {
+    /// Store a root's active slug in the v2 field that supplied it. Both v2
+    /// readers restore the same model; a newer destination can also distinguish
+    /// a stored preference from an exact request after ownership transfers.
+    pub(crate) fn capture_root_model(
+        &self,
+        config: &Config,
+        follows: bool,
+    ) -> std::io::Result<Self> {
+        let mut saved = self.capture_child(config)?;
+        if follows {
+            saved.overrides.model = None;
+        } else if let Some(preferences) = &mut saved.child {
+            preferences.model = None;
+        }
+        Ok(saved)
+    }
+
+    /// Original 0.11 recorded the same resolved model in both fields. Only the
+    /// primary interactive root has a replayed TUI invocation to prove origin.
+    pub fn follows_model_after_handoff(&self, primary_tui: bool) -> bool {
+        self.follows_root_model(primary_tui.then(Self::unpinned_tui_invocation).flatten())
+    }
+
+    pub(super) fn follows_root_model(&self, launch: Option<&Self>) -> bool {
+        let Some(preferences) = &self.child else {
+            return false;
+        };
+        match (
+            self.overrides.model.as_deref(),
+            preferences.model.as_deref(),
+        ) {
+            (None, Some(_)) => true,
+            (Some(exact), Some(saved)) if exact == saved => launch.is_some_and(|launch| {
+                launch.home == self.home
+                    && launch.child.is_none()
+                    && launch.overrides.model.is_none()
+            }),
+            _ => false,
+        }
+    }
+
     /// Retain a child's resolved role and runtime choices while inheriting
     /// invocation-only inputs (such as executable paths) from this root.
     /// This encodes configuration data, never a grant to resume the child.

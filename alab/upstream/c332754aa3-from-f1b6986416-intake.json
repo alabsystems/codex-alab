@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "f1b69864161866a111610c4b4351d397fb644b6f",
+  "target": "c332754aa3a764ae89352aa5903119281ae32e5a",
+  "frontier": "f1b69864161866a111610c4b4351d397fb644b6f",
+  "commits": [
+    {
+      "sha": "c332754aa3a764ae89352aa5903119281ae32e5a",
+      "subject": "Pause runtime sandbox integrity checks (#62389)",
+      "paths": [
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/exec-server/src/sandbox_integrity/AGENTS.md",
+        "codex-rs/exec-server/src/sandbox_integrity/runner.rs"
+      ],
+      "classes": [
+        "fix",
+        "telemetry"
+      ],
+      "features": [
+        "execution-continuity",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream’s single policy preparation for normal commands. The paused second pass collected advisory telemetry and could add latency to an otherwise ready launch.",
+      "evidence": [
+        "Reviewed the three changed paths and the current callers in Core local execution and exec-server process and filesystem setup. Each caller still prepares its sandbox request through the enforcement path, then invokes the separate observer. The upstream change only pauses that observer.",
+        "The fork’s supervised child and output-retention paths consume the resulting execution request. The upstream patch changes neither that request nor child ownership, process handling or stored command results.",
+        "The two launch tests for observer error and timeout are marked ignored while collection is paused. The checker implementation and isolated tests remain present. Ignored cases supply no execution evidence."
+      ],
+      "revisit": "On the combined binary run ordinary constrained command and filesystem operations under the current policy. Compare observable results and child completion, and revisit the observer if upstream resumes collection."
+    }
+  ]
+}

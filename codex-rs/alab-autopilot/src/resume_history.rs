@@ -45,9 +45,16 @@ pub(crate) enum NativePoint<'a> {
     #[default]
     None,
     Running,
-    Complete(&'a TurnCompleteEvent),
+    Complete(NativeCompletion<'a>),
     Aborted(&'a TurnAbortedEvent),
     Superseded,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeCompletion<'a> {
+    pub(crate) event: &'a TurnCompleteEvent,
+    /// A duplicate terminal can update timing and text; only a new turn resolves a finding.
+    pub(crate) error: Option<&'a ErrorEvent>,
 }
 
 #[derive(Default)]
@@ -68,26 +75,10 @@ pub(crate) struct NativeHistory<'a> {
 /// Whether durable history still names this exact unfinished regular turn.
 /// This is a recovery precondition, never account or execution authority.
 pub fn unfinished_recovery_turn(items: &[RolloutItem], turn: &str) -> bool {
-    // A recovery records another start for the same logical turn, without a
-    // second user input. Fold only those repeated starts: preserve terminals
-    // and compaction state so a completed or aborted turn cannot be resurrected.
-    let mut previous: Option<&codex_protocol::protocol::TurnStartedEvent> = None;
-    let mut logical = Vec::with_capacity(items.len());
-    for item in items {
-        if let RolloutItem::EventMsg(EventMsg::TurnStarted(start)) = item {
-            if let Some(earlier) = previous
-                && earlier.turn_id == start.turn_id
-            {
-                if earlier.turn_attribution != start.turn_attribution {
-                    return false;
-                }
-                continue;
-            }
-            previous = Some(start);
-        }
-        logical.push(item.clone());
+    if codex_core::pending_misalignment_review(items).is_some() {
+        return false;
     }
-    let history = latest(&logical);
+    let history = replay(items, Replay::UnfinishedTurn);
     valid_turn_id(turn)
         && history.turn_id == Some(turn)
         && history.started
@@ -97,8 +88,50 @@ pub fn unfinished_recovery_turn(items: &[RolloutItem], turn: &str) -> bool {
 }
 
 pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
+    let latest = replay(items, Replay::LatestAttempt);
+    let Some(refused) = codex_core::pending_misalignment_review(items) else {
+        if let NativePoint::Complete(done) = latest.point
+            && done.error.is_some_and(is_misalignment)
+            && let Some(surviving) =
+                codex_core::history_without_rolled_back_finding(items, &done.event.turn_id)
+        {
+            let mut history = replay(surviving, Replay::LatestAttempt);
+            if matches!(history.point, NativePoint::None) {
+                // Every native turn was removed. Crash recovery must not resume the erased task.
+                history.point = NativePoint::Superseded;
+            }
+            return history;
+        }
+        return latest;
+    };
+    if matches!(latest.point, NativePoint::Complete(done) if done.event.turn_id == refused.turn_id && done.error.is_some_and(is_misalignment))
+    {
+        return latest;
+    }
+    NativeHistory {
+        turn_id: Some(&refused.turn_id),
+        point: NativePoint::Complete(NativeCompletion {
+            event: refused,
+            error: refused.error.as_ref(),
+        }),
+        ..Default::default()
+    }
+}
+
+enum Replay {
+    LatestAttempt,
+    UnfinishedTurn,
+}
+
+enum SeenTurn {
+    Started,
+    Ended,
+}
+
+fn replay<'a>(items: impl IntoIterator<Item = &'a RolloutItem>, mode: Replay) -> NativeHistory<'a> {
     let mut history = NativeHistory::default();
-    let mut known_turn_ids = std::collections::HashSet::new();
+    let mut known_turns = std::collections::HashMap::new();
+    let mut previous_start: Option<&codex_protocol::protocol::TurnStartedEvent> = None;
     let mut compacting = std::collections::HashSet::new();
     for item in items {
         // A regular child turn can begin with accepted agent mail rather than
@@ -114,12 +147,57 @@ pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
         let RolloutItem::EventMsg(event) = item else {
             continue;
         };
+        // A partial rollout can contain an end without its start. Remember the
+        // identity even when this notification cannot change the current point.
+        let terminal_id = match event {
+            EventMsg::TurnComplete(done) => Some(done.turn_id.as_str()),
+            EventMsg::TurnAborted(aborted) => aborted.turn_id.as_deref(),
+            _ => None,
+        };
+        let terminal_was_known = terminal_id
+            .filter(|id| valid_turn_id(id))
+            .is_some_and(|id| known_turns.insert(id, SeenTurn::Ended).is_some());
+
+        // Replayed input and cancellation do not establish a new accepted turn.
+        if let NativePoint::Complete(previous) = history.point
+            && previous.error.is_some_and(is_misalignment)
+        {
+            let updates_finding = match event {
+                EventMsg::TurnComplete(done) => done.turn_id == previous.event.turn_id,
+                EventMsg::TurnStarted(start) => {
+                    valid_turn_id(&start.turn_id)
+                        && !known_turns.contains_key(start.turn_id.as_str())
+                }
+                _ => false,
+            };
+            if !updates_finding {
+                continue;
+            }
+        }
         match event {
             EventMsg::TurnStarted(started) => {
-                compacting.clear();
-                if valid_turn_id(&started.turn_id) {
-                    known_turn_ids.insert(started.turn_id.as_str());
+                let id = started.turn_id.as_str();
+                if history.turn_id != Some(id)
+                    && matches!(known_turns.get(id), Some(SeenTurn::Ended))
+                {
+                    continue;
                 }
+                // A quota retry can restart the current ID. Process recovery
+                // needs the original input and an unbroken, unfinished turn.
+                if matches!(mode, Replay::UnfinishedTurn)
+                    && let Some(previous) = previous_start
+                    && previous.turn_id == id
+                {
+                    if previous.turn_attribution != started.turn_attribution {
+                        return NativeHistory::default();
+                    }
+                    continue;
+                }
+                previous_start = Some(started);
+                if valid_turn_id(id) {
+                    known_turns.insert(id, SeenTurn::Started);
+                }
+                compacting.clear();
                 let trigger = started
                     .turn_attribution
                     .as_ref()
@@ -128,7 +206,8 @@ pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
                     turn_id: Some(started.turn_id.as_str()),
                     started: true,
                     by_autopilot: trigger == Some(crate::extension::TURN_TRIGGER),
-                    by_person: trigger.is_none_or(|trigger| matches!(trigger, "user" | "queue")),
+                    by_person: trigger
+                        .is_none_or(|trigger| crate::extension::PERSON_TRIGGERS.contains(&trigger)),
                     saw_regular_input: false,
                     compacting: false,
                     policy_exhausted: false,
@@ -191,9 +270,7 @@ pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
                     // Stop/interrupt hooks may finish after a newer native start.
                     // Ignore only a positively known retired identity; a missing
                     // or unknown mismatched ID still revokes automatic action.
-                    && !aborted.turn_id.as_deref().is_some_and(|id| {
-                        Some(id) != history.turn_id && known_turn_ids.contains(id)
-                    }) =>
+                    && !(terminal_was_known && aborted.turn_id.as_deref() != history.turn_id) =>
             {
                 history.interrupted_running_turn = matches!(history.point, NativePoint::Running)
                     && history.started
@@ -213,11 +290,25 @@ pub(crate) fn latest(items: &[RolloutItem]) -> NativeHistory<'_> {
                 ) && (!history.started
                     || history.turn_id.is_none_or(|id| id == complete.turn_id))
                 {
-                    if valid_turn_id(&complete.turn_id) {
-                        known_turn_ids.insert(complete.turn_id.as_str());
-                    }
                     history.turn_id = Some(complete.turn_id.as_str());
-                    history.point = NativePoint::Complete(complete);
+                    let previous_error = match history.point {
+                        NativePoint::Complete(previous)
+                            if previous.event.turn_id == complete.turn_id =>
+                        {
+                            previous.error
+                        }
+                        _ => None,
+                    };
+                    let latest_error = complete.error.as_ref();
+                    let error = [latest_error, previous_error]
+                        .into_iter()
+                        .flatten()
+                        .find(|error| is_misalignment(error))
+                        .or(latest_error);
+                    history.point = NativePoint::Complete(NativeCompletion {
+                        event: complete,
+                        error,
+                    });
                 }
             }
             _ => {}
@@ -245,7 +336,8 @@ pub(crate) fn served<'a>(items: &'a [RolloutItem], turn: &str) -> Option<&'a Tur
     let errored = items[start..]
         .iter()
         .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::Error(_))));
-    (complete.turn_id == turn && complete.error.is_none() && !errored).then_some(complete)
+    (complete.event.turn_id == turn && complete.error.is_none() && !errored)
+        .then_some(complete.event)
 }
 
 fn accepted_agent_input(item: &RolloutItem, turn: &str) -> bool {
@@ -454,6 +546,10 @@ pub(crate) fn terminal_policy_exhausted(items: &[RolloutItem]) -> bool {
     native.policy_exhausted && matches!(native.point, NativePoint::Complete(_))
 }
 
+fn is_misalignment(error: &ErrorEvent) -> bool {
+    error.codex_error_info == Some(CodexErrorInfo::MisalignmentPolicyViolation)
+}
+
 fn valid_turn_id(id: &str) -> bool {
     !id.trim().is_empty() && id.len() <= 512
 }
@@ -509,7 +605,9 @@ pub(crate) fn policy_continued(items: &[RolloutItem]) -> bool {
                     .and_then(|attribution| attribution.turn_trigger.as_deref());
                 ours = trigger == Some(crate::extension::TURN_TRIGGER);
                 unattributed_person = started.turn_attribution.is_some() && trigger.is_none();
-                if trigger == Some("user") || trigger == Some("queue") {
+                if trigger
+                    .is_some_and(|trigger| crate::extension::PERSON_TRIGGERS.contains(&trigger))
+                {
                     attempted = false;
                     refused = false;
                 }
@@ -609,11 +707,7 @@ pub(crate) fn restore_terminal(
             (None, true)
         }
         NativePoint::Complete(complete) => {
-            let Some(error) = complete
-                .error
-                .as_ref()
-                .filter(|error| error.affects_turn_status())
-            else {
+            let Some(error) = complete.error.filter(|error| error.affects_turn_status()) else {
                 return;
             };
             let wall = recorded_wall(&history, error)
@@ -690,14 +784,13 @@ pub(crate) fn restore_end(state: &mut ThreadState, items: &[RolloutItem], at: In
     };
     let (text, wall, aborted, worked) = match history.point {
         NativePoint::Complete(complete) => (
-            complete.last_agent_message.clone(),
+            complete.event.last_agent_message.clone(),
             complete
                 .error
-                .as_ref()
                 .filter(|error| error.affects_turn_status())
                 .and_then(|error| recorded_wall(&history, error)),
             false,
-            worked(complete.duration_ms),
+            worked(complete.event.duration_ms),
         ),
         NativePoint::Aborted(aborted) => (None, None, true, worked(aborted.duration_ms)),
         NativePoint::None | NativePoint::Running | NativePoint::Superseded => return false,

@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "base": "3aaa23a437f6a0e6ab224163a2e36fd95ff73804",
+  "target": "29091c7234b0e58d4e5474841dd69474d6116ce0",
+  "frontier": "3aaa23a437f6a0e6ab224163a2e36fd95ff73804",
+  "commits": [
+    {
+      "sha": "cc3757a99db9c129757ced74192eaf831f959d2e",
+      "subject": "Open subagent transcripts in the TUI sidebar (#62157)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/side_pane.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_agent_status_tests.rs",
+        "codex-rs/tui/src/app/sidebar_close.rs",
+        "codex-rs/tui/src/app/sidebar_subagents.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__sidebar_subagents__status__tests__watch_only_subagent.snap",
+        "codex-rs/tui/src/chatwidget/tests/helpers.rs",
+        "codex-rs/tui/src/sidebar_chooser.rs",
+        "codex-rs/tui/src/sidebar_tab_strip.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "execution-continuity",
+        "native-session",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Keep the parent transcript visible while reading its subagent. Preserve ALab's actual Side-conversation owner, frame input hold and guarded thread selection during focus, close and restore.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 06e67d10016dde06858904312b4957909a3891bfde932431914a5ee71819b97f.",
+        "The docked tab is associated with the primary thread. Parent-owned subagents use transcript navigation, search and selection in the watch-only view.",
+        "Escape returns to the owning chooser and keeps the agent selected. A failed attachment restores the original sidebar content, and successful replacement retires the prior companion."
+      ],
+      "revisit": "Run the watch-only transcript integration control with native Side companions, saved drafts, resize and focus before and after handoff."
+    },
+    {
+      "sha": "bedafe7156ab73ac213cf960a2c2ef90033dd259",
+      "subject": "Open subagent transcripts from activity links in the TUI (#62159)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/agent_picker.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/link_hover.rs",
+        "codex-rs/tui/src/app/owned_transcript.rs",
+        "codex-rs/tui/src/app/reconnect.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/side_focus.rs",
+        "codex-rs/tui/src/app/sidebar.rs",
+        "codex-rs/tui/src/app/sidebar_agent_status_tests.rs",
+        "codex-rs/tui/src/app/sidebar_document.rs",
+        "codex-rs/tui/src/app/sidebar_loading.rs",
+        "codex-rs/tui/src/app/sidebar_subagents.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__sidebar_subagents__status__tests__watch_only_subagent.snap",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/history_cell/base.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/tui/src/terminal_hyperlinks.rs",
+        "codex-rs/tui/src/transcript_view.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/input_tests.rs",
+        "codex-rs/tui/src/transcript_view/selection.rs",
+        "codex-rs/tui/src/transcript_view/snapshots/codex_tui__transcript_view__input__tests__agent_activity_underlines_the_full_wrapped_label.snap",
+        "codex-rs/tui/src/transcript_view/text.rs",
+        "codex-rs/tui/src/tui/test_support.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "account-isolation",
+        "provider-recovery",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Open a subagent from a parent activity link only after the original backend confirms ancestry. Keep ALab's backend routing and native input-admission boundaries on the new event.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 0a281ebe520c738ce2c19edc980d8b2f16a83e30c5e07ba7c7b5eb5ff75d5230.",
+        "Replay may register a candidate, but backend discovery or a live thread source is required to confirm membership. The pending click carries its backend and source and is cleared when the connection is replaced or the thread selection changes.",
+        "The event rechecks source visibility, primary root and backend; the expanded fixture covers an inherited fork link, discovery racing the click, and a nested link from an unfocused pane."
+      ],
+      "revisit": "Run the link fixtures with ALab retained Side and parallel backend state, including ownership replacement while discovery is pending."
+    },
+    {
+      "sha": "29091c7234b0e58d4e5474841dd69474d6116ce0",
+      "subject": "Wait for the system `bwrap` probe with a pidfd (#62160)",
+      "paths": [
+        "codex-rs/sandboxing/src/bwrap.rs"
+      ],
+      "classes": [
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "qualification-fixtures",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Let Linux observe system bubblewrap probe exit through the child's pidfd while preserving the bounded fallback and the existing sandbox decision.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 97e09a5cde9d0c9fb5a4a0821266bcff97635492ef28152e112a3027250ef27a.",
+        "The pidfd is scoped to the spawned child and polled only for the time remaining. The existing try_wait loop still reaps the child, handles unavailable pidfds and applies the deadline.",
+        "Captured stderr remains nonblocking and size-bounded, including when a descendant retains the pipe. The existing stderr classifier and sandbox selection are unchanged."
+      ],
+      "revisit": "Exercise the Linux probe controls for early exit with inherited stderr and timeouts, then check the older-kernel fallback."
+    }
+  ]
+}

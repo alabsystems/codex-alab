@@ -259,10 +259,11 @@ impl TurnDetails {
                 group.finish(rows, cells);
             } else {
                 if let Some(exec) = any.downcast_ref::<crate::exec_cell::ExecCell>()
+                    // ALAB(shell-output): the canonical status also describes untimed exits.
                     && exec.iter_calls().all(|call| {
-                        call.output
+                        !call.is_pending() && call.output
                             .as_ref()
-                            .is_some_and(|output| output.exit_code == 0)
+                            .is_some_and(|output| output.succeeded())
                     })
                 {
                     if exec.is_exploring_cell() {

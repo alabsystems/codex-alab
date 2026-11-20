@@ -343,3 +343,9 @@ impl BackendSessions {
 #[cfg(unix)]
 #[path = "../../../alab-tui/glue/retained_backend_sessions.rs"]
 pub(crate) mod alab_retained; // ALAB(retained-ui): bind every real backend/parked queue through one enclosing scene.
+
+#[path = "../../../alab-tui/glue/backend_upgrade_work.rs"]
+pub(in crate::app) mod alab_upgrade_work; // ALAB(upgrade): original physical job Books gate conditional leave.
+
+#[path = "../../../alab-tui/glue/backend_upgrade_events.rs"]
+pub(in crate::app) mod alab_upgrade_events; // ALAB(upgrade-events): conditional leave observes every original backend event queue.

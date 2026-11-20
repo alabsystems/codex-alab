@@ -5,7 +5,7 @@ use crate::app_server_session::ResumeModelSettings;
 use crate::backend_id::BackendId;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadStatus;
-use futures::future::BoxFuture;
+use crate::app_server_session::alab_session_work::saved_chat::SavedChatRelease; // ALAB(retained-ui): keep the original connection's work owner with its reserved unsubscribe.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Target {
@@ -44,6 +44,8 @@ pub(super) struct Selection {
 pub(crate) struct Prepared {
     pub(super) result: Result<PreparedAttachment, String>,
     pub(super) metadata: crate::app_server_session::AttachmentMetadata,
+    pub(super) missing_resume: Option<crate::app_server_session::alab_construction::MissingSavedResume>, // ALAB(retained-ui): only an admitted original missing its wire reply can be observed later.
+    pub(super) unreadable_resume: bool, // ALAB(retained-ui): the original success could not be consumed, so discard checks the same connection's claims.
     pub(super) close_check: Result<bool, String>,
 }
 
@@ -78,7 +80,7 @@ pub(super) struct Incoming {
     pub(super) received: SubscriptionUpdates,
     created_channel: bool,
     store: Arc<Mutex<ThreadEventStore>>,
-    release: BoxFuture<'static, Result<()>>,
+    pub(super) release: SavedChatRelease, // ALAB(retained-ui): the openings actor retires only subscriptions of the physical session being replaced.
 }
 
 impl Incoming {
@@ -86,6 +88,7 @@ impl Incoming {
         app: &mut App,
         server: &mut AppServerSession,
         target: Target,
+        operation: uuid::Uuid, // ALAB(retained-ui): both ends diagnose the same chooser operation.
     ) -> Self {
         let created_channel = !app.thread_event_channels.contains_key(&target.child);
         let channel = app.ensure_thread_channel(target.child);
@@ -99,7 +102,7 @@ impl Incoming {
             received: SubscriptionUpdates::default(),
             created_channel,
             store,
-            release: Box::pin(server.thread_unsubscribe(target.child)),
+            release: SavedChatRelease::reserve(server, target, operation), // ALAB(retained-ui): bind the original target, operation and physical handle before the resume.
         }
     }
 
@@ -122,7 +125,7 @@ impl Incoming {
         app: &mut App,
         target: Target,
         subscribed: bool,
-    ) -> Option<BoxFuture<'static, Result<()>>> {
+    ) -> Option<SavedChatRelease> { // ALAB(retained-ui): transfer the original unsubscribe and its worker owner together.
         let child = target.child;
         let same_channel =
             self.owns_channel(app.thread_event_channels.get(&child), target.backend_id);
@@ -138,8 +141,8 @@ impl Incoming {
                         || app.active_thread_id == Some(child)
                         || app.side_threads.contains_key(&child))
             });
-        let release =
-            subscribed && !claimed && !app.agents_overview.dispatched_requests.contains_key(&child);
+        let release = subscribed && (self.release.connection_replaced() // ALAB(retained-ui): a claim on the replacement backend cannot suppress the original unsubscribe.
+            || (!claimed && !app.agents_overview.dispatched_requests.contains_key(&child)));
         if same_channel && self.created_channel && !claimed {
             // A later resume can replay the same still-pending approval after we give up this buffer.
             for request in self.store.lock().await.pending_replay_requests() {
@@ -206,7 +209,8 @@ pub(super) async fn prepare(
             #[cfg(not(unix))] { Ok(PreparedAttachment::Live(Box::new(started))) }
         }
         // Once subscribed, a second unanchored read could overlap live events.
-        Err(err) if app_server.attachment_subscribed == Some(true) => Err(err),
+        Err(err) if err.is::<crate::app_server_session::history_page::ThreadResponseIdMismatch>() => Err(err), // ALAB(history): even an ordinary request-only attachment cannot project a mismatched resume as a failed subscription.
+        Err(err) if app_server.attachment_subscribed == Some(true) || app_server.alab_saved_resume_unreadable == Some(true) || app_server.alab_saved_resume_missing() => Err(err), // ALAB(retained-ui): an unreadable original success may already own the live listener.
         Err(resume_err) => {
             tracing::warn!(
                 thread_id = %thread_id,

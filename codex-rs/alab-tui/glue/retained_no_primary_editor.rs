@@ -4,6 +4,7 @@
 //! Production retained rich provisional editor DATA; no fake primary identity.
 //! Child of the existing checkpoint codec; no input, Source or Native grant.
 use super::*;
+use crate::bottom_pane::alab_retained_delayed_approval::PreparedDelayed;
 const NO_PRIMARY_VERSION: u32 = 2;
 
 #[derive(Serialize)]
@@ -53,20 +54,35 @@ fn capture_no_primary(
     .map_err(invalid)
 }
 impl PreparedNoPrimary {
-    pub(crate) fn install(self, pane: &mut BottomPane) -> io::Result<()> {
+    pub(crate) fn install_with_clock(
+        self,
+        pane: &mut BottomPane,
+        clock: Option<&PreparedDelayed>,
+    ) -> io::Result<()> {
         let mut stashed = prompts()
             .lock()
             .map_err(|_| invalid("native stash owner is poisoned"))?;
-        self.install_into(pane, &mut stashed)
+        self.install_with_stash(pane, &mut stashed, clock)
     }
+    #[cfg(test)]
     fn install_into(
+        self,
+        pane: &mut BottomPane,
+        stashed: &mut HashMap<ThreadId, SavedPrompt>,
+    ) -> io::Result<()> {
+        self.install_with_stash(pane, stashed, None)
+    }
+    fn install_with_stash(
         mut self,
         pane: &mut BottomPane,
         stashed: &mut HashMap<ThreadId, SavedPrompt>,
+        clock: Option<&PreparedDelayed>,
     ) -> io::Result<()> {
         if pane.thread_id.is_some()
             || !stashed.is_empty()
             || !pane.composer.is_empty()
+            || pane.composer.is_in_paste_burst()
+            || pane.alab_delay_activity.local_value()? != 0
             || !pane.composer.history.startup_local_history().is_empty()
         {
             return Err(invalid(
@@ -76,6 +92,16 @@ impl PreparedNoPrimary {
         configure(&mut self.checkpoint.visible.draft.textarea, &pane.keymap);
         for saved in self.checkpoint.stashed.values_mut() {
             configure(&mut saved.draft.textarea, &pane.keymap);
+        }
+        // Hold the validated stash through the clock's final check. From the first
+        // clock mutation onward, installing the editor and its stash cannot refuse.
+        if let Some(clock) = clock {
+            if pane.has_pending_approval() || pane.has_active_modal() {
+                return Err(invalid(
+                    "provisional editor restore must precede callback replay",
+                ));
+            }
+            clock.prime_before_original_replay(pane)?;
         }
         let visible = self.checkpoint.visible;
         pane.composer.draft = visible.draft;

@@ -29,6 +29,8 @@ use super::should_print_final_message_to_stdout;
 use super::should_print_final_message_to_tty;
 use crate::event_processor::EventProcessor;
 
+include!("../../alab-core/glue/shell_command_failure_line_tests.rs"); // ALAB(shell-output): pin human output for failures with and without an exit.
+
 #[test]
 fn turn_diff_notifications_render_only_changes() -> anyhow::Result<()> {
     const CHILD: &str = "CODEX_EXEC_TURN_DIFF_TEST_CHILD";

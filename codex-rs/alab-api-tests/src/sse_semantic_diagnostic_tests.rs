@@ -155,6 +155,7 @@ impl Case {
             Self::Model => ApiError::ModelNotFound {
                 message: PRIVATE.into(),
                 status: None,
+                alab_empty_stream: false,
             },
             Self::Access => ApiError::AccessProgramNotEnabled {
                 message: PRIVATE.into(),

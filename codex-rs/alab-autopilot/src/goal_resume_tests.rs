@@ -7,6 +7,9 @@ use super::upgrade_handoff_tests::Harness;
 use super::upgrade_handoff_tests::native_test;
 use super::*;
 use crate::extension::test_progress;
+use codex_alab_core::wake::Reading;
+use codex_alab_core::wall_kind::LimitClass;
+use core_test_support::responses::received_responses_requests;
 use std::future::Future;
 use std::task::Poll;
 
@@ -251,11 +254,247 @@ fn a_usage_resume_preserves_a_goal_changed_while_it_waits_for_the_mutation_permi
 }
 
 #[test]
+fn a_failed_goal_resume_retries_only_the_current_runtime() {
+    native_test(|| async {
+        const REPORT: &str = "meta set attention owner=codex-alab";
+        const CLEAR: &str = "meta unset attention owner=codex-alab-wait";
+        const REFUSAL: &str = "fixture-goal-write-refused";
+        const WAIT: &str = "The earlier usage wait";
+        for change in [
+            "unchanged",
+            "replacement",
+            "lost-allowance",
+            "clear",
+            "newer-point",
+        ] {
+            tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
+                let h = Harness::new_with_control_timeout(
+                    Some(Arc::new(GoalService::new())),
+                    None,
+                    Duration::from_secs(30),
+                )
+                .await;
+                h.fake.set_policy_key("limit_wait", "true");
+                upgrade_handoff_tests::wait_for_supervisor(|| {
+                    h.autopilot.sup.policy().is_some_and(|policy| policy.limit_wait)
+                })
+                .await;
+                h.immediate_point().await;
+                h.hold_model_response().await;
+                let db = h.test.codex.state_db().expect("native goal database");
+                let original = db
+                    .thread_goals()
+                    .replace_thread_goal(
+                        h.rt.id,
+                        "continue the original usage goal",
+                        codex_state::ThreadGoalStatus::UsageLimited,
+                        None,
+                    )
+                    .await
+                    .expect("write original limited goal");
+                let at = clock() - Duration::from_secs(3600);
+                let lost_allowance = change == "lost-allowance";
+                let reset = if lost_allowance {
+                    clock() + Duration::from_secs(24 * 60 * 60)
+                } else {
+                    at
+                };
+                h.rt.with_state(|state| {
+                    state.observe_turn_end(
+                        decide::TurnEnd {
+                            at,
+                            by_autopilot: true,
+                            by_person: false,
+                            text: None,
+                            earlier: None,
+                            questions: false,
+                            worked: Duration::from_secs(600),
+                            wall: Some(Wall::Usage {
+                                limit_class: LimitClass::Ordinary,
+                                reset_at: Some(reset),
+                                reset_label: None,
+                            }),
+                            aborted: false,
+                            ran_tools: false,
+                            restored: false,
+                        },
+                        &h.autopilot.timing,
+                    )
+                });
+                let asleep = Arc::new(Mutex::new(Duration::ZERO));
+                let quota_wall = lost_allowance.then(|| {
+                    let reading = Arc::clone(&asleep);
+                    h.autopilot.set_wake_read(Arc::new(move || {
+                        Some(Reading {
+                            asleep: *lock(&reading),
+                            last: None,
+                        })
+                    }));
+                    let quota = h.shared.quota();
+                    let account = "fixture-account";
+                    let identity = QuotaIdentity {
+                        account: account.into(),
+                        user: Some("fixture-user".into()),
+                        owner: 0,
+                    };
+                    quota.select_owner(account, identity.user.as_deref(), identity.owner);
+                    let wall = quota.wall_for(account.into(), "codex".into(), at);
+                    *lock(&h.autopilot.quota_test_identity) = Some(identity.clone());
+                    *lock(&h.rt.quota_wall) = Some(QuotaWall {
+                        wall: wall.clone(),
+                        identity,
+                    });
+                    quota.start_read(1, clock());
+                    quota.accept(1, account, vec!["codex".into()], clock());
+                    assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+                    wall
+                });
+                h.autopilot.refuse_goal_set(Some(REFUSAL.to_owned()));
+                let clears_wait = matches!(change, "clear" | "newer-point");
+                let preparation = clears_wait.then(|| {
+                    let (entered, prepared) = tokio::sync::oneshot::channel();
+                    let (release, paused) = tokio::sync::oneshot::channel();
+                    *lock(&h.rt.before_submit) = Some((entered, paused));
+                    (prepared, release)
+                });
+                let gate = if clears_wait { CLEAR } else { REPORT };
+                h.fake.gate(gate);
+                let pilot = Arc::clone(&h.autopilot);
+                let old = Arc::clone(&h.rt);
+                let mut evaluating = tokio::spawn(async move { pilot.evaluate(old).await });
+                if let Some((prepared, release)) = preparation {
+                    tokio::select! {
+                        ready = prepared => ready.expect("prepared usage resume"),
+                        result = &mut evaluating => panic!("resume ended before preparation: {result:?}"),
+                    }
+                    assert!(h.autopilot.sup.want_wait_for(
+                        h.rt.key(),
+                        Some((clock() + Duration::from_secs(3600), WAIT.into())),
+                    ));
+                    h.autopilot.sup.show_waits().await;
+                    assert_eq!(h.fake.attention().get("codex-alab-wait").map(String::as_str), Some(WAIT));
+                    release.send(()).expect("allow the prepared goal resume to fail");
+                }
+                tokio::select! {
+                    () = upgrade_handoff_tests::wait_for_supervisor(|| {
+                        h.fake.gated_requests().iter().any(|line| {
+                            if clears_wait { line.ends_with(CLEAR) } else { line.contains(REFUSAL) }
+                        })
+                    }) => {}
+                    result = &mut evaluating => panic!("resume ended before its failure report: {result:?}"),
+                }
+                if clears_wait {
+                    assert!(h.autopilot.sup.journal().iter().any(|note| note.contains(REFUSAL)));
+                    assert!(!h.autopilot.sup.attention_stands(h.rt.key(), "goal"));
+                }
+                let mut next_evaluation = Box::pin(h.rt.hold_eval_when_free());
+                std::future::poll_fn(|cx| {
+                    assert!(next_evaluation.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+
+                if let Some(wall) = &quota_wall {
+                    h.shared.quota().invalidate();
+                    assert!(!h.autopilot.quota_restored(&h.rt, wall, clock()));
+                }
+                let replaced = change == "replacement";
+                let replacement = replaced.then(|| {
+                    let next = Arc::new(ThreadRt::new(
+                        h.rt.id,
+                        h.rt.config.clone(),
+                        h.rt.token_budget,
+                        Duration::ZERO,
+                    ));
+                    h.test.codex.thread_extension_data().insert_arc(Arc::clone(&next));
+                    h.autopilot.keep_thread(&next);
+                    assert!(Arc::ptr_eq(&h.autopilot.thread_rt(h.rt.key()).unwrap(), &next));
+                    next
+                });
+                let newer_point = change == "newer-point";
+                if newer_point {
+                    let before = h.rt.accepted_turns.load(Ordering::SeqCst);
+                    let session = ExtensionData::new("session");
+                    let successor = ExtensionData::new("turn-after-failed-resume");
+                    let settings = h.test.codex.thread_settings_snapshot().await;
+                    let thread_store = h.test.codex.thread_extension_data();
+                    h.autopilot.on_turn_start(TurnStartInput {
+                        turn_id: successor.level_id(),
+                        collaboration_mode: &settings.collaboration_mode,
+                        token_usage_at_turn_start: None,
+                        session_store: &session,
+                        thread_store,
+                        turn_store: &successor,
+                    }).await;
+                    h.autopilot.on_turn_stop(TurnStopInput {
+                        session_store: &session,
+                        thread_store,
+                        turn_store: &successor,
+                    }).await;
+                    assert!(!evaluating.is_finished(), "the wait clear still holds the old resume");
+                    assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), before + 1);
+                    assert!(!h.shared.turn_running_on(h.rt.key()));
+                    assert!(Arc::ptr_eq(&h.autopilot.thread_rt(h.rt.key()).unwrap(), &h.rt));
+                }
+                // Replacement is effective even while the old callback can still
+                // run and the old instance has yet to receive its stop flag.
+                assert!(!h.rt.stopped.load(Ordering::SeqCst));
+                let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+                assert!(lock(&h.rt.timer).is_none());
+                let earliest = clock() + RECHECK;
+                h.fake.open_gate(gate);
+                evaluating.await.expect("finish the failed evaluation");
+                let next_evaluation = next_evaluation.await;
+                let deadline = lock(&h.rt.timer).as_ref().map(|timer| timer.at);
+                assert_eq!(
+                    h.rt.timer_seq.load(Ordering::SeqCst),
+                    timer_before + u64::from(!replaced && !newer_point)
+                );
+                if let Some(next) = replacement {
+                    assert_eq!(deadline, None);
+                    assert!(lock(&next.timer).is_none());
+                } else if newer_point {
+                    assert_eq!(deadline, None);
+                } else {
+                    assert!(deadline.is_some_and(|at| at >= earliest));
+                }
+                if clears_wait {
+                    assert_eq!(h.autopilot.sup.attention_stands(h.rt.key(), "goal"), !newer_point);
+                    assert_eq!(h.fake.attention().get("codex-alab").is_some_and(|text| text.contains(REFUSAL)), !newer_point);
+                }
+                drop(next_evaluation);
+                if lost_allowance {
+                    h.autopilot.refuse_goal_set(None);
+                    let slept = RECHECK * 2;
+                    *lock(&asleep) = slept;
+                    // The retry reevaluates the original usage window and
+                    // waits out its reset with no current quota permission.
+                    upgrade_handoff_tests::wait_for_supervisor(|| {
+                        h.rt.owed_timer().is_some_and(|owed| owed.not_before >= reset - slept)
+                    })
+                    .await;
+                }
+                Autopilot::cancel_timer(&h.rt).await;
+                assert_eq!(
+                    db.thread_goals().get_thread_goal(h.rt.id).await.expect("read the goal"),
+                    Some(original)
+                );
+                assert!(received_responses_requests(&h._server).await.is_empty());
+                assert!(h.fake.acts().is_empty());
+                h.test.codex.shutdown_and_wait().await.expect("native shutdown");
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{change}: failed resume hang detector: {error}"));
+        }
+    });
+}
+
+#[test]
 fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone() {
     native_test(|| async {
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
             use codex_state::ThreadGoalStatus;
-            for changed in ["objective", "budget", "paused", "blocked"] {
+            for changed in ["objective", "budget", "unread", "paused", "blocked"] {
                 let goals = Arc::new(GoalService::new());
                 let h = Harness::new_with_goals(Some(Arc::clone(&goals))).await;
                 h.fake.set_policy_key("limit_wait", "true");
@@ -290,6 +529,7 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
                             questions: false,
                             worked: Duration::from_secs(600),
                             wall: Some(decide::Wall::Usage {
+                                limit_class: LimitClass::Ordinary,
                                 reset_at: Some(at),
                                 reset_label: None,
                             }),
@@ -338,7 +578,7 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
                         &db,
                         GoalSetRequest {
                             thread_id: h.rt.id,
-                            objective: if changed == "objective" {
+                            objective: if matches!(changed, "objective" | "unread") {
                                 GoalObjectiveUpdate::Set("the revised task")
                             } else {
                                 GoalObjectiveUpdate::Keep
@@ -369,8 +609,57 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
                 let (fresh, fresh_read) = tokio::sync::oneshot::channel();
                 let (continue_fresh, fresh_blocked) = tokio::sync::oneshot::channel();
                 *lock(&h.rt.before_submit) = Some((fresh, fresh_blocked));
+                let unread = (changed == "unread").then(|| {
+                    let (entered, pending_read) = tokio::sync::oneshot::channel();
+                    let (release, blocked_read) = tokio::sync::oneshot::channel();
+                    *lock(&h.rt.before_rejected_goal_read) = Some((entered, blocked_read));
+                    (pending_read, release)
+                });
                 release.send(()).expect("release stale preparation");
-                evaluating.await;
+                if let Some((pending_read, release)) = unread {
+                    tokio::select! {
+                        entered = pending_read => entered.expect("rejected resume reached its goal lookup"),
+                        () = &mut evaluating => panic!("evaluation ended before the rejected resume lookup"),
+                    }
+                    // The native service already rejected the stale preparation. Only the
+                    // follow-up lookup should encounter an unreadable goal row.
+                    super::description_goal_read_tests::saved_status(&db, h.rt.id, "unreadable")
+                        .await;
+                    assert!(db.thread_goals().get_thread_goal(h.rt.id).await.is_err());
+                    let asleep = Arc::new(Mutex::new(Duration::ZERO));
+                    let reading = Arc::clone(&asleep);
+                    h.autopilot.set_wake_read(Arc::new(move || {
+                        Some(Reading {
+                            asleep: *lock(&reading),
+                            last: None,
+                        })
+                    }));
+                    let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+                    let earliest = clock() + RECHECK;
+                    let mut next = Box::pin(h.rt.hold_eval_when_free());
+                    std::future::poll_fn(|cx| {
+                        assert!(next.as_mut().poll(cx).is_pending());
+                        Poll::Ready(())
+                    })
+                    .await;
+                    release.send(()).expect("allow the unread follow-up lookup");
+                    evaluating.await;
+                    let next = next.await;
+                    assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+                    assert!(lock(&h.rt.timer).as_ref().is_some_and(|timer| timer.at >= earliest));
+                    assert!(h.fake.acts().is_empty());
+                    assert!(received_responses_requests(&h._server).await.is_empty());
+                    super::description_goal_read_tests::saved_status(
+                        &db,
+                        h.rt.id,
+                        expected.status.as_str(),
+                    )
+                    .await;
+                    *lock(&asleep) = RECHECK * 2;
+                    drop(next);
+                } else {
+                    evaluating.await;
+                }
                 if matches!(changed, "paused" | "blocked") {
                     assert_eq!(
                         db.thread_goals()
@@ -418,6 +707,7 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
                         .expect("resumed goal")
                         .expect("goal remains");
                     assert_eq!(resumed.status, ThreadGoalStatus::Active);
+                    assert_eq!(resumed.goal_id, expected.goal_id);
                     assert_eq!(resumed.objective, expected.objective);
                     assert_eq!(resumed.token_budget, expected.token_budget);
                     assert_eq!(
@@ -428,6 +718,16 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
                             .count(),
                         1
                     );
+                    if changed == "unread" {
+                        loop {
+                            let requests = received_responses_requests(&h._server).await;
+                            if !requests.is_empty() {
+                                assert_eq!(requests.len(), 1);
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
                 }
                 h.test
                     .codex
@@ -438,6 +738,202 @@ fn a_rejected_usage_resume_redecides_a_still_limited_goal_but_leaves_stops_alone
         })
         .await
         .expect("goal resume redecision hang detector");
+    });
+}
+
+/// A rejected preparation owes a fresh goal decision even when its original quota
+/// allowance is invalidated. That redecision waits for the original future reset until
+/// another accepted allowance wakes the edited goal through the real quota waker.
+#[test]
+fn a_rejected_usage_resume_rechecks_the_edited_goal_after_quota_invalidation() {
+    native_test(|| async {
+        tokio::time::timeout(upgrade_handoff_tests::NATIVE_HANG, async {
+            use codex_state::ThreadGoalStatus;
+            let goals = Arc::new(GoalService::new());
+            let h = Harness::new_with_goals(Some(Arc::clone(&goals))).await;
+            h.fake.set_policy_key("upgrade", "false");
+            h.fake.set_policy_key("limit_wait", "true");
+            upgrade_handoff_tests::wait_for_supervisor(|| {
+                h.autopilot
+                    .sup
+                    .policy()
+                    .is_some_and(|policy| !policy.upgrade && policy.limit_wait)
+            })
+            .await;
+            h.immediate_point().await;
+            h.hold_model_response().await;
+            let db = h.test.codex.state_db().expect("native goal database");
+            let original = db
+                .thread_goals()
+                .replace_thread_goal(h.rt.id, "the original quota task", ThreadGoalStatus::UsageLimited, None)
+                .await
+                .expect("original limited goal");
+            let at = clock();
+            let reset = at + Duration::from_secs(24 * 60 * 60);
+            h.rt.with_state(|state| {
+                state.observe_turn_end(
+                    decide::TurnEnd {
+                        at,
+                        by_autopilot: true,
+                        by_person: false,
+                        text: None,
+                        earlier: None,
+                        questions: false,
+                        worked: Duration::from_secs(600),
+                        wall: Some(Wall::Usage {
+                            limit_class: LimitClass::Ordinary,
+                            reset_at: Some(reset),
+                            reset_label: None,
+                        }),
+                        aborted: false,
+                        ran_tools: false,
+                        restored: false,
+                    },
+                    &h.autopilot.timing,
+                )
+            });
+            let before = h.rt.state();
+            let policy = h.autopilot.sup.policy().expect("proven policy");
+            let ordinary = decide::decide(&before, &policy, &h.autopilot.timing, clock(), h.rt.jitter);
+            assert!(matches!(ordinary.act, Act::ResumeLimit { .. }));
+            assert!(ordinary.not_before.is_some_and(|deadline| deadline >= reset));
+            assert!(lock(&h.rt.human_goal_recovery).is_none());
+            let quota = h.shared.quota();
+            let identity = QuotaIdentity {
+                account: "fixture-account".into(),
+                user: Some("fixture-user".into()),
+                owner: 0,
+            };
+            let generation = quota.select_owner(&identity.account, identity.user.as_deref(), identity.owner);
+            let wall = quota.wall_for(identity.account.clone(), "codex".into(), at);
+            *lock(&h.autopilot.quota_test_identity) = Some(identity.clone());
+            *lock(&h.rt.quota_wall) = Some(QuotaWall {
+                wall: wall.clone(),
+                identity: identity.clone(),
+            });
+            quota.start_read(1, clock());
+            quota.accept(1, &identity.account, vec!["codex".into()], clock());
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let restored = decide::decide_with_usage(
+                &before,
+                &policy,
+                &h.autopilot.timing,
+                clock(),
+                h.rt.jitter,
+                true,
+            );
+            assert!(matches!(restored.act, Act::ResumeLimit { .. }));
+            assert!(restored.not_before.is_some_and(|deadline| deadline <= clock()));
+
+            let (entered, prepared) = tokio::sync::oneshot::channel();
+            let (release, blocked) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_submit) = Some((entered, blocked));
+            let pilot = Arc::clone(&h.autopilot);
+            let runtime = Arc::clone(&h.rt);
+            let mut evaluating = tokio::spawn(async move { pilot.evaluate(runtime).await });
+            tokio::select! {
+                ready = prepared => ready.expect("original goal preparation"),
+                result = &mut evaluating => panic!("evaluation ended before preparation: {result:?}"),
+            }
+            let edit = goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Set("the revised quota task"),
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::UsageLimited),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .expect("real GoalService objective edit");
+            edit.apply_runtime_effects(&goals).await;
+            let edited = db.thread_goals().get_thread_goal(h.rt.id).await.unwrap().unwrap();
+            assert_eq!(edited.goal_id, original.goal_id);
+            assert_ne!(edited.objective, original.objective);
+            assert_eq!(edited.status, ThreadGoalStatus::UsageLimited);
+            let (changed, rejected) = tokio::sync::oneshot::channel();
+            let (recheck, blocked_recheck) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_changed_goal_recheck) = Some((changed, blocked_recheck));
+            release.send(()).expect("allow the stale goal preparation");
+            tokio::select! {
+                ready = rejected => ready.expect("actual NotNow reached its healthy goal recheck"),
+                result = &mut evaluating => panic!("evaluation ended before rejected-goal recheck: {result:?}"),
+            }
+            let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+            let accepted_before = h.rt.accepted_turns.load(Ordering::SeqCst);
+            assert!(!h.rt.timer_pending());
+            assert_eq!(h.rt.state().point_at(), before.point_at());
+            assert_eq!(h.rt.state().wall.as_ref().expect("unspent wall").attempts, 0);
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            quota.invalidate();
+            assert_eq!(quota.generation(), generation);
+            assert_eq!(h.autopilot.quota_identity(), Some(identity.clone()));
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            let mut next = Box::pin(h.rt.hold_eval_when_free());
+            std::future::poll_fn(|cx| {
+                assert!(next.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            recheck.send(()).expect("release the rejected goal's recheck");
+            let next = next.await;
+            evaluating.await.expect("finish the rejected preparation");
+            assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + 1);
+            assert!(h.fake.acts().is_empty());
+            assert!(received_responses_requests(&h._server).await.is_empty());
+
+            // Signal after the real immediate timer acquires evaluation, then
+            // inspect its completed future-reset decision under the same permit.
+            let (started, fresh) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_park) = Some(Box::new(move || {
+                started.send(()).expect("observe the immediate timer's fresh evaluation");
+            }));
+            drop(next);
+            fresh.await.expect("the rejected goal receives its fresh decision");
+            let fresh = h.rt.hold_eval_when_free().await;
+            let owed = h.rt.owed_timer().expect("the original usage reset remains future");
+            assert_eq!(owed.rule, words::RULE_LIMIT_RESUME);
+            assert!(owed.not_before >= reset);
+            assert_eq!(db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(), Some(edited.clone()));
+            assert_eq!(h.rt.state().point_at(), before.point_at());
+            assert_eq!(h.rt.state().wall.as_ref().expect("unspent wall").attempts, 0);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before);
+            assert!(!h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            assert!(h.fake.acts().is_empty());
+            assert!(received_responses_requests(&h._server).await.is_empty());
+
+            h.autopilot.watching.store(false, Ordering::SeqCst);
+            h.autopilot.watch_claims();
+            quota.start_read(2, clock());
+            quota.accept(2, &identity.account, vec!["codex".into()], clock());
+            assert!(h.autopilot.quota_restored(&h.rt, &wall, clock()));
+            assert!(clock() < reset);
+            drop(fresh);
+            upgrade_handoff_tests::wait_for_supervisor(|| {
+                h.fake.acts().contains(&words::RULE_LIMIT_RESUME.into())
+            })
+            .await;
+            loop {
+                let requests = received_responses_requests(&h._server).await;
+                if !requests.is_empty() {
+                    assert_eq!(requests.len(), 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let resumed = db.thread_goals().get_thread_goal(h.rt.id).await.unwrap().unwrap();
+            assert_eq!(resumed.goal_id, edited.goal_id);
+            assert_eq!(resumed.objective, edited.objective);
+            assert_eq!(resumed.status, ThreadGoalStatus::Active);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted_before + 1);
+            Autopilot::cancel_timer(&h.rt).await;
+            h.test.codex.shutdown_and_wait().await.expect("native Core shutdown");
+        })
+        .await
+        .expect("edited goal quota recheck hang detector");
     });
 }
 
@@ -485,6 +981,7 @@ fn a_due_usage_resume_respects_native_goal_ownership_before_its_initial_read() {
                             questions: false,
                             worked: Duration::from_secs(600),
                             wall: Some(decide::Wall::Usage {
+                                limit_class: LimitClass::Ordinary,
                                 reset_at: Some(at),
                                 reset_label: None,
                             }),
@@ -663,6 +1160,7 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
     none(None, Some(&server), true, Some(active.clone()), false);
     for wall in [
         Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: None,
             reset_label: None,
         },
@@ -743,103 +1241,177 @@ fn a_goal_a_turn_error_blocked_at_a_retried_wall_is_that_walls_stop() {
 fn a_full_contexts_compaction_goes_past_the_goal_its_turn_error_blocked() {
     native_test(|| async {
         tokio::time::timeout(Duration::from_secs(60), async {
-            use codex_state::ThreadGoalStatus;
-            for bound in [true, false] {
-                let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
-                h.fake.set_policy_key("upgrade", "false");
-                h.fake.set_policy_key("compact_on_context_wall", "true");
-                upgrade_handoff_tests::wait_for_supervisor(|| {
-                    h.autopilot
-                        .sup
-                        .policy()
-                        .is_some_and(|policy| !policy.upgrade && policy.compact_on_context_wall)
-                })
-                .await;
-                h.immediate_point().await;
-                h.hold_model_response().await;
-                let db = h.test.codex.state_db().expect("goal database");
-                let active = db
-                    .thread_goals()
-                    .replace_thread_goal(
-                        h.rt.id,
-                        "finish the original task",
-                        ThreadGoalStatus::Active,
-                        None,
-                    )
-                    .await
-                    .expect("the active goal");
-                // Upstream's `turn-error` stop at the full context.
-                let blocked = db
-                    .thread_goals()
-                    .update_thread_goal(
-                        h.rt.id,
-                        codex_state::GoalUpdate {
-                            objective: None,
-                            status: Some(ThreadGoalStatus::Blocked),
-                            token_budget: None,
-                            expected_goal_id: Some(active.goal_id.clone()),
-                        },
-                    )
-                    .await
-                    .expect("the turn error's stop")
-                    .expect("the same goal");
-                if bound {
-                    *lock(&h.rt.wall_goal) = Some(wall_goal_of(h.shared, &active));
-                }
-                h.rt.with_state(|state| {
-                    state.observe_turn_end(
-                        TurnEnd {
-                            at: clock(),
-                            by_autopilot: true,
-                            by_person: false,
-                            text: None,
-                            earlier: None,
-                            questions: false,
-                            worked: Duration::from_secs(600),
-                            wall: Some(Wall::Context { auto_compact: true }),
-                            aborted: false,
-                            ran_tools: false,
-                            restored: false,
-                        },
-                        &h.autopilot.timing,
-                    )
-                });
-                Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
-                let compacted = h.fake.acts().iter().any(|act| act == words::RULE_COMPACT);
-                assert_eq!(
-                    compacted,
-                    bound,
-                    "bound={bound}: {:?}",
-                    h.autopilot.sup.journal()
-                );
-                assert_eq!(h.rt.state().compacting, bound, "bound={bound}");
-                assert_eq!(
-                    h.fake
-                        .attention()
-                        .get("codex-alab")
-                        .is_some_and(|text| text.starts_with("goal: the goal is blocked")),
-                    !bound,
-                    "bound={bound}: {:?}",
-                    h.fake.attention()
-                );
-                assert_eq!(
-                    db.thread_goals()
-                        .get_thread_goal(h.rt.id)
-                        .await
-                        .expect("read the goal"),
-                    Some(blocked),
-                    "bound={bound}: the compaction leaves the goal as the wall left it"
-                );
-                h.test
-                    .codex
-                    .shutdown_and_wait()
-                    .await
-                    .expect("native shutdown");
+            for case in [WallCompaction::Bound, WallCompaction::Unbound] {
+                wall_compaction_case(case).await;
             }
         })
         .await
         .expect("compaction past a wall's goal hang detector");
     });
+}
+
+#[test]
+fn a_busy_goal_chronology_rechecks_the_same_wall_compaction() {
+    native_test(|| async {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            wall_compaction_case(WallCompaction::Contended),
+        )
+        .await
+        .expect("wall compaction chronology contention hang detector");
+    });
+}
+
+enum WallCompaction {
+    Unbound,
+    Bound,
+    Contended,
+}
+
+async fn wall_compaction_case(case: WallCompaction) {
+    use codex_state::ThreadGoalStatus;
+    let h = Harness::new_with_goals(Some(Arc::new(GoalService::new()))).await;
+    h.fake.set_policy_key("upgrade", "false");
+    h.fake.set_policy_key("compact_on_context_wall", "true");
+    upgrade_handoff_tests::wait_for_supervisor(|| {
+        h.autopilot
+            .sup
+            .policy()
+            .is_some_and(|policy| !policy.upgrade && policy.compact_on_context_wall)
+    })
+    .await;
+    h.immediate_point().await;
+    h.hold_model_response().await;
+    let db = h.test.codex.state_db().expect("goal database");
+    let active = db
+        .thread_goals()
+        .replace_thread_goal(
+            h.rt.id,
+            "finish the original task",
+            ThreadGoalStatus::Active,
+            None,
+        )
+        .await
+        .expect("the active goal");
+    // Upstream's `turn-error` stop at the full context.
+    let blocked = db
+        .thread_goals()
+        .update_thread_goal(
+            h.rt.id,
+            codex_state::GoalUpdate {
+                objective: None,
+                status: Some(ThreadGoalStatus::Blocked),
+                token_budget: None,
+                expected_goal_id: Some(active.goal_id.clone()),
+            },
+        )
+        .await
+        .expect("the turn error's stop")
+        .expect("the same goal");
+    let bound = !matches!(case, WallCompaction::Unbound);
+    if bound {
+        *lock(&h.rt.wall_goal) = Some(wall_goal_of(h.shared, &active));
+    }
+    h.rt.with_state(|state| {
+        state.observe_turn_end(
+            TurnEnd {
+                at: clock(),
+                by_autopilot: true,
+                by_person: false,
+                text: None,
+                earlier: None,
+                questions: false,
+                worked: Duration::from_secs(600),
+                wall: Some(Wall::Context { auto_compact: true }),
+                aborted: false,
+                ran_tools: false,
+                restored: false,
+            },
+            &h.autopilot.timing,
+        )
+    });
+    if matches!(case, WallCompaction::Contended) {
+        let lock_chronology = || {
+            codex_alab_core::goal_chronology_fence::lock_current(
+                h.test.codex_home_path(),
+                h.rt.key(),
+            )
+            .expect("hold the journal without changing its generation")
+        };
+        let check_retry = || {
+            assert!(h.rt.timer_pending(), "an unread goal owes a recheck");
+            assert!(!h.rt.state().compacting);
+            assert!(h.fake.acts().is_empty());
+            assert!(
+                !h.fake.attention().contains_key("codex-alab"),
+                "contention does not turn into goal attention: {:?}",
+                h.fake.attention(),
+            );
+        };
+
+        let journal = lock_chronology();
+        Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
+        check_retry();
+        drop(journal);
+        h.immediate_point().await;
+
+        // This pass reaches final admission after the wall binding was read.
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let (release, blocked_at_submit) = tokio::sync::oneshot::channel();
+        *lock(&h.rt.before_submit) = Some((entered, blocked_at_submit));
+        let mut evaluating = Box::pin(Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)));
+        tokio::select! {
+            result = entry => result.expect("reached final compaction admission"),
+            () = &mut evaluating => panic!("evaluation did not reach compaction admission"),
+        }
+        let journal = lock_chronology();
+        release.send(()).expect("resume final compaction admission");
+        evaluating.await;
+        check_retry();
+        assert_eq!(
+            db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(),
+            Some(blocked.clone()),
+        );
+        drop(journal);
+        h.immediate_point().await;
+    }
+
+    Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt)).await;
+    let compactions = h
+        .fake
+        .acts()
+        .iter()
+        .filter(|act| *act == words::RULE_COMPACT)
+        .count();
+    assert_eq!(
+        compactions,
+        usize::from(bound),
+        "bound={bound}: {:?}",
+        h.autopilot.sup.journal()
+    );
+    assert_eq!(h.rt.state().compacting, bound, "bound={bound}");
+    assert_eq!(
+        h.fake
+            .attention()
+            .get("codex-alab")
+            .is_some_and(|text| text.starts_with("goal: the goal is blocked")),
+        !bound,
+        "bound={bound}: {:?}",
+        h.fake.attention()
+    );
+    assert_eq!(
+        db.thread_goals()
+            .get_thread_goal(h.rt.id)
+            .await
+            .expect("read the goal"),
+        Some(blocked),
+        "bound={bound}: the compaction leaves the goal as the wall left it"
+    );
+    h.test
+        .codex
+        .shutdown_and_wait()
+        .await
+        .expect("native shutdown");
 }
 
 async fn wall_goal_resume_chronology_case(settled: bool) {

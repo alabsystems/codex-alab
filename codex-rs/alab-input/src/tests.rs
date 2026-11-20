@@ -36,6 +36,62 @@ fn every_split_retains_ready_events_partial_sequences_and_query_data() {
     let mut destination = Parser::restore(&raw.checkpoint().unwrap()).unwrap();
     assert_eq!(all(&mut destination), all(&mut raw));
 }
+fn escape_and_scroll() -> Vec<InternalEvent> {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyModifiers;
+    use crossterm::event::MouseEvent;
+    use crossterm::event::MouseEventKind;
+
+    vec![
+        InternalEvent::Event(Event::Key(KeyCode::Esc.into())),
+        InternalEvent::Event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 124,
+            row: 27,
+            modifiers: KeyModifiers::NONE,
+        })),
+    ]
+}
+
+#[test]
+fn escape_then_scroll_survives_every_read_and_checkpoint_boundary() {
+    let input = b"\x1b\x1b[<64;125;28M";
+    for cut in 0..=input.len() {
+        let mut source = Parser::default();
+        source.feed(&input[..cut], true).unwrap();
+        let mut restored = Parser::restore(&source.checkpoint().unwrap()).unwrap();
+        restored.feed(&input[cut..], true).unwrap();
+        let mut complete = Parser::restore(&restored.checkpoint().unwrap()).unwrap();
+        assert_eq!(all(&mut complete), escape_and_scroll(), "split at {cut}");
+    }
+
+    let mut pasted = Parser::default();
+    pasted.feed(b"\x1b[200~", true).unwrap();
+    pasted.feed(input, true).unwrap();
+    pasted.feed(b"\x1b[201~", true).unwrap();
+    assert_eq!(
+        all(&mut pasted),
+        vec![InternalEvent::Event(Event::Paste(
+            "\x1b\x1b[<64;125;28M".into()
+        ))]
+    );
+}
+
+#[test]
+fn legacy_queued_double_escape_restores_one_already_decoded_key() {
+    let saved = serde_json::json!({
+        "version": 1, "buffer": [], "escape": null, "discarded_sequence": null,
+        "ready": [{"Input": {"bytes": [27, 27], "raw_mode": true}}]
+    });
+    let mut restored = Parser::restore(&serde_json::to_vec(&saved).unwrap()).unwrap();
+    assert_eq!(
+        all(&mut restored),
+        vec![InternalEvent::Event(Event::Key(
+            crossterm::event::KeyCode::Esc.into()
+        ))]
+    );
+}
+
 #[test]
 fn checkpoint_keeps_escape_deadline_and_explicit_quarantine() {
     let mut source = Parser::default();
@@ -156,6 +212,19 @@ fn event(driver: &Driver) -> InternalEvent {
         }
     }
 }
+#[test]
+fn original_pty_delivers_escape_then_scroll_without_stray_keys() {
+    let _serial = PTY_TESTS.lock().unwrap();
+    let (mut master, slave) = pty();
+    let driver = Driver::start(slave, Parser::default(), true).unwrap();
+    master.write_all(b"\x1b\x1b[<64;125;28Mz").unwrap();
+    assert_eq!(vec![event(&driver), event(&driver)], escape_and_scroll());
+    assert_eq!(
+        event(&driver),
+        InternalEvent::Event(Event::Key(crossterm::event::KeyCode::Char('z').into()))
+    );
+}
+
 #[test]
 fn joined_reader_retains_partial_paste_and_os_input_on_the_original_pty() {
     let _serial = PTY_TESTS.lock().unwrap();
@@ -308,6 +377,44 @@ fn subscription_event(
         }
     }
 }
+#[test]
+fn restored_broker_delivers_expired_escape_before_replay_or_readable_pty_bytes() {
+    use codex_alab_core::goal_clock;
+    use crossterm::event::KeyCode;
+
+    let _serial = PTY_TESTS.lock().unwrap();
+    let mut source = Parser::default();
+    source.feed(b"a\x1b", true).unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&source.checkpoint().unwrap()).unwrap();
+    let old = goal_clock::Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap();
+    saved["escape"] = serde_json::json!(goal_clock::checkpoint(&old).unwrap().parts());
+    let snapshot = serde_json::to_vec(&saved).unwrap();
+
+    for replay in [true, false] {
+        let (mut master, slave) = pty();
+        let broker = Broker::new(move || slave.try_clone());
+        broker.restore_with(&snapshot, || Ok(())).unwrap();
+        if replay {
+            broker.buffer_input(b"x", false).unwrap();
+        } else {
+            // Make the original PTY readable before starting its new reader.
+            master.write_all(b"x").unwrap();
+        }
+        let subscription = broker.subscribe(true).unwrap();
+        for key in [KeyCode::Char('a'), KeyCode::Esc, KeyCode::Char('x')] {
+            assert_eq!(
+                subscription_event(&subscription, |_| true),
+                InternalEvent::Event(Event::Key(key.into()))
+            );
+        }
+        let fence = subscription.prepare_upgrade().unwrap();
+        assert!(all(&mut Parser::restore(fence.snapshot()).unwrap()).is_empty());
+    }
+}
+
 #[test]
 fn broker_preserves_filtered_input_across_shared_owners_pause_and_fence_rollback() {
     let _serial = PTY_TESTS.lock().unwrap();

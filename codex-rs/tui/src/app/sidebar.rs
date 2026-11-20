@@ -154,6 +154,7 @@ impl SidebarPane {
             .map(|chat| chat.id)
             .ne(chats.iter().map(|chat| chat.id));
         self.choices = chats;
+        self.alab_reconcile_saved_opening(); // ALAB(retained-ui): a late resume can select only a child still offered by this pane.
         if reordered {
             self.tabs_revision += 1;
             if let Some(index) = selection.and_then(|id| self.chat_tabs().choice_index(id)) {

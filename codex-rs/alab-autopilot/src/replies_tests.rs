@@ -4,6 +4,7 @@
 //! Ruling F's arithmetic (aterm's `Replies`, `reply_mark` and `HeldBy`), each rule with its
 //! negative control.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -78,6 +79,7 @@ fn a_replys_mark_folds_numbers_and_clocks_and_a_walls_is_its_class_and_own_words
         ..said(Some("earlier"), Some(text))
     };
     let usage = |label: &str| Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: None,
         reset_label: Some(label.to_string()),
     };

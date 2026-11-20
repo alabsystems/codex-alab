@@ -176,10 +176,11 @@ def prepare(execution):
         if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
             raise
     # Trust owns root creation, stable locking, crash epochs and idle retirement.
-    # A separate process group keeps gate cancellation from killing the shared daemon.
+    # A separate session keeps gate cancellation from killing the shared daemon.
+    # start_new_session also works with the native controller's macOS system Python.
     with tempfile.TemporaryFile() as stderr:
         child = subprocess.Popen([str(daemon)], env={}, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=stderr, process_group=0)
+                                 stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
         threading.Thread(target=child.wait, daemon=True).start()
         deadline = time.monotonic() + 10
         while True:
@@ -199,7 +200,7 @@ def prepare(execution):
             time.sleep(0.05)
 
 
-def run(command):
+def run(command, *, supervise=None):
     execution = os.environ.get("ATPKG_PROJECT_EXECUTION", "")
     if not command or not os.path.isabs(execution):
         raise ValueError("memory preparation requires held native project selection and a command")
@@ -209,6 +210,8 @@ def run(command):
         environment[PROFILE_SOCKET] = str(endpoint)
         # Preserve native controller/jobserver descriptors. The lease socket
         # itself is close-on-exec and stays only with this outside keeper.
+        if supervise is not None:
+            return supervise(command, environment)
         return subprocess.call(command, env=environment, close_fds=False)
     finally:
         lease.close()

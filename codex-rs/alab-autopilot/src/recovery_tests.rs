@@ -16,6 +16,7 @@ use crate::decide::decide;
 use crate::recovery;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -147,6 +148,193 @@ fn native_request_recovery(websocket: bool) {
         },
     )
     .expect("native request recovery");
+}
+
+#[test]
+fn native_first_turn_honors_prewarm_capacity_for_its_model() {
+    core_test_support::test_codex::run_test_with_large_stack(
+        "prewarm capacity handoff",
+        || async move {
+            use core_test_support::responses;
+            use core_test_support::test_codex::test_codex;
+            use std::sync::Arc;
+            use std::sync::Mutex;
+            use tokio::sync::Notify;
+            use wiremock::Mock;
+            use wiremock::ResponseTemplate;
+            use wiremock::matchers::method;
+            use wiremock::matchers::path_regex;
+
+            codex_alab_core::activate();
+            for (status, advice, model, expect_wait) in [
+                (503, "2", None, true),
+                (503, "600", Some("gpt-5.4"), false),
+                (403, "600", None, false),
+                (503, "0", None, false),
+            ] {
+                let server = responses::start_mock_server().await;
+                let prewarm = Arc::new(Notify::new());
+                let handshakes = Arc::new(Mutex::new(Vec::new()));
+                let received = Arc::clone(&prewarm);
+                let times = Arc::clone(&handshakes);
+                Mock::given(method("GET"))
+                    .and(path_regex(".*/responses$"))
+                    .respond_with(move |req: &wiremock::Request| {
+                        let metadata: serde_json::Value = serde_json::from_slice(
+                            req.headers["x-codex-turn-metadata"].as_bytes(),
+                        )
+                        .expect("handshake metadata");
+                        let speculative = metadata["request_kind"] == "prewarm";
+                        times.lock().unwrap().push((speculative, Instant::now()));
+                        if speculative {
+                            received.notify_one();
+                            ResponseTemplate::new(status)
+                                .insert_header("retry-after", advice)
+                                .set_body_json(json!({
+                                    "error": {"code": "server_is_overloaded", "message": "at capacity"}
+                                }))
+                        } else {
+                            ResponseTemplate::new(426)
+                        }
+                    })
+                    .mount(&server)
+                    .await;
+                let body = responses::sse(vec![
+                    responses::ev_response_created("recovered"),
+                    responses::ev_assistant_message("answer", "RECOVERED"),
+                    responses::ev_completed("recovered"),
+                ]);
+                let post = responses::mount_sse_once(&server, body).await;
+                let test = test_codex()
+                    .with_config(|config| {
+                        config.model_provider.supports_websockets = true;
+                        config.model_provider.request_max_retries = Some(0);
+                        config.model_provider.stream_max_retries = Some(0);
+                    })
+                    .build(&server)
+                    .await?;
+                tokio::time::timeout(Duration::from_secs(10), prewarm.notified()).await?;
+                let mut turn = codex_core::TurnInputRequest::user_input(vec![
+                    codex_protocol::user_input::UserInput::Text {
+                        text: "Retain the first prompt.".into(),
+                        text_elements: Vec::new(),
+                    },
+                ]);
+                turn.thread_settings.model = model.map(str::to_owned);
+                test.codex.start_or_steer_turn(turn).await?;
+                let mut notices = Vec::new();
+                let end = core_test_support::wait_for_event_with_timeout(
+                    &test.codex,
+                    |event| {
+                        if let EventMsg::StreamError(error) = event {
+                            notices.push(error.codex_error_info.clone());
+                        }
+                        matches!(event, EventMsg::TurnComplete(_))
+                    },
+                    Duration::from_secs(15),
+                )
+                .await;
+                let EventMsg::TurnComplete(completed) = end else { unreachable!() };
+                assert!(completed.error.is_none(), "{completed:?}");
+                assert_eq!(completed.last_agent_message.as_deref(), Some("RECOVERED"));
+                let request = post.single_request();
+                assert_eq!(
+                    request.message_input_texts("user").iter()
+                        .filter(|text| text.as_str() == "Retain the first prompt.").count(),
+                    1
+                );
+                if let Some(model) = model {
+                    assert_eq!(request.body_json()["model"], model);
+                }
+                let attempts = handshakes.lock().unwrap().clone();
+                let [(true, first), (false, second)] = attempts.as_slice() else {
+                    panic!("expected prewarm and one foreground handshake: {attempts:?}");
+                };
+                if expect_wait {
+                    assert!(
+                        second.duration_since(*first) >= Duration::from_secs(2),
+                        "first turn bypassed prewarm Retry-After: {attempts:?}"
+                    );
+                    assert_eq!(notices, [Some(CodexErrorInfo::ServerOverloaded)]);
+                } else {
+                    assert!(notices.is_empty(), "unexpected retry notice: {notices:?}");
+                }
+                test.codex.shutdown_and_wait().await?;
+            }
+            Ok(())
+        },
+    )
+    .expect("first-turn prewarm capacity handoff");
+}
+
+#[test]
+fn native_first_turn_honors_capacity_frame_on_accepted_prewarm_socket() {
+    core_test_support::test_codex::run_test_with_large_stack(
+        "prewarm capacity frame",
+        || async move {
+            use core_test_support::responses;
+            use core_test_support::test_codex::test_codex;
+
+            codex_alab_core::activate();
+            let refusal = json!({
+                "type": "error", "status": 503,
+                "error": {"code": "policy_capacity_unavailable", "message": "at capacity"},
+                "headers": {"Retry-After": "2"}
+            });
+            let server = responses::start_websocket_server(vec![
+                vec![vec![refusal.clone()]],
+                vec![vec![
+                    responses::ev_response_created("ok"),
+                    responses::ev_assistant_message("answer", "RECOVERED"),
+                    responses::ev_completed("ok"),
+                ]],
+            ])
+            .await;
+            let release = server.gate_response_event(&refusal);
+            let test = test_codex()
+                .with_config(|config| {
+                    config.model_provider.request_max_retries = Some(0);
+                    config.model_provider.stream_max_retries = Some(0);
+                })
+                .build_with_websocket_server(&server)
+                .await?;
+            let bound = Duration::from_secs(10);
+            let warmup = tokio::time::timeout(bound, server.wait_for_request(0, 0)).await?;
+            assert_eq!(warmup.body_json()["generate"], false);
+            let sent = Instant::now();
+            release.send(()).expect("release capacity frame");
+            test.codex
+                .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
+                    codex_protocol::user_input::UserInput::Text {
+                        text: "Continue after the warmup refusal.".into(),
+                        text_elements: Vec::new(),
+                    },
+                ]))
+                .await?;
+            let request = tokio::time::timeout(bound, server.wait_for_request(1, 0)).await?;
+            assert!(sent.elapsed() >= Duration::from_secs(2));
+            assert!(request.body_json().get("generate").is_none());
+            let mut notices = Vec::new();
+            let end = core_test_support::wait_for_event(&test.codex, |event| {
+                if let EventMsg::StreamError(error) = event {
+                    notices.push(error.codex_error_info.clone());
+                }
+                matches!(event, EventMsg::TurnComplete(_))
+            })
+            .await;
+            assert_eq!(notices, [Some(CodexErrorInfo::PolicyCapacityUnavailable)]);
+            let EventMsg::TurnComplete(completed) = end else {
+                unreachable!()
+            };
+            assert!(completed.error.is_none(), "{completed:?}");
+            assert_eq!(completed.last_agent_message.as_deref(), Some("RECOVERED"));
+            assert_eq!(server.handshakes().len(), 2);
+            test.codex.shutdown_and_wait().await?;
+            server.shutdown().await;
+            Ok(())
+        },
+    )
+    .expect("prewarm frame deadline on first turn");
 }
 
 #[test]
@@ -1135,6 +1323,7 @@ fn a_valid_saved_recovery_keeps_its_carried_ladder_before_native_fallback() {
             "usage",
             CodexErrorInfo::UsageLimitExceeded,
             RecoveryWall::Usage {
+                limit_class: LimitClass::Ordinary,
                 quota: None,
                 reset_at_ms: None,
                 reset_label: None,
@@ -1383,10 +1572,7 @@ fn definitive_native_refusals_restore_attention_without_replaying_old_acts() {
                     now,
                 ));
                 let decision = decide(&resumed, &policy, &Timing::default(), now, Duration::ZERO);
-                if matches!(
-                    info,
-                    CodexErrorInfo::BioPolicy | CodexErrorInfo::MisalignmentPolicyViolation
-                ) {
+                if info == CodexErrorInfo::BioPolicy {
                     assert!(
                         matches!(
                             decision.act,
@@ -1492,6 +1678,7 @@ fn usage() -> Recovery {
     Recovery {
         not_before_ms: EPOCH + 20 * MINUTE + 70_000,
         wall: RecoveryWall::Usage {
+            limit_class: LimitClass::Ordinary,
             quota: None,
             reset_at_ms: Some(EPOCH + 20 * MINUTE),
             reset_label: Some("the provider's original reset".into()),
@@ -1510,6 +1697,75 @@ fn assert_serialized_deadline(before: Option<Instant>, after: Option<Instant>) {
     assert!(
         after <= before + Duration::from_millis(2),
         "fixed samples add at most two millisecond rounding steps"
+    );
+}
+
+#[test]
+fn restored_usage_deadline_shows_the_provider_reset_before_the_paced_retry() {
+    let mut record = usage();
+    let RecoveryWall::Usage {
+        reset_at_ms,
+        reset_label,
+        ..
+    } = &mut record.wall
+    else {
+        panic!("usage fixture");
+    };
+    let day = 24 * 60 * MINUTE;
+    *reset_at_ms = Some(EPOCH + 3 * day);
+    *reset_label = Some("07:30".into()); // Older builds saved just the time.
+    record.not_before_ms = EPOCH + 4 * day;
+
+    let now = Instant::now();
+    let mut restored = state();
+    let timing = Timing::default();
+    let before = chrono::Local::now();
+    assert!(
+        recovery::restore(
+            &mut restored,
+            &[complete(FAILED, Some(CodexErrorInfo::UsageLimitExceeded))],
+            &record,
+            Some(&crate::recovery::test_sample(EPOCH)),
+            now,
+            &timing,
+        )
+        .restored()
+    );
+    let after = chrono::Local::now();
+    let Some(Wall::Usage {
+        reset_label: Some(label),
+        ..
+    }) = restored
+        .point
+        .as_ref()
+        .and_then(|point| point.wall.as_ref())
+    else {
+        panic!("the restored wall should display its reset");
+    };
+    let expected = |local: chrono::DateTime<chrono::Local>| {
+        (local + chrono::Duration::days(3))
+            .format("%H:%M on %Y-%m-%d")
+            .to_string()
+    };
+    assert!(
+        label == &expected(before) || label == &expected(after),
+        "{label}"
+    );
+    let decision = decide(&restored, &policy(), &timing, now, Duration::ZERO);
+    assert_eq!(
+        decision.not_before,
+        Some(now + Duration::from_millis(4 * day))
+    );
+    let notice = decision.shown_wait.expect("the scheduled retry is visible");
+    let expected = |local: chrono::DateTime<chrono::Local>| {
+        format!(
+            "usage limit · automatic retry at {}",
+            (local + chrono::Duration::days(4)).format("%H:%M on %Y-%m-%d")
+        )
+    };
+    assert!(
+        notice == expected(before) || notice == expected(chrono::Local::now()),
+        "{notice}"
     );
 }
 
@@ -2182,6 +2438,7 @@ fn auth_fatal_and_policy_refusals_never_create_recovery_metadata() {
         CodexErrorInfo::Unauthorized,
         CodexErrorInfo::BadRequest,
         CodexErrorInfo::CyberPolicy,
+        CodexErrorInfo::MisalignmentPolicyViolation,
         CodexErrorInfo::ContextWindowExceeded,
     ] {
         let wall = crate::extension::classify(
@@ -2385,6 +2642,7 @@ fn a_past_usage_reset_keeps_a_valid_immediate_recovery_boundary() {
     let timing = Timing::default();
     let original = at_wall(
         Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: Some(now - Duration::from_secs(10 * 60)),
             reset_label: Some("a reset already passed".into()),
         },
@@ -2542,6 +2800,7 @@ fn a_restored_point_leaves_the_replies_a_re_exec_seeded() {
             questions: false,
             worked: Duration::ZERO,
             wall: Some(Wall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at: None,
                 reset_label: Some("the provider's original reset".into()),
             }),
@@ -2568,6 +2827,7 @@ fn a_usage_wall_whose_handoff_is_asked_for_is_carried_with_its_reset() {
     let hour = Duration::from_secs(3600);
     let met = now - Duration::from_secs(120);
     let usage_wall = |reset_at| Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at,
         reset_label: Some("07:30".into()),
     };
@@ -2592,6 +2852,7 @@ fn a_usage_wall_whose_handoff_is_asked_for_is_carried_with_its_reset() {
     );
     assert!(captured.by_autopilot && !captured.by_person);
     let RecoveryWall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at_ms: Some(reset_at_ms),
         reset_label,
         quota: None,

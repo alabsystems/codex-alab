@@ -45,6 +45,11 @@ struct Worker {
     finished: bool,
     _tracked: tokio_util::task::task_tracker::TaskTrackerToken,
 }
+impl Worker {
+    fn finish(&mut self) {
+        self.finished = true;
+    }
+}
 impl Drop for Worker {
     fn drop(&mut self) {
         if !self.finished {
@@ -248,8 +253,9 @@ impl InitialSessionOperation {
                     std::mem::take(&mut p.observers)
                 };
                 actual.changed.send_replace(());
-                worker.finished=true;
+                worker.finish();
                 for observer in observers {actual.publish(&operation.processor.outgoing,&observer,&result).await;}
+                drop(worker);
             }).await;
         }
         Ok(())
@@ -427,3 +433,7 @@ impl ThreadRequestProcessor {
         self.alab_initial_session.rollback_side(context, args).await
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "retained_side_injection_guard_tests.rs"]
+mod guard_tests;

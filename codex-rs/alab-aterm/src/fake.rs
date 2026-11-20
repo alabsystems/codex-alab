@@ -777,9 +777,8 @@ struct State {
     account_pool: Option<FakePool>,
     /// What a schema 2 snapshot says a move may ask ([`FakeAterm::set_account_moves`]).
     account_moves: FakeAccountMoves,
-    /// Whether `codex-accounts snapshot schema=2` is answered
-    /// ([`FakeAterm::answer_account_schema_two`]); `false` plays an aterm before schema 2.
-    account_schema_two: bool,
+    /// Highest supported account snapshot schema. Older versions remain available.
+    account_snapshot_schema: u8,
     /// Whether `restart` takes `account=<label>` and `account-auto`
     /// ([`FakeAterm::answer_account_moves`]); `false` plays an aterm before them.
     account_moves_verb: bool,
@@ -871,7 +870,8 @@ impl FakePool {
     /// aterm's `codex-accounts` snapshot of `schema` (`snapshot_in`), bound to `request` and
     /// to the peer that asked: it carries no credential. Schema 1 says what it said before
     /// schema 2 existed: no row is the session's, none is eligible and no capability is
-    /// offered. Schema 2 carries the rows as set, `own` as the session's row and `moves`.
+    /// offered. Schemas 2 and 3 carry `own` as the session's row and `moves`. Only schema 3
+    /// publishes each row's settled sign-out reason.
     fn snapshot(
         &self,
         schema: u8,
@@ -886,13 +886,27 @@ impl FakePool {
             "process_birth": self.birth,
             "epoch": "fake-host-epoch",
         });
-        if schema == 1 {
-            let mut accounts = self.accounts.clone();
-            if let Some(rows) = accounts.as_array_mut() {
-                for row in rows {
-                    row["eligible"] = serde_json::Value::Bool(false);
+        let mut accounts = self.accounts.clone();
+        if let Some(rows) = accounts.as_array_mut() {
+            for row in rows.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+                if schema == 4 {
+                    row.entry("selection_ref")
+                        .or_insert(serde_json::Value::Null);
+                } else {
+                    row.remove("selection_ref");
+                }
+                if schema >= 3 {
+                    row.entry("signed_out_reason")
+                        .or_insert(serde_json::Value::Null);
+                } else {
+                    row.remove("signed_out_reason");
+                }
+                if schema == 1 {
+                    row.insert("eligible".into(), false.into());
                 }
             }
+        }
+        if schema == 1 {
             return serde_json::json!({
                 "schema": 1,
                 "observed_at": 1_800_000_000,
@@ -904,8 +918,8 @@ impl FakePool {
                 "capabilities": {"add": false, "select": false, "auto": false},
             });
         }
-        serde_json::json!({
-            "schema": 2,
+        let mut snapshot = serde_json::json!({
+            "schema": schema,
             "observed_at": 1_800_000_000,
             "request": request,
             "session": session,
@@ -913,9 +927,17 @@ impl FakePool {
             "assignment": {"account_id": self.own},
             "pool": {"choice_id": moves.choice, "pinned": moves.pinned,
                 "rotation": moves.rotation},
-            "accounts": self.accounts,
+            "accounts": accounts,
             "capabilities": {"add": false, "select": moves.select, "auto": moves.auto},
-        })
+        });
+        if schema == 4 {
+            snapshot["capabilities"]["select_bound"] = (moves.select
+                && accounts
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row["selection_ref"].is_string())))
+            .into();
+        }
+        snapshot
     }
 }
 
@@ -1163,12 +1185,17 @@ impl State {
             "inbox" => self.inbox(tail),
             "codex-accounts" if self.account_pool.is_some() => {
                 let asked = tail
-                    .strip_prefix("snapshot schema=1 request=")
-                    .map(|request| (1, request))
-                    .or_else(|| {
-                        tail.strip_prefix("snapshot schema=2 request=")
-                            .filter(|_| self.account_schema_two)
-                            .map(|request| (2, request))
+                    .strip_prefix("snapshot schema=")
+                    .and_then(|words| words.split_once(" request="))
+                    .and_then(|(version, request)| {
+                        let schema = match version {
+                            "1" => 1,
+                            "2" => 2,
+                            "3" => 3,
+                            "4" => 4,
+                            _ => return None,
+                        };
+                        (schema <= self.account_snapshot_schema).then_some((schema, request))
                     });
                 match (&self.account_pool, asked) {
                     (Some(pool), Some((schema, request))) => format!(
@@ -2257,7 +2284,7 @@ impl FakeAterm {
             reply_always: BTreeMap::new(),
             account_pool: None,
             account_moves: FakeAccountMoves::default(),
-            account_schema_two: true,
+            account_snapshot_schema: 3,
             account_moves_verb: false,
             task: None,
             next_later: 0,
@@ -2792,7 +2819,14 @@ impl FakeAterm {
     /// aterm before schema 2, which answers it `ERR codex-accounts invalid request` and
     /// answers schema 1 as before.
     pub fn answer_account_schema_two(&self, answered: bool) {
-        lock(&self.state).account_schema_two = answered;
+        self.set_account_snapshot_schema(if answered { 2 } else { 1 });
+    }
+
+    /// Report the chosen version and earlier versions. Later requests receive aterm's
+    /// exact refusal for an unknown snapshot schema.
+    pub fn set_account_snapshot_schema(&self, schema: u8) {
+        assert!((1..=4).contains(&schema));
+        lock(&self.state).account_snapshot_schema = schema;
     }
 
     /// Whether `restart` takes `account=<label>` and `account-auto`. `false` (the default)

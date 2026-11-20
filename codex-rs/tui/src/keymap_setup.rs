@@ -910,7 +910,7 @@ mod tests {
         let all_tab = selection_tab(&params, KEYMAP_ALL_TAB_ID);
 
         assert!(params.items.is_empty());
-        assert_eq!(all_tab.items.len(), KEYMAP_ACTIONS.len());
+        assert_eq!(all_tab.items.len(), KEYMAP_ACTIONS.iter().filter(|action| action.visible_in_edition()).count()); // ALAB(interface): count actions available in this edition.
         assert!(
             all_tab.items.iter().all(|item| !item.dismiss_on_select),
             "keymap picker should stay open behind the action menu"

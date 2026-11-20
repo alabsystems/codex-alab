@@ -6,8 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[cfg(test)]
-#[path = "exec_test_process.rs"]
-mod test_process;
+use core_test_support::alab_test_process as test_process;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +98,46 @@ pub(super) fn interrupted_status() -> Option<CollabToolCallStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_error_is_advisory_and_preserves_the_last_terminal_error() {
+        if !test_process::child(concat!(
+            module_path!(),
+            "::retryable_error_is_advisory_and_preserves_the_last_terminal_error"
+        )) {
+            return;
+        }
+        codex_alab_core::activate();
+        let mut renderer = EventProcessorWithJsonOutput::new(None);
+        let error = |will_retry, message: &str| {
+            ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                will_retry,
+                error: codex_app_server_protocol::TurnError {
+                    message: message.into(),
+                    additional_details: Some("details".into()),
+                    codex_error_info: None,
+                    misalignment: None,
+                },
+            })
+        };
+        let terminal = renderer.collect_thread_events(error(false, "terminal"));
+        assert!(matches!(
+            terminal.events.as_slice(),
+            [ThreadEvent::Error(_)]
+        ));
+        let retry = renderer.collect_thread_events(error(true, "temporary"));
+        assert_eq!(retry.status, CodexStatus::Running);
+        assert_eq!(
+            serde_json::to_value(retry.events).unwrap(),
+            json!([{"type":"item.completed","item":{"id":"item_0","type":"error","message":"temporary (details)"}}])
+        );
+        assert_eq!(
+            renderer.last_critical_error.unwrap().message,
+            "terminal (details)"
+        );
+    }
 
     #[test]
     fn interrupted_wait_completes_the_original_visible_item() {

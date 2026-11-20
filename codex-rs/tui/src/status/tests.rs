@@ -76,6 +76,7 @@ fn stale_monthly_limit_marks_fresh_rolling_snapshot_stale() {
         credits: None,
         individual_limit: Some(SpendControlLimitSnapshotDisplay {
             captured_at: now - ChronoDuration::minutes(20),
+            alab_reset_at: now.timestamp() + 3600, // ALAB(credit-reporting): future monthly reset in the age-based fixture
             percent_remaining: 68.0,
             used: "8,000".to_string(),
             limit: "25,000".to_string(),

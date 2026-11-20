@@ -26,7 +26,7 @@ class StatusReadTests(unittest.TestCase):
             root = Path(temporary)
             actions = root / "actions"
             definitions = '\n'.join(function(name) for name in (
-                "worktree_clean", "worktree_fully_staged", "write_stop", "finish"))
+                "worktree_clean", "worktree_fully_staged", "write_stop", "check_current_main", "finish"))
             script = ('set -euo pipefail\n. ' + shlex.quote(str(ROOT / "alab/lib.sh")) + '\n'
                       + definitions + r'''
 wt=candidate
@@ -42,6 +42,7 @@ ensure_worktree() { :; }
 in_wt() {
   case "$1" in
     status) record status; printf '%s' "${STATUS_OUT}"; return "${STATUS_RC}" ;;
+    rev-parse) echo fixture-revision ;;
     merge-base) record ancestry; return 0 ;;
     *) exit 97 ;;
   esac

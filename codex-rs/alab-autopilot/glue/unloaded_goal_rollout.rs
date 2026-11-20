@@ -40,10 +40,14 @@ pub(super) struct GoalOutputQueue {
     thread_limits:
         std::sync::Mutex<std::collections::HashMap<ThreadId, Weak<tokio::sync::Semaphore>>>,
     global_limit: Arc<tokio::sync::Semaphore>,
+    storage_slots: tokio::sync::Semaphore,
 }
 
 const THREAD_OUTPUT_CAPACITY: usize = 8;
 const GLOBAL_OUTPUT_CAPACITY: usize = 128;
+// A state pool has five connections. Each active cold mutation also opens
+// rollout and lock files while it waits for SQLite.
+const ACTIVE_GOAL_STORAGE_OPERATIONS: usize = 5;
 
 fn note_person_goal_set(
     thread_id: ThreadId,
@@ -61,6 +65,7 @@ impl Default for GoalOutputQueue {
             tails: std::sync::Mutex::default(),
             thread_limits: std::sync::Mutex::default(),
             global_limit: Arc::new(tokio::sync::Semaphore::new(GLOBAL_OUTPUT_CAPACITY)),
+            storage_slots: tokio::sync::Semaphore::new(ACTIVE_GOAL_STORAGE_OPERATIONS),
         }
     }
 }
@@ -432,6 +437,18 @@ impl ThreadGoalRequestProcessor {
         }
     }
 
+    /// Take the per-thread lock first so one thread's backlog cannot occupy
+    /// the storage slots available to other conversations.
+    async fn alab_goal_storage_slot(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, JSONRPCErrorError> {
+        self.alab_goal_outputs
+            .storage_slots
+            .acquire()
+            .await
+            .map_err(|_| internal_error("goal storage queue closed"))
+    }
+
     pub(super) fn alab_reserve_goal_output(
         &self,
         thread_id: ThreadId,
@@ -668,6 +685,7 @@ impl ThreadGoalRequestProcessor {
         }
         let output_reservation = self.alab_reserve_goal_output(thread_id)?;
         let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
+        let _storage_slot = self.alab_goal_storage_slot().await?;
         let state_db = self
             .state_db_for_materialized_thread(thread_id, GoalAccess::Mutate)
             .await?;
@@ -925,6 +943,7 @@ impl ThreadGoalRequestProcessor {
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
         let output_reservation = self.alab_reserve_goal_output(thread_id)?;
         let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
+        let _storage_slot = self.alab_goal_storage_slot().await?;
         let state_db = self
             .state_db_for_materialized_thread(thread_id, GoalAccess::Mutate)
             .await?;
@@ -1239,5 +1258,64 @@ mod tests {
         assert!(queue.reserve(thread_id).is_none());
         drop(reservations);
         assert!(queue.reserve(thread_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn global_goal_output_reservations_reopen_while_an_unrelated_delivery_is_blocked() {
+        let queue = Arc::new(GoalOutputQueue::default());
+        let blocked = ThreadId::new();
+        let independent = ThreadId::new();
+        let deadline = std::time::Duration::from_secs(5);
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        queue.enqueue(
+            blocked,
+            queue.reserve(blocked).unwrap(),
+            Box::pin(async move {
+                started.send(()).unwrap();
+                release_rx.await.unwrap();
+            }),
+        );
+        tokio::time::timeout(deadline, started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Each reservation belongs to a different thread. Per-thread pressure
+        // cannot explain why the next unrelated mutation cannot reserve output.
+        let mut outstanding = (1..GLOBAL_OUTPUT_CAPACITY)
+            .map(|_| queue.reserve(ThreadId::new()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(queue.reserve(independent).is_none());
+
+        drop(outstanding.pop().unwrap());
+        let reservation = queue
+            .reserve(independent)
+            .expect("the released slot can be reused");
+        assert!(queue.reserve(ThreadId::new()).is_none());
+        let (delivered, delivered_rx) = tokio::sync::oneshot::channel();
+        queue.enqueue(
+            independent,
+            reservation,
+            Box::pin(async move {
+                delivered.send(()).unwrap();
+            }),
+        );
+        tokio::time::timeout(deadline, delivered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        drop(outstanding);
+        release.send(()).unwrap();
+        let all = tokio::time::timeout(
+            deadline,
+            queue.global_limit.acquire_many(GLOBAL_OUTPUT_CAPACITY as u32),
+        )
+        .await
+        .expect("completed outputs return every global slot")
+        .unwrap();
+        drop(all);
+        assert!(queue.reserve(blocked).is_some());
     }
 }

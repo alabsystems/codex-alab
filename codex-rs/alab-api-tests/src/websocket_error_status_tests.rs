@@ -147,31 +147,6 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-fn request() -> codex_api::ResponsesApiRequest {
-    codex_api::ResponsesApiRequest {
-        model: "gpt-ws-error-status".into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(json!({"type":"message", "role":"user",
-            "content":[{"type":"input_text", "text":PRIVATE}]}))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    }
-}
-
 async fn exchange(payload: String, expected: Expected) {
     let mut peer = tokio::time::timeout(
         WAIT,
@@ -212,6 +187,7 @@ async fn exchange(payload: String, expected: Expected) {
     .await
     .expect("error-status Upgrade deadline")
     .unwrap();
+    let request = crate::streaming_request("gpt-ws-error-status", PRIVATE);
     let capture = Capture::default();
     let mut stream = {
         let _subscriber =
@@ -224,7 +200,7 @@ async fn exchange(payload: String, expected: Expected) {
             WAIT,
             connection.stream_request(
                 codex_api::ResponsesWsRequest::ResponseCreate(
-                    codex_api::ResponseCreateWsRequest::from(&request()),
+                    codex_api::ResponseCreateWsRequest::from(&request),
                 ),
                 false,
                 None,

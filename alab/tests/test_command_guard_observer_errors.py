@@ -431,6 +431,8 @@ class ObserverErrorTests(unittest.TestCase):
                     selected.add_note(f"independent fixture compensation failed: {error!r}")
                 if selected is not outer_primary:
                     raise selected
+        if caught is not None and record["phase_attempts"] == 0:
+            raise caught
         self.assertGreaterEqual(record["phase_attempts"], 1)
         self.assertEqual(record["marker_attempts"], 1)
         self.assertEqual(before_outer_cleanup["closes"], [1, 1])

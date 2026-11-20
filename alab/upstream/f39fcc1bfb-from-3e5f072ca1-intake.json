@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "base": "3e5f072ca1e3e75e3151656d411d094489e3faa2",
+  "target": "f39fcc1bfbcb04afbe7df8793545bf4a00f5f266",
+  "frontier": "3e5f072ca1e3e75e3151656d411d094489e3faa2",
+  "commits": [
+    {
+      "sha": "1283c91ad7e6cf00360727157ac62db5e3a9c18d",
+      "subject": "Update `crossterm` to fix stray input when scrolling (#62139)",
+      "paths": [
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml"
+      ],
+      "classes": [
+        "fix",
+        "packaging",
+        "removed-path"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Follow the upstream crossterm revision so a split Unix mouse report is decoded as a single event. Keep the existing ALab input reader for transferring unfinished input during live updates and the established removal of the Bazel lockfile.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 071ef35c39c7bbe3dc482e0989e75f7bc574516fdd17be2bccaef03b67a3a51e.",
+        "Both the workspace patch and locked 0.29.0 git package advance from ed1cdab3 to 37ca4a27. The upstream Bazel metadata advances the same dependency. ALab lists MODULE.bazel.lock in its whole-path removals."
+      ],
+      "revisit": "Exercise fragmented scroll reports and a standalone Escape on the ordinary terminal route and across an input handoff. Validate Cargo resolution against the upstream package identities."
+    },
+    {
+      "sha": "f39fcc1bfbcb04afbe7df8793545bf4a00f5f266",
+      "subject": "Hold Cloud reply streams until history can be refreshed (#62140)",
+      "paths": [
+        "codex-rs/app-server-client/src/cloud.rs",
+        "codex-rs/app-server-client/src/cloud_backend/connection_tests.rs",
+        "codex-rs/app-server-client/src/cloud_backend/idle.rs",
+        "codex-rs/app-server-client/src/cloud_backend/mod.rs",
+        "codex-rs/app-server-client/src/lib.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "history-pagination",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Carry Cloud reattachment that buffers live replies while the client refreshes missed history. Use the original account-bound ALab idle network permit for each active read and install, and keep the local session capture facade.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 a201a50b66a75861fd53cd99380cf1497fafc89f7507257cb13bb080ff84eb53.",
+        "A single deadline covers attach, history reads and explicit stream installation. The worker checks the original login before and after a matching history read, checks its network permit again at installation, and discards a canceled hold. An idle status cannot rule out a missed turn.",
+        "Reviewed connection tests exercise buffered events, late and canceled installs, changed sign-in and finite streams. The upstream login now derives Clone. ALab\u2019s idle permit can share the captured policy and sticky application permit across copies without holding an active account operation while idle."
+      ],
+      "revisit": "Check quiet and busy reattachments, cancellation and immediate retry, timeout, Personal Access Token reopen, original source retirement, sign-in changes during history reads, and the release acknowledgement before new events appear."
+    }
+  ]
+}

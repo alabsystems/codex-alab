@@ -12,6 +12,21 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::watch;
 
+/// Prefixes shared by recovery and the TUI's transcript filter.
+pub const EARNED_RESET_NOTICE: &str = "[codex-alab reset] ";
+pub const USAGE_CREDIT_NOTICE: &str = "[codex-alab credits] ";
+
+pub fn is_recovery_notice(message: &str) -> bool {
+    message.starts_with(EARNED_RESET_NOTICE) || message.starts_with(USAGE_CREDIT_NOTICE)
+}
+
+/// Keep a finite provider-reported credit balance at its original precision for display.
+pub fn reported_credit_amount(balance: Option<&str>) -> Option<&str> {
+    balance
+        .map(str::trim)
+        .filter(|value| value.len() <= 64 && value.parse::<f64>().is_ok_and(f64::is_finite))
+}
+
 /// Volatile admission for account-quota recovery in a root turn executed by an
 /// exec host. The host's extension registry supplies it; saved session origin
 /// and serialized history cannot grant it.
@@ -207,11 +222,41 @@ impl Wall {
 struct Reading {
     account: String,
     generation: u64,
-    started: Instant,
+    started: ReadTime,
     completed: Instant,
     usable: Vec<String>,
     ordinary: Option<bool>,
     denied: Vec<String>,
+}
+
+/// The awake clock orders observations against their wall. The continuous
+/// clock also counts host sleep toward an observation's freshness.
+#[derive(Clone, Copy)]
+struct ReadTime {
+    at: Instant,
+    continuous_ns: Option<u64>,
+}
+
+impl ReadTime {
+    fn sample(at: Instant) -> Self {
+        Self {
+            at,
+            continuous_ns: crate::wake::continuous_ns(),
+        }
+    }
+
+    fn fresh_at(self, now: Self) -> bool {
+        const FRESH: Duration = Duration::from_secs(30);
+        let awake = now.at.checked_duration_since(self.at);
+        awake.is_some_and(|age| age <= FRESH)
+            && match (self.continuous_ns, now.continuous_ns) {
+                (Some(start), Some(end)) => end
+                    .checked_sub(start)
+                    .is_some_and(|ns| Duration::from_nanos(ns) <= FRESH),
+                // On a host that counts suspend, an unread clock cannot establish freshness.
+                _ => !crate::wake::supported(),
+            }
+    }
 }
 
 #[derive(Default)]
@@ -219,7 +264,7 @@ struct State {
     generation: u64,
     read_epoch: u64,
     owner: Option<(String, Option<String>, u64)>,
-    requests: BTreeMap<u64, (u64, Instant)>,
+    requests: BTreeMap<u64, (u64, ReadTime)>,
     reading: Option<Reading>,
     ordinary: Option<bool>,
     denied_at: Option<Instant>,
@@ -267,6 +312,16 @@ impl Quota {
         bucket: String,
         now: Instant,
     ) -> Option<Wall> {
+        self.wall_in_at(account, generation, bucket, ReadTime::sample(now))
+    }
+
+    fn wall_in_at(
+        &self,
+        account: String,
+        generation: u64,
+        bucket: String,
+        now: ReadTime,
+    ) -> Option<Wall> {
         let state = self
             .state
             .lock()
@@ -275,13 +330,13 @@ impl Quota {
             read.account == account
                 && read.generation == generation
                 && read.ordinary == Some(false)
-                && read.completed <= now
-                && now.duration_since(read.started) <= Duration::from_secs(30)
+                && read.completed <= now.at
+                && read.started.fresh_at(now)
         });
         (generation == state.generation).then_some(Wall {
             account,
             generation,
-            at: now,
+            at: now.at,
             bucket,
             ordinary_retry: false,
             ordinary_denied,
@@ -317,6 +372,10 @@ impl Quota {
     }
 
     pub fn start_read(&self, id: u64, now: Instant) {
+        self.start_read_at(id, ReadTime::sample(now));
+    }
+
+    fn start_read_at(&self, id: u64, now: ReadTime) {
         let mut state = self
             .state
             .lock()
@@ -351,7 +410,7 @@ impl Quota {
         };
         if account.is_empty()
             || generation != state.read_epoch
-            || started > now
+            || started.at > now
             || state
                 .owner
                 .as_ref()
@@ -373,7 +432,7 @@ impl Quota {
             if allowed && state.ordinary == Some(false) {
                 state.recovered_from = state.denied_at;
             } else if !allowed {
-                state.denied_at = Some(started);
+                state.denied_at = Some(started.at);
                 state.recovered_from = None;
             }
             state.ordinary = Some(allowed);
@@ -423,16 +482,16 @@ impl Quota {
     }
 
     pub fn restored(&self, wall: &Wall, now: Instant) -> bool {
-        self.restored_with(wall, now, false)
+        self.restored_with(wall, ReadTime::sample(now), false)
     }
 
     /// Subscription recovery requires a denied-to-allowed transition, not merely
     /// a usable ordinary bucket beside a still-unavailable premium entitlement.
     pub fn ordinary_restored(&self, wall: &Wall, now: Instant) -> bool {
-        self.restored_with(wall, now, true)
+        self.restored_with(wall, ReadTime::sample(now), true)
     }
 
-    fn restored_with(&self, wall: &Wall, now: Instant, ordinary_only: bool) -> bool {
+    fn restored_with(&self, wall: &Wall, now: ReadTime, ordinary_only: bool) -> bool {
         let state = self
             .state
             .lock()
@@ -440,10 +499,9 @@ impl Quota {
         state.reading.as_ref().is_some_and(|read| {
             read.account == wall.account
                 && read.generation == wall.generation
-                && read.started > wall.at
-                && read.completed <= now
-                && now.duration_since(read.started) <= Duration::from_secs(30)
-                && now.duration_since(read.completed) <= Duration::from_secs(30)
+                && read.started.at > wall.at
+                && read.completed <= now.at
+                && read.started.fresh_at(now)
                 && !read.denied.contains(&wall.bucket)
                 && ((!ordinary_only && read.usable.contains(&wall.bucket))
                     || ((ordinary_only || wall.ordinary_retry)
@@ -457,6 +515,42 @@ impl Quota {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pre_sleep_denial_cannot_grant_an_ordinary_retry_after_relaunch() {
+        let base = Instant::now();
+        let time = |awake, elapsed: u64| ReadTime {
+            at: base + Duration::from_secs(awake),
+            continuous_ns: Some(elapsed * 1_000_000_000),
+        };
+        let quota = Quota::new();
+        let generation = quota.select_owner("a", None, 0);
+        quota.start_read_at(1, time(0, 0));
+        quota.accept_observation(1, "a", vec![], Some(false), vec![], time(1, 1).at);
+        let wall = quota
+            .wall_in_at("a".into(), generation, "premium".into(), time(2, 3602))
+            .unwrap()
+            .with_ordinary_retry(true, false);
+        let saved = quota.scope(&wall, None);
+        assert!(!saved.ordinary_denied);
+
+        let resumed = Quota::new();
+        let generation = resumed.select_owner("a", None, 1);
+        let wall = resumed
+            .wall_in_at(saved.account, generation, saved.bucket, time(3, 3603))
+            .unwrap()
+            .with_ordinary_retry(saved.ordinary_retry, saved.ordinary_denied);
+        resumed.start_read_at(2, time(4, 3604));
+        resumed.accept_observation(2, "a", vec![], Some(true), vec![], time(5, 3605).at);
+        assert!(!resumed.restored_with(&wall, time(5, 3605), true));
+
+        resumed.start_read_at(3, time(6, 3606));
+        resumed.accept_observation(3, "a", vec![], Some(false), vec![], time(7, 3607).at);
+        resumed.start_read_at(4, time(8, 3608));
+        resumed.accept_observation(4, "a", vec![], Some(true), vec![], time(9, 3609).at);
+        assert!(resumed.restored_with(&wall, time(9, 3609), true));
+        assert!(!resumed.restored_with(&wall, time(10, 7210), true));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn wall_handoff_probe_is_bounded() {

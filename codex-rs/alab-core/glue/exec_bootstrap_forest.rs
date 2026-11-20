@@ -61,6 +61,15 @@ pub struct ForestBootstrapRequest {
     goals: Option<Arc<codex_alab_autopilot::upgrade_goals::GoalForestState>>,
 }
 impl ForestBootstrapRequest {
+    /// The retained primary's original working directory for interactive
+    /// selection, before startup chooses the final embedded server.
+    pub fn primary_resume_cwd(&self) -> Option<&std::path::Path> {
+        match self.roots.get(&self.primary)? {
+            RootPolicy::Reload(request) => request.cwd.as_deref(),
+            RootPolicy::Fresh(_) => None,
+        }
+    }
+
     /// The inventory and startup policies come from the fresh native host.
     /// This constructor validates data; it grants no SDK/model admission.
     pub fn new(
@@ -228,6 +237,7 @@ pub(super) struct Accepted {
     owner: Arc<RecoveryForest>,
 }
 struct RecoveryForest {
+    model_followers: Vec<ThreadId>,
     trees: Vec<Arc<ExecRecoveryTree>>,
     deadline: tokio::time::Instant,
     outcome: OnceLock<tokio::sync::watch::Receiver<Option<Result<(), String>>>>,
@@ -247,6 +257,7 @@ impl RecoveryForest {
                         .await
                         .unwrap_or_else(|_| Err("forest activation deadline elapsed".into()));
                     if let Err(error) = &result {
+                        owner.goal_hold.fence().invalidate();
                         for tree in &owner.trees {
                             tree.stop(error).await;
                         }
@@ -291,6 +302,13 @@ impl RecoveryForest {
         // the native host may transfer ownership and authorize continuation.
         // Its denial keeps the shared hold closed and stops every restored tree.
         (self.activate)().await?;
+        // Native custody has transferred. Install each eligible root's exact
+        // first-turn model refresh before any ordinary input or goal is admitted.
+        for thread in &threads {
+            if self.model_followers.contains(&thread.exec_thread_id()) {
+                thread.alab_restore_model_following().await;
+            }
+        }
         self.goal_hold.release_if(|| first.release())?;
         for tree in &self.trees {
             tree.publish_idle().await?;
@@ -357,6 +375,7 @@ impl State {
             .ok_or("forest data was already taken")?;
         let mut trees = Vec::new();
         let mut roots = Vec::new();
+        let mut model_followers = Vec::new();
         let prepared = async {
             // Primary first, then stable native root order. Data remains globally
             // decoded; prepare_root must never reconstruct a per-tree input table.
@@ -368,6 +387,19 @@ impl State {
                 let startup = policies
                     .get(&id)
                     .ok_or("fresh forest root policy is missing")?;
+                if !startup.exec
+                    && tree.turn().is_none()
+                    && let Some(root) = tree.threads().first()
+                    && root.configuration().follows_model_after_handoff(
+                        id == request.primary
+                            && matches!(
+                                root.source(),
+                                codex_protocol::protocol::SessionSource::Cli
+                            ),
+                    )
+                {
+                    model_followers.push(id);
+                }
                 let (configured, loaded) = prepare_root(
                     processor,
                     startup,
@@ -409,6 +441,7 @@ impl State {
             threads: Arc::new(threads),
         };
         let owner = Arc::new(RecoveryForest {
+            model_followers,
             trees,
             deadline: request.deadline,
             outcome: OnceLock::new(),

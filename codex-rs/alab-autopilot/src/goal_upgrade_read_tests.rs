@@ -1456,7 +1456,7 @@ fn a_failed_goal_read_holds_native_submission_and_owes_a_recheck() {
             let new_generation = lock(&h.rt.timer).as_ref().expect("new wait").generation;
             let stale_retired = h.autopilot.retire_decided_wait(&h.rt, &authority).await;
             assert!(!stale_retired && h.rt.timer_pending(), "an old goal decision cannot retire the new native turn's wait");
-            assert!(h.autopilot.goal_read_owns_pace(&h.rt, Err(read_error.clone()), &authority).await);
+            assert!(h.autopilot.goal_read_owns_pace(&h.rt, &h.test.codex, Err(read_error.clone()), &authority).await);
             assert_eq!(lock(&h.rt.timer).as_ref().expect("new wait remains").generation, new_generation, "an old unread goal cannot replace a new native wait with its recheck");
             Autopilot::cancel_timer(&h.rt).await;
             // Interrupt publishes an abort which Autopilot evaluates. Hold its

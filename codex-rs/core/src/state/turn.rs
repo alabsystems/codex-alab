@@ -320,3 +320,5 @@ impl TurnState {
         self.mailbox_delivery_phase = phase;
     }
 }
+
+#[path = "../../../alab-core/glue/model_retirement_waiters.rs"] mod alab_model_retirement_waiters; // ALAB(defaults): outstanding tool waiters retain their original model step.

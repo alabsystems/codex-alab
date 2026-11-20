@@ -1821,6 +1821,7 @@ async fn response_stream_records_last_model_feedback_ids() {
             token_usage: None,
             usage_metadata: None,
             reasoning_removals: None,
+            interrupted: false, // ALAB(shell-invocation): the fixture models a completed provider generation.
             end_turn: Some(true),
         }),
     ]);
@@ -2866,6 +2867,7 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
             token_usage: None,
             usage_metadata: None,
             reasoning_removals: None,
+            interrupted: false, // ALAB(shell-invocation): the fixture models a completed provider generation.
             end_turn: None,
         }))
         .await?;

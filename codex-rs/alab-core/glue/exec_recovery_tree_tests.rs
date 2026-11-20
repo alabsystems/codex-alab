@@ -291,6 +291,15 @@ async fn recovery_tree(mode: TestMode) -> anyhow::Result<()> {
             .is_err(),
         "internal child must not be resolved through public lookup"
     );
+    for id in [root_id, child_id, idle_id] {
+        assert!(matches!(
+            replacement
+                .thread_manager
+                .thread_registration(id, &recovery.threads[&id])
+                .await,
+            codex_core::ThreadRegistration::Current
+        ));
+    }
     let mut waiter = tokio::spawn({
         let recovery = Arc::clone(&recovery);
         async move { recovery.activate().await }
@@ -319,22 +328,37 @@ async fn recovery_tree(mode: TestMode) -> anyhow::Result<()> {
         "a new idle-child task must also wait for tree release"
     );
     waiter.abort();
-    if !expire {
+    assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
+    assert!(recovery.outcome.get().unwrap().borrow().is_none());
+    let pending_admission = if expire {
+        Some(admit_child)
+    } else {
         admit_child.send(()).unwrap();
-    }
+        None
+    };
     let result = tokio::time::timeout(Duration::from_secs(10), recovery.activate())
         .await
         .map_err(|e| anyhow::anyhow!("waiting for tree activation: {e}"))?;
+    assert_eq!(
+        recovery.activate().await,
+        result,
+        "re-observing a settled operation must keep its original result and admissions"
+    );
+    let admitted = admissions.lock().await.clone();
+    assert_eq!(
+        admitted,
+        vec![
+            (idle_id, None),
+            (root_id, Some(root_turn.clone())),
+            (child_id, Some(child_turn))
+        ]
+    );
     if deny_child || expire {
         assert!(result.is_err());
         if expire {
             assert!(result.as_ref().unwrap_err().contains("deadline"));
+            assert!(pending_admission.unwrap().is_closed());
         }
-        assert_eq!(
-            recovery.activate().await,
-            result,
-            "refusal must reconcile without another admission"
-        );
         assert_eq!(
             source.requests().await.len(),
             2,
@@ -347,10 +371,6 @@ async fn recovery_tree(mode: TestMode) -> anyhow::Result<()> {
         return Ok(());
     }
     let result = result.map_err(anyhow::Error::msg)?;
-    assert_eq!(
-        recovery.activate().await.map_err(anyhow::Error::msg)?,
-        result
-    );
     assert!(
         matches!(result, StartIfIdleSubmission::Started { turn_id, .. } if turn_id == root_turn)
     );
@@ -365,15 +385,6 @@ async fn recovery_tree(mode: TestMode) -> anyhow::Result<()> {
             anyhow::anyhow!("waiting for completion of {}: {e}", thread.exec_thread_id())
         })?;
     }
-    let admitted = admissions.lock().await.clone();
-    assert_eq!(
-        admitted,
-        vec![
-            (idle_id, None),
-            (root_id, Some(root_turn)),
-            (child_id, Some(child_turn))
-        ]
-    );
     let requests = source.requests().await;
     assert_eq!(requests.len(), 5);
     let bodies = requests[2..]

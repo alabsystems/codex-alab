@@ -67,6 +67,74 @@ fn checkpoint_rejects_unknown_schema_lost_offer_and_mismatched_completion() -> R
     assert!(serde_json::from_value::<ClientConstructionCheckpoint>(foreign).is_err());
     Ok(())
 }
+
+#[test]
+fn saved_resume_reads_share_the_frozen_arguments_with_their_checkpoint() -> Result<()> {
+    let child = codex_protocol::ThreadId::new().to_string();
+    let opening = "a".repeat(32);
+    let operation = ClientConstructionOperation::for_saved_resume(
+        ClientConstructionSelection {
+            presentation: ClientPresentation::SideConversation,
+            ..selection()
+        },
+        &opening,
+        &child,
+    )?;
+    let wire = codex_app_server_protocol::JSONRPCRequest {
+        id: RequestId::Integer(1),
+        method: "thread/resume".into(),
+        params: Some(serde_json::to_value(
+            codex_app_server_protocol::ThreadResumeParams {
+                thread_id: child.clone(),
+                ..Default::default()
+            },
+        )?),
+        trace: None,
+    };
+    operation.freeze(&wire)?;
+    let frozen = operation
+        .checkpoint()
+        .frozen
+        .ok_or("missing frozen arguments")?;
+    operation.freeze(&wire)?;
+    let offer = Offer {
+        preparation: opening,
+        claim: "b".repeat(32),
+        source_operation: "c".repeat(32),
+        selection: "d".repeat(32),
+    };
+    operation
+        .state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .offer = Some(offer.clone());
+    operation.begin_mutation(&offer)?;
+    let checkpoint = operation.checkpoint();
+    let from_checkpoint = checkpoint
+        .saved_resume_query()?
+        .ok_or("missing saved query")?;
+    for query in [operation.saved_resume_query(&child)?, from_checkpoint] {
+        let Request::ReadSavedResume { original, .. } = Request::from(query.clone()) else {
+            return Err("saved lookup lost the original request".into());
+        };
+        assert!(Arc::ptr_eq(&frozen, &original));
+    }
+    // A decoded frame starts a new allocation, shared by its own read query.
+    let decoded: ClientConstructionCheckpoint =
+        serde_json::from_value(serde_json::to_value(checkpoint)?)?;
+    let query = decoded
+        .saved_resume_query()?
+        .ok_or("missing decoded query")?;
+    let Request::ReadSavedResume { original, .. } = Request::from(query) else {
+        return Err("decoded lookup lost the original request".into());
+    };
+    assert!(Arc::ptr_eq(
+        decoded.frozen.as_ref().ok_or("missing decoded arguments")?,
+        &original
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn canceling_original_observation_retains_same_frozen_operation_owner() -> Result<()> {
     let operation = ClientConstructionOperation::new(selection())?;

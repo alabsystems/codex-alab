@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "ab1ad9299b53642517c77e1f617f63d5f9273e43",
+  "target": "f7dece07d08b1452aaac13053a72de0631fa934f",
+  "frontier": "ab1ad9299b53642517c77e1f617f63d5f9273e43",
+  "commits": [
+    {
+      "sha": "f7dece07d08b1452aaac13053a72de0631fa934f",
+      "subject": "Centralize transcript overlay input routing (#62384)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/input/select_mode.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/pager_overlay/transcript.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Use the upstream overlay accessor to route transcript search, selection and runtime key bindings. The fork’s findings view remains a static pager with its own navigation and policy dismissal.",
+      "evidence": [
+        "All five changed files move the existing transcript-only input checks behind Overlay::input_transcript and Overlay::set_keymap_bindings. Search retains the editor context, selection retains the transcript-select context and the backtrack preview keeps browsing priority over the ordinary pager context.",
+        "The fork’s MisalignmentReview variant wraps StaticOverlay. Opening findings copies the current pager keymap. Its close, scroll and opt-out paths operate on that pager. Analytics and ordinary static pages also have independent handlers. Only Transcript contains the shared live transcript view.",
+        "The changes merge cleanly over the fork’s #400 source. Its retained transcript capture and restore still use the actual TranscriptOverlay, while the new routing methods leave the retained representation and live history insertion unchanged.",
+        "Three native controls passed on the retained fork predecessor 439cc0e40b: a conflicting F4 selects pager motion, F3 enters search and the draft survives exit; an editor chord belongs to the open search; opting out dismisses the findings pager. The five-file integrated patch on c3b82af824 has the same stable patch ID as upstream, 979def7b552d586d5b259e19cc54fce127d33385."
+      ],
+      "revisit": "Exercise the same normal application input routes on the combined source and recheck ownership when a future overlay embeds a selectable transcript."
+    }
+  ]
+}

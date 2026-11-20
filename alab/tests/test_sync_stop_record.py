@@ -26,7 +26,7 @@ class StopRecordTests(unittest.TestCase):
                            + STOP_CODE + '\nstate_path() { printf %s ' + shlex.quote(str(path)) + '; }\n')
             if startup:
                 begin = SOURCE.index('\nensure_worktree\n', SOURCE.index('# mode=start'))
-                end = SOURCE.index('\nworktree_clean --untracked-files=no', begin)
+                end = SOURCE.index('\nfi\n', begin) + 3
                 definitions += '''
 wt=candidate
 waiting_hours() { echo 0; }

@@ -3384,6 +3384,7 @@ mod tests {
             ApiError::ModelNotFound {
                 message: message(),
                 status: Some(http::StatusCode::NOT_FOUND),
+                alab_empty_stream: false, // ALAB(defaults): a doctor fixture has no transport history.
             },
             ApiError::InvalidPrompt { message: message() },
             ApiError::ContentPolicyViolation {

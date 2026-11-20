@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "base": "71527c18c7caff2fe3f6fa1b84c4e8b3ff720288",
+  "target": "42cf4edfcdc872cf2700a54ad0fef7cd25e5295c",
+  "frontier": "71527c18c7caff2fe3f6fa1b84c4e8b3ff720288",
+  "commits": [
+    {
+      "sha": "42cf4edfcdc872cf2700a54ad0fef7cd25e5295c",
+      "subject": "Add slash command argument completion to the TUI composer (#62343)",
+      "paths": [
+        "codex-rs/tui/src/app/resize_reflow.rs",
+        "codex-rs/tui/src/app/tests/key_chords.rs",
+        "codex-rs/tui/src/app/tests/unavailable_commands_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/popup_state.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/slash_argument.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/slash_argument_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__slash_argument__tests__slash_argument_popup.snap",
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/chatwidget/reconnect.rs",
+        "codex-rs/tui/src/keymap/chords.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Complete fixed first arguments of visible slash commands in the terminal. Preserve literal submission, restricted-thread routing and the current draft.",
+      "evidence": [
+        "The composer filters the first token, gives mentions and the configured submit binding precedence, and rechecks the draft, parent-owned restrictions and thread availability before accepting Tab. Disconnected and handoff-restricted input suppress suggestions.",
+        "The complete Rust patch from upstream 58ad62ce09 through 42cf4edfcd has the same stable patch ID ada980b2e526002783f27f7623415dc1015348ec on candidate 6dd029d1a4. The fork's form editor still checks for a non-form popup.",
+        "The new upstream controls cover draft range replacement, dismissal, shortcut submission, a changed connection or thread and parent-owned commands. The visible picker also has a terminal rendering snapshot."
+      ],
+      "revisit": "Exercise the native controls and a live transfer with a draft containing a partially typed argument, including Tab, Escape and an explicit submit shortcut."
+    }
+  ]
+}

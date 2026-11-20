@@ -344,7 +344,7 @@ fn later_start_codec_preserves_original_parser_errors_and_replay_arguments_but_d
         )?)
         .is_err()
     );
-    let frozen = frozen::FrozenRequest::client(claim.clone());
+    let frozen = frozen::FrozenRequest::client(claim.clone(), false);
     ensure!(frozen.matches_client(&claim));
     let mut changed = claim.clone();
     Arc::make_mut(&mut changed.arguments)["_meta"]["foreign.original"]["kept"] = json!([3, 2, 1]);

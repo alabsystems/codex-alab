@@ -8,8 +8,64 @@ use crate::transcript_image::TranscriptImage;
 use ratatui::layout::Rect;
 use std::io::Write;
 use std::io::{self};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
+
+/// A placement's view of the same original unlink owner held by its image book.
+#[cfg_attr(unix, derive(Clone))]
+pub(crate) struct ImageFile {
+    #[cfg(unix)]
+    actual: Arc<codex_alab_tui::upgrade_exec_custody::images::OriginalFile>,
+    #[cfg(unix)]
+    path: PathBuf,
+    #[cfg(not(unix))]
+    actual: NamedTempFile,
+}
+impl ImageFile {
+    #[cfg(unix)]
+    fn from_actual(
+        actual: Arc<codex_alab_tui::upgrade_exec_custody::images::OriginalFile>,
+    ) -> io::Result<Self> {
+        let path = actual.with_native(|file| Ok(file.path().to_path_buf()))?;
+        Ok(Self { actual, path })
+    }
+    fn from_native(actual: NamedTempFile) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            Self::from_actual(
+                codex_alab_tui::upgrade_exec_custody::images::OriginalFile::retain_native(actual),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self { actual })
+        }
+    }
+    pub(crate) fn path(&self) -> &Path {
+        #[cfg(unix)]
+        {
+            &self.path
+        }
+        #[cfg(not(unix))]
+        {
+            self.actual.path()
+        }
+    }
+    #[cfg(unix)]
+    fn same_actual(
+        &self,
+        actual: &Arc<codex_alab_tui::upgrade_exec_custody::images::OriginalFile>,
+    ) -> bool {
+        Arc::ptr_eq(&self.actual, actual)
+    }
+    #[cfg(unix)]
+    fn same_alias(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.actual, &other.actual) && self.path() == other.path()
+    }
+}
 
 #[cfg(unix)]
 mod owner {
@@ -66,11 +122,12 @@ mod owner {
     #[derive(Clone, Default)]
     pub(crate) struct Book(pub(super) Arc<Mutex<State>>);
     type PlacementCensus = Vec<(PlacementKey, Arc<TranscriptImage>)>;
+    type FrameCommit = Box<dyn FnOnce() -> io::Result<()>>;
     struct Work {
         book: Book,
         current: RefCell<Option<Arc<Mutex<Record>>>>,
         staged: RefCell<Vec<Arc<Mutex<Record>>>>,
-        commits: RefCell<Vec<Box<dyn FnOnce() -> io::Result<()>>>>,
+        commits: RefCell<Vec<FrameCommit>>,
         deleted: RefCell<std::collections::HashMap<u32, usize>>,
         repainted: RefCell<Vec<(PlacementKey, Arc<TranscriptImage>, usize)>>,
         writes: RefCell<std::collections::HashMap<usize, usize>>,
@@ -404,9 +461,9 @@ mod owner {
     fn current() -> Option<Arc<Mutex<Record>>> {
         active().and_then(|work| work.current.borrow().clone())
     }
-    pub(crate) fn retain(file: Option<NamedTempFile>) -> io::Result<Option<NamedTempFile>> {
+    pub(crate) fn retain(file: Option<NamedTempFile>) -> io::Result<Option<ImageFile>> {
         let Some(record) = current() else {
-            return Ok(file);
+            return file.map(ImageFile::from_native).transpose();
         };
         if let Some(work) = active() {
             let order = next_order(&work);
@@ -419,7 +476,11 @@ mod owner {
         // bytes mentioning the link are written, including failure/unwind paths.
         record.file = file.map(OriginalFile::retain_native);
         record.phase = Phase::Queued;
-        Ok(None)
+        record
+            .file
+            .as_ref()
+            .map(|actual| ImageFile::from_actual(actual.clone()))
+            .transpose()
     }
     pub(crate) fn note(phase: Phase) -> io::Result<()> {
         if let Some(record) = current() {
@@ -453,13 +514,7 @@ mod owner {
 #[cfg(unix)]
 pub(crate) use owner::Book;
 #[cfg(unix)]
-pub(crate) use owner::Frame;
-#[cfg(unix)]
 pub(crate) use owner::Phase;
-#[cfg(unix)]
-pub(crate) use owner::PlacementKey;
-#[cfg(unix)]
-pub(crate) use owner::Record;
 
 pub(crate) fn draw_owned(
     image: &Arc<TranscriptImage>,
@@ -468,23 +523,21 @@ pub(crate) fn draw_owned(
     first_row: usize,
     placement: KittyPlacement,
     id: u32,
-) -> anyhow::Result<Option<NamedTempFile>> {
+) -> anyhow::Result<Option<ImageFile>> {
     #[cfg(unix)]
     let _actual = owner::placement(image, area, first_row, id)?;
     #[cfg(not(unix))]
     let _ = id;
     image.draw(writer, area, first_row, placement)
 }
-pub(crate) fn retain_before_write(
-    file: Option<NamedTempFile>,
-) -> io::Result<Option<NamedTempFile>> {
+pub(crate) fn retain_before_write(file: Option<NamedTempFile>) -> io::Result<Option<ImageFile>> {
     #[cfg(unix)]
     {
         owner::retain(file)
     }
     #[cfg(not(unix))]
     {
-        Ok(file)
+        file.map(ImageFile::from_native).transpose()
     }
 }
 pub(crate) fn unavailable() -> io::Result<()> {
@@ -521,12 +574,6 @@ pub(crate) fn clear(tui: &mut crate::tui::Tui) -> io::Result<()> {
 #[cfg(unix)]
 #[path = "retained_tui_image_data.rs"]
 mod data;
-#[cfg(unix)]
-pub(crate) use data::Captured;
-#[cfg(unix)]
-pub(crate) use data::Data;
-#[cfg(unix)]
-pub(crate) use data::Prepared;
 #[cfg(all(unix, test))]
 #[path = "retained_tui_images_tests.rs"]
 mod tests;

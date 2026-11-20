@@ -9,9 +9,10 @@ use crate::replies::Kept;
 use crate::replies::Replies;
 use crate::replies::mark_of;
 use crate::repo::RepoWork;
+use codex_alab_core::wall_kind::LimitClass;
 
 const WAIT: &str = "codex-alab-wait";
-const RESET: &str = "waiting for the usage reset at 15:00";
+const RESET: &str = "usage reset at 15:00 · automatic retry follows";
 
 fn wait_up(h: &Harness) -> Option<String> {
     h.fake.attention().get(WAIT).cloned()
@@ -62,6 +63,7 @@ fn needs_sets(h: &Harness) -> usize {
 async fn a_held_walls_wait_comes_down_and_its_hold_is_never_an_ask() {
     let h = harness(&[("limit_wait", "true")]).await;
     let wall = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(Instant::now() + Duration::from_secs(3600)),
         reset_label: Some("15:00".to_string()),
     };

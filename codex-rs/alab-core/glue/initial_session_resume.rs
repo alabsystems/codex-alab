@@ -10,6 +10,7 @@ use super::*;
 
 pub(crate) struct ResumeClientTarget {
     request: ConnectionRequestId,
+    model_refresh: std::sync::Mutex<std::sync::Weak<CodexThread>>,
     #[cfg(unix)]
     publication: Option<ResumePublication>,
 }
@@ -17,6 +18,7 @@ impl From<ConnectionRequestId> for ResumeClientTarget {
     fn from(request: ConnectionRequestId) -> Self {
         Self {
             request,
+            model_refresh: Default::default(),
             #[cfg(unix)]
             publication: None,
         }
@@ -27,9 +29,39 @@ impl ResumeClientTarget {
     pub(super) fn retained(scope: Arc<Scope>) -> Self {
         Self {
             request: scope.request().clone(),
+            model_refresh: Default::default(),
             publication: Some(ResumePublication { scope }),
         }
     }
+    /// Check once per actual loaded Core for this request, including if the thread
+    /// was replaced while the previous owner's catalog request was in flight.
+    pub(super) async fn refresh_model(
+        &self,
+        thread: &Arc<CodexThread>,
+        params: &ThreadResumeParams,
+    ) -> Option<alab_running_resume::ModelRefresh> {
+        if !codex_alab_core::active()
+            || params.model.is_some()
+            || params.model_provider.is_some()
+            || params.config.as_ref().is_some_and(|overrides| {
+                overrides.contains_key("model") || overrides.contains_key("model_provider")
+            })
+        {
+            return None;
+        }
+        let refresh = thread.alab_refresh_for_model_resume().await?;
+        let actual = Arc::downgrade(thread);
+        let mut checked = self
+            .model_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if checked.ptr_eq(&actual) {
+            return None;
+        }
+        *checked = actual;
+        Some(Box::pin(refresh))
+    }
+
     pub(crate) fn request(&self) -> &ConnectionRequestId {
         &self.request
     }

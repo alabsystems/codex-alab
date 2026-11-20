@@ -72,7 +72,7 @@ opaque account reference from the displayed snapshot.
 | --- | --- |
 | Open or refresh | Keep the last snapshot visible with its observation time while loading; distinguish an empty pool from an unavailable host. |
 | Add account | Open one enrollment operation with its own progress and cancellation; an email or OTP is entered in aterm's private enrollment UI. |
-| Select an account | Refuse while the session is not at rest (a turn, queued input, a background terminal, a waiting box, work between turns, a start), each with its own sentence; otherwise show “Restarting this session on <label>…” and ask aterm to restart the session there, which aterm refuses if the session left rest meanwhile. A refusal after the pane closed is said in history. |
+| Select an account | Show the requested label while checking that the session is idle. Report the reason if the move is refused, including in history if the pane has closed. Show “Restarting this conversation” once aterm accepts. After resume, `/status` shows the active login. |
 | Return to automatic selection | The same, toward the row a new launch would start on; nothing restarts when that is the session's own row. |
 | No answer from aterm | Say the session resumes this conversation if it restarts, and is otherwise unchanged; nothing is retried. |
 | Enrollment needs interaction | Show “Complete sign-in in aterm”; opening the account view must not start another login. |

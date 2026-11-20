@@ -834,6 +834,7 @@ fn a_carried_policy_instruction_requires_fixed_words_and_a_regular_policy_refusa
     }
     for code in [
         Some("bio_policy"),
+        Some("misalignment_policy_violation"),
         Some("server_overloaded"),
         Some("other"),
         None,

@@ -377,6 +377,36 @@ class TimelineTests(unittest.TestCase):
         self.assertTrue(all(row['process_uuid'] == PROCESS and row['thread_id'] == THREAD
                             for row in output['rows']))
 
+    def test_target_filter_precedes_latest_row_limit_and_intersects_thread_scope(self):
+        target = 'codex_core::responses_retry::alab_capacity_retry'
+        for seconds in (10, 20, 30):
+            self.insert(ts=seconds, target=target)
+        self.insert(ts=40, target=target, thread=OTHER_THREAD)
+        self.insert(ts=50, target=target + '::other')
+        self.insert(ts=60)
+        default = self.read(thread_id=THREAD, limit=1)
+        self.assertEqual([row['id'] for row in default['rows']], [6])
+        self.assertNotIn('target', default['scope'])
+        for since, more in ((10, True), (20, False)):
+            result = self.cli(['--pid', '42', '--thread-id', THREAD, '--target', target,
+                               '--since', str(since), '--limit', '2'])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertEqual(output['scope']['target'], target)
+            self.assertEqual([row['id'] for row in output['rows']], [2, 3])
+            self.assertIs(output['more_rows_available'], more)
+            self.assertNotIn(PRIVATE, result.stdout)
+
+    def test_target_filter_requires_identity_and_an_exact_allowed_target(self):
+        target = timeline.TARGETS[0]
+        self.error('scope_required', lambda: timeline.read_timeline(self.db, target=target))
+        for invalid in (PRIVATE, target.upper(), target + '::other', '%', '', 1, []):
+            self.error('invalid_target', lambda: self.read(target=invalid))
+        result = self.cli(['--pid', '42', '--target', PRIVATE])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid_target', result.stderr)
+        self.assertNotIn(PRIVATE, result.stderr + result.stdout)
+
     def test_pid_scope_does_not_match_pid_prefix_or_group_reused_pid(self):
         self.insert(ts=10)
         self.insert(ts=20, process=OTHER)

@@ -12,6 +12,8 @@
 //! - `policy <key> <value>`: one `[harness]` key (a new generation, announced);
 //! - `status <key> <value>`: one raw `@self status` field (`status autopilot land`);
 //! - `dump`: one `STATE <json>` line (claim, acts, attention, notices, requests);
+//! - `watch-exec`, `exec-next <index>`, `exec-reply <index> <JSON string>`: hold the
+//!   exec protocol so the external test controller can inspect and answer the exact pending request;
 //! - `quit` (or end of input).
 
 use std::io::BufRead;
@@ -83,6 +85,7 @@ async fn main() -> std::io::Result<()> {
             }
         }
     });
+    let mut exec_index = 0;
     while let Some(line) = rx.recv().await {
         let mut words = line.splitn(3, ' ');
         match (words.next(), words.next(), words.next()) {
@@ -99,6 +102,28 @@ async fn main() -> std::io::Result<()> {
             (Some("status"), Some(key), Some(value)) => {
                 fake.set_status(key, value);
                 println!("OK");
+            }
+            (Some("watch-exec"), None, None) => {
+                fake.gate("codex-exec-handoff");
+                println!("OK");
+            }
+            (Some("exec-next"), Some(index), None) if index.parse() == Ok(exec_index) => {
+                let held = fake.gated_requests();
+                println!("REQUEST {}", serde_json::to_string(&held.get(exec_index))?);
+            }
+            (Some("exec-reply"), Some(index), Some(encoded)) if index.parse() == Ok(exec_index) => {
+                let held = fake.gated_requests();
+                let reply = serde_json::from_str::<String>(encoded)?;
+                if let Some(request) = held.get(exec_index)
+                    && !reply.contains(['\r', '\n'])
+                {
+                    fake.reply_once(request, &format!("{reply}\n"));
+                    fake.release_held("codex-exec-handoff");
+                    exec_index += 1;
+                    println!("OK");
+                } else {
+                    println!("ERR no pending exec request or invalid reply");
+                }
             }
             (Some("dump"), None, None) => println!("STATE {}", dump(&fake)),
             (Some("quit"), None, None) => break,

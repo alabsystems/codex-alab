@@ -26,7 +26,7 @@ pub(crate) struct OperationContext {
 }
 
 pub(super) enum StartContext {
-    Client(RequestContext),
+    Client(Box<RequestContext>),
     Backend(OperationContext),
 }
 impl StartContext {

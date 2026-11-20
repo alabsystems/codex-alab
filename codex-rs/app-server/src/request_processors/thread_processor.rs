@@ -5,6 +5,10 @@ pub(crate) mod alab_task_resume; // ALAB(upgrade): direct typed backend target i
 #[path = "../../../alab-core/glue/retained_task_send.rs"]
 pub(crate) mod alab_task_send; // ALAB(upgrade): complete actual retained MCP SEND consumer.
 
+#[path = "../../../alab-core/glue/saved_thread_model.rs"] mod alab_saved_model; // ALAB(defaults): restore model provenance before Core consults the serving catalog.
+#[path = "../../../alab-core/glue/saved_chat_release_diagnostic.rs"]
+mod alab_saved_chat_release; // ALAB(retained-ui): correlate the original saved-chat unsubscribe handler with its client.
+
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 
@@ -288,7 +292,7 @@ fn merge_persisted_resume_metadata(
         typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
     }
 
-    if has_model_override {
+    if has_model_override || codex_alab_core::active() { // ALAB(defaults): restore the saved model and effort after config loading, with their original provenance.
         return;
     }
 
@@ -559,6 +563,7 @@ pub(crate) enum ThreadResumeTarget {
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
 enum RunningThreadResumeResult {
+    RefreshModel(alab_running_resume::ModelRefresh), // ALAB(model-resume): refresh outside the shared thread-list permit.
     #[cfg(unix)]
     BackendHandled, // ALAB(upgrade): actual direct completion, no client ACK.
     /// The request was delegated to the loaded thread.
@@ -655,7 +660,7 @@ impl ThreadRequestProcessor {
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
-            alab_task_start::StartContext::Client(request_context), // ALAB(upgrade): keep the original RPC context.
+            alab_task_start::StartContext::Client(Box::new(request_context)), // ALAB(upgrade): keep the original RPC context.
         )
         .await
         .map(|()| None)
@@ -666,7 +671,7 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadUnsubscribeParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_unsubscribe_response_inner(params, request_id.connection_id)
+        alab_saved_chat_release::observe(self, request_id, params) // ALAB(retained-ui): observe the original handler result before MCP stream cleanup and publication.
             .await
             .map(|response| Some(response.into()))
     }
@@ -1601,6 +1606,7 @@ impl ThreadRequestProcessor {
             thread_extension_init.insert(selected_capability_roots);
         }
         task_binding.configure(&mut config).await?; // ALAB(upgrade): check namespace and existing managed constraints before Core MCP discovery.
+        config.alab_fresh_tui_preset = !matches!(target, alab_task_start::StartTarget::Backend { .. }) && Config::alab_is_tui_start(&listener_task_context.thread_manager.session_source(), app_server_client_name.as_deref()); // ALAB(defaults): prepare the actual local TUI preset before a concurrent catalog refresh.
         let mut start_options = StartThreadOptions::new(config);
         let reserved_thread_id = if start_options.config.ephemeral {
             None
@@ -3982,6 +3988,11 @@ impl ThreadRequestProcessor {
                         .map_err(|_| thread_closing_for_resume(&params.thread_id))?;
                     return Ok(ControlFlow::Break(()));
                 }
+                RunningThreadResumeResult::RefreshModel(refresh) => { // ALAB(model-resume): repeat ordinary admission after network I/O.
+                    drop(_thread_list_state_permit);
+                    refresh.await;
+                    return Ok(ControlFlow::Continue(()));
+                }
                 #[cfg(unix)]
                 RunningThreadResumeResult::BackendHandled => return Ok(ControlFlow::Break(())), // ALAB(upgrade): stored typed backend result.
                 RunningThreadResumeResult::NotRunning(stored_thread) => stored_thread,
@@ -4160,6 +4171,11 @@ impl ThreadRequestProcessor {
                         .map_err(|_| thread_closing_for_resume(child_thread_id))?;
                     Ok(ControlFlow::Break(()))
                 }
+                RunningThreadResumeResult::RefreshModel(refresh) => { // ALAB(model-resume): recheck the owner after a catalog refresh.
+                    drop(_thread_list_state_permit);
+                    refresh.await;
+                    Ok(ControlFlow::Continue(()))
+                }
                 #[cfg(unix)]
                 RunningThreadResumeResult::BackendHandled => Ok(ControlFlow::Break(())), // ALAB(upgrade): typed direct completion.
                 RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
@@ -4252,6 +4268,7 @@ impl ThreadRequestProcessor {
             })?;
             typesafe_overrides.approval_policy = Some(approval_policy);
         }
+        let alab_model_request = alab_saved_model::ModelRequest::capture(&typesafe_overrides, request_overrides.as_ref()); // ALAB(defaults): distinguish effort-only requests from exact model overrides.
         let has_explicit_model_resume_override =
             has_model_resume_override(request_overrides.as_ref(), &typesafe_overrides);
         let persisted_model_settings = latest_persisted_model_settings(&thread_history);
@@ -4341,7 +4358,7 @@ impl ThreadRequestProcessor {
                 return Ok(ControlFlow::Continue(()));
             }
         };
-        if clear_reasoning_effort {
+        if clear_reasoning_effort && !codex_alab_core::active() { // ALAB(defaults): the ALab restore below preserves effort together with its saved model.
             config.model_reasoning_effort = None;
         }
         if let Some(settings) = persisted_model_settings {
@@ -4355,6 +4372,7 @@ impl ThreadRequestProcessor {
                 config.personality = settings.personality;
             }
         }
+        alab_model_request.restore_resume(&mut config, &thread_history, config_state.persisted_metadata.as_ref(), resume_source_thread.as_ref()); // ALAB(defaults): apply stored model preferences only for the selected provider.
         let parent_trace = target.alab_parent_trace(self).await; // ALAB(owned-local): original trace observation precedes conservative Core-entry mark.
         #[cfg(unix)]
         target.alab_before_resume_core(self, &mut config).await?; // ALAB(owned-local): same actual target, cold binding and Core-entry custody.
@@ -4831,6 +4849,11 @@ impl ThreadRequestProcessor {
                     model_provider: config_snapshot.model_provider_id.clone(),
                 }, (app_server_client_name, app_server_client_version), false).await?;
                 return Ok(RunningThreadResumeResult::BackendHandled);
+            }
+            if let ThreadResumeTarget::Client(client) = target
+                && let Some(refresh) = client.refresh_model(&existing_thread, params).await
+            {
+                return Ok(RunningThreadResumeResult::RefreshModel(refresh)); // ALAB(model-resume): use the validated live root's own catalog.
             }
             #[cfg(unix)]
             if let Some(publication) = target.alab_resume_publication() { // ALAB(owned-local): original loaded policy has selected this exact Arc.
@@ -5627,6 +5650,7 @@ impl ThreadRequestProcessor {
             /*personality*/ None,
         );
         typesafe_overrides.ephemeral = ephemeral.then_some(true);
+        let alab_model_request = alab_saved_model::ModelRequest::capture(&typesafe_overrides, request_overrides.as_ref()); // ALAB(defaults): a fork may inherit model and effort independently.
         let restore_approval_policy = typesafe_overrides.approval_policy.is_none();
         let restore_approvals_reviewer = typesafe_overrides.approvals_reviewer.is_none()
             && !request_overrides
@@ -5712,6 +5736,7 @@ impl ThreadRequestProcessor {
                 ..StartThreadOptions::new(config)
             }
         };
+        alab_model_request.restore_fork(&mut options.config, &source_thread, &source_history_items, experimental_prediction_mode, loaded_parent.as_deref()).await; // ALAB(defaults): restore ordinary fork preferences without overriding a live prediction fork.
         target.configure(self, &mut options.config).await?; // ALAB(upgrade): actual backend binding; ordinary client policy is unchanged.
         let goals_enabled = options.config.features.enabled(Feature::Goals);
 

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "base": "ad5dd4a1104c37c1ab9cb7d122d27a464613815a",
+  "target": "bd3eaf7829187f18d05205222bf2f67c0af80fb4",
+  "frontier": "ad5dd4a1104c37c1ab9cb7d122d27a464613815a",
+  "commits": [
+    {
+      "sha": "bd3eaf7829187f18d05205222bf2f67c0af80fb4",
+      "subject": "Route injected plaintext agent mail through the native mailbox (#62292)",
+      "paths": [
+        "codex-rs/core/src/agent/control/residency_tests.rs",
+        "codex-rs/core/src/codex_thread.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/tests/suite/agent_message_wake.rs",
+        "codex-rs/core/tests/suite/pending_input.rs",
+        "codex-rs/core/tests/suite/scenarios_injected_agent_mail.rs",
+        "codex-rs/core/tests/suite/scenarios_turn_input_agent_message.rs"
+      ],
+      "classes": [
+        "fix",
+        "feature"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Route eligible Core plaintext batches through the existing native wake policy and limit mail preemption to the exact accepting turn. Bind successful injection to the real mailbox owner across native process transfer and preserve the explicitly retained raw injection boundary.",
+      "evidence": [
+        "Agh first-parent history contains one commit by jif (jif-oai) after ad5dd4a110. Reviewed all seven changed paths. Binary diff SHA-256 b911d0b54f82dbf413108312e589934f8a9dc587c8ce1696cbca346aa78731ed.",
+        "The donor reroutes only nonempty whole batches of single-text agent messages with parseable paths under native Multi-Agent v2 with native tools enabled. It preserves item data, uses trigger_turn=false and keeps residency pinned while individual sends are submitted. Existing wake policy decides whether queued mail starts work. The preemption check now requires the matching turn and current mailbox delivery phase.",
+        "Canonical app-server thread/injectItems uses inject_response_items_with_retention, which the donor does not change. Private c4f106d0e8409bbcb520f3ffc60c24c4bbd73330 also routes the retained Side occurrence through that typed method. Keep its exact Core binding and original persistence outcome. Mixed, multipart, encrypted and explicit-retention inputs keep raw injection.",
+        "Generic submit returns after channel enqueue. Private c4's biased native shutdown branch and close_submission_admission can drain an undispatched ordinary submission before the mailbox sees it. This new injected mail has message_delivery=None, so it has neither a terminal writer grant nor legacy occurrence custody. An acknowledged injection must become an owned mailbox entry before freeze or fail at its original admission boundary. A residency pin only excludes capacity eviction.",
+        "Preserve the exact recipient account, assignment and queue owner without interpreting injected author metadata as a result grant. Allow only the original existing writer receipt to settle durable terminal mail. Preserve the released legacy occurrence decoder and independent older-mail ordering.",
+        "The donor exercises live and reloaded dormant wake, older mail before a later task, exact active delivery boundaries, and ordered over-capacity injection during attempted eviction. These source-reviewed fixtures do not cover a native process-transfer cutoff. This commit does not activate #62288's dormant realtime handoff.",
+        "Integrated source d5e8385d3bdbc86050dd16ce50221e7c9d214dc9 gives each accepted Submission manager admission through dispatch. The whole-batch residency pin protects registered children from capacity eviction and returns no pin for a root. A separate counted manager admission across the eligible batch covers a pause after a dispatched prefix and before the next recipient lookup. The admission does not acquire the thread registry or wait for a snapshot.",
+        "Protected Trust 15698 tests on the clean integrated d5e8385d3b source passed 4 Core library and 16 integration cases, with zero failures or ignored tests. The native cases exercised over-capacity ordered delivery during attempted eviction, controller sealing and quiet restoration. The integration cases exercised injected mail waking live and reloaded roots, preserved trigger/parent/root attribution, ordered request bodies across final-answer boundaries, and control changes while delivery was pending. Log SHA-256 086b89b1ea3701f9e32f4b3e49a7f24331dc6bf495aba98a5e45372f5bb7eed0.",
+        "Native regression a8992bdedbb0f6dae5100c8fbd35e25616a76ff7 exposed the gap after a nonempty prefix of 1,025 queue-only messages reached the receiver and a registry writer paused the next lookup. The one-line counted admission in e9e79dd7ab19f35284d8f7daff0d2a14fd6a78d6 held the manager across that boundary. The full payload arrived once in order with its original labels and no sender publication. The real manager then committed. All six focused tests passed, including dispatch, cancellation, publication aliases and receiver phase restoration. The negative and positive test log SHA-256 values are 874db23df951bedcef5762d823654b006ca1cf04cec49caabcc9e687d649aed9 and 619df5f36c1bf1c593b7e3d2fc045a2c4c44d64dcbee9b37a855b686f8e66445."
+      ],
+      "revisit": "Repeat the covered wake, preemption, order and residency controls when routing changes. Rerun the covered partial-batch transfer interleaving if recipient lookup, channel dispatch or manager admission changes. Recheck retained Side recording, encrypted and mixed fallback, and independent terminal-result and released-legacy custody."
+    }
+  ]
+}

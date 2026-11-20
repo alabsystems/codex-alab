@@ -10,6 +10,7 @@ use crate::bottom_pane::ComposerRenderOptions;
 use crate::chatwidget::ChatWidget;
 use crate::render::renderable::Renderable;
 use crate::status::StatusAccountDisplay;
+use crate::tui::TuiEvent;
 use chrono::Local;
 use codex_alab_tui::banner::Depth;
 use codex_alab_tui::banner::Theme;
@@ -108,6 +109,18 @@ fn draw_inspector(chat: &ChatWidget) -> String {
         .join("\n")
 }
 
+fn press_painted_control(chat: &mut ChatWidget, button: MouseButton, column: u16) {
+    let press = MouseEvent {
+        kind: MouseEventKind::Down(button),
+        column,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+    chat.alab_capture_composer_press(&TuiEvent::Mouse(press));
+    assert!(chat.prepare_composer_mouse(press));
+    assert!(chat.handle_composer_mouse(press));
+}
+
 fn open_inspector_from_painted_account(chat: &mut ChatWidget) {
     let area = Rect::new(0, 0, 120, 1);
     let mut buffer = Buffer::empty(area);
@@ -115,12 +128,7 @@ fn open_inspector_from_painted_account(chat: &mut ChatWidget) {
     let column = (0..120)
         .find(|column| interface::account_mouse_hit(*column, 0))
         .unwrap();
-    assert!(chat.handle_composer_mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
-    }));
+    press_painted_control(chat, MouseButton::Left, column);
     assert!(chat.active_view_is("alab-account"));
 }
 
@@ -360,5 +368,146 @@ async fn real_connection_adoption_restores_latest_native_activity_and_off_keeps_
     let methods = server.await??;
     assert!(methods.iter().any(|method| method == "account/read"));
     assert!(!methods.iter().any(|method| method == "turn/start"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnected_autopilot_deadline_can_be_cancelled_and_submitted_without_touching_the_draft()
+-> color_eyre::eyre::Result<()> {
+    use codex_alab_aterm::fake::FakeAterm;
+    use codex_alab_aterm::fake::Mode;
+    use codex_alab_tui::session::Autopilot;
+    use codex_alab_tui::session::HarnessWord;
+    use codex_alab_tui::session::Shared;
+
+    let dir = tempfile::tempdir()?;
+    let fake = FakeAterm::start(dir.path(), Mode::Current).await?;
+    let _interface = scope(true);
+    interface::route_aterm_for_tests(fake.endpoint());
+    let shared = Box::leak(Box::new(Shared::new()));
+    let _automation = codex_alab_tui::boxes::scoped(shared);
+    shared.set_autopilot_with_word(Autopilot::Active, HarnessWord::Land);
+    let (mut app, mut events, mut operations) = make_test_app_with_channels().await;
+    attach_thread(&mut app, ThreadId::from_u128(905));
+    app.chat_widget
+        .apply_external_edit("unfinished prompt".into());
+    let draft = app.chat_widget.capture_thread_input_state();
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    app.app_server_target = crate::AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:8765")?,
+    };
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while events.try_recv().is_ok() {}
+    while operations.try_recv().is_ok() {}
+
+    let area = Rect::new(0, 0, 80, 3);
+    interface::render(
+        area,
+        &mut Buffer::empty(area),
+        Depth::Mono,
+        Theme::default(),
+    );
+    let column = (0..area.width)
+        .find(|x| interface::autopilot_menu_hit(*x, 0))
+        .expect("mode control");
+    press_painted_control(&mut app.chat_widget, MouseButton::Right, column);
+    let interrupt = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    for (key, duration, finish) in [
+        (KeyCode::Char('7'), "2h", KeyEvent::from(KeyCode::Esc)),
+        (KeyCode::Enter, "3h", interrupt),
+        (KeyCode::Enter, "4h", KeyEvent::from(KeyCode::Enter)),
+    ] {
+        app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(key.into()))
+            .await?;
+        let open = events.try_recv()?;
+        assert!(matches!(open, AppEvent::OpenAlabAutopilotTimer));
+        app.handle_event(&mut tui, &mut server, open).await?;
+        if !app.reconnect.offline {
+            // Disconnect with an editor already on screen. Its text still belongs to the
+            // timer, and cancelling returns to its parent without changing the policy.
+            assert!(app.begin_reconnect());
+        }
+        app.handle_tui_event(
+            &mut tui,
+            &mut server,
+            TuiEvent::Key(KeyCode::Char('+').into()),
+        )
+        .await?;
+        app.handle_tui_event(&mut tui, &mut server, TuiEvent::Paste(duration.into()))
+            .await?;
+        let editor = crate::chatwidget::tests::render_bottom_popup(&app.chat_widget, 64);
+        assert!(
+            editor.contains("Cruise until") && editor.contains(&format!("+{duration}")),
+            "{editor}"
+        );
+        let control = app
+            .handle_tui_event(&mut tui, &mut server, TuiEvent::Key(finish))
+            .await?;
+        assert!(matches!(control, crate::app::AppRunControl::Continue));
+        assert_eq!(app.chat_widget.capture_thread_input_state(), draft);
+        if finish.code != KeyCode::Enter {
+            assert!(app.chat_widget.active_view_is("alab-autopilot"));
+            assert!(
+                fake.requests()
+                    .iter()
+                    .all(|request| !request.contains("meta set autopilot"))
+            );
+        }
+    }
+
+    let timed = format!(
+        "@{} meta set autopilot cruise until=+4h",
+        fake.endpoint().sid
+    );
+    assert!(fake.wait_for(|host| host.requests().contains(&timed)).await);
+    let writes: Vec<_> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.contains("meta set autopilot"))
+        .collect();
+    assert_eq!(writes, [timed]);
+    assert!(app.reconnect.offline);
+    assert!(!app.chat_widget.has_active_view());
+    assert!(
+        operations.try_recv().is_err(),
+        "timer input must never submit model work"
+    );
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::CodexOp(_))),
+        "deadline submission must never queue a model operation"
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnected_autopilot_deadline_policy_keeps_native_custom_review_server_bound()
+-> color_eyre::eyre::Result<()> {
+    let (mut app, mut events, mut operations) = make_test_app_with_channels().await;
+    attach_thread(&mut app, ThreadId::from_u128(906));
+    app.app_server_target = crate::AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:8765")?,
+    };
+    app.chat_widget.apply_external_edit("ordinary draft".into());
+    let draft = app.chat_widget.capture_thread_input_state();
+    app.chat_widget.show_review_custom_prompt();
+    app.chat_widget.handle_paste("inspect this change".into());
+    let editor = crate::chatwidget::tests::render_bottom_popup(&app.chat_widget, 64);
+    assert!(
+        editor.contains("Custom review instructions") && editor.contains("inspect this change")
+    );
+    while events.try_recv().is_ok() {}
+    while operations.try_recv().is_ok() {}
+
+    // The ordinary review prompt would submit a server operation. Reconnecting
+    // discards that modal and preserves the separate conversation draft.
+    assert!(app.begin_reconnect());
+    assert!(!app.chat_widget.has_active_view());
+    assert_eq!(app.chat_widget.capture_thread_input_state(), draft);
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).all(|ev| !matches!(ev, AppEvent::CodexOp(_)))
+    );
+    assert!(operations.try_recv().is_err());
     Ok(())
 }

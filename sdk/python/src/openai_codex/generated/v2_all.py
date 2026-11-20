@@ -10095,6 +10095,18 @@ class ConfigurationUpdateResponseItem(BaseModel):
     ]
 
 
+class RetainedConfiguredNotification(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    frontier: str
+    outcome: RetainedFrontierOutcome
+    runtime: str
+    snapshot: str
+    version: Annotated[int, Field(ge=0)]
+
+
 class RetainedFrontierNotification(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -10323,6 +10335,23 @@ class ThreadAttachmentUpdatedServerNotification(BaseModel):
         Field(title="Thread/attachment/updatedNotificationMethod"),
     ]
     params: ThreadAttachmentUpdatedNotification
+
+
+class AlabRetainedConfiguredServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["alab/retainedConfigured"], Field(title="Alab/retainedConfiguredNotificationMethod")
+    ]
+    params: RetainedConfiguredNotification
 
 
 class AlabRetainedFrontierServerNotification(BaseModel):
@@ -14359,6 +14388,7 @@ class ServerNotification(
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | AlabThreadGoalRuntimeUpdatedServerNotification
+        | AlabRetainedConfiguredServerNotification
         | AlabRetainedFrontierServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification
@@ -14450,6 +14480,7 @@ class ServerNotification(
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | AlabThreadGoalRuntimeUpdatedServerNotification
+        | AlabRetainedConfiguredServerNotification
         | AlabRetainedFrontierServerNotification
         | ThreadPredictionUpdatedServerNotification
         | ThreadGoalClearedServerNotification

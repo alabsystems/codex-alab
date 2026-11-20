@@ -114,19 +114,18 @@ pub(crate) async fn run_cwd_selection_prompt(
     tui: &mut Tui,
     config: &Config,
     action: CwdPromptAction,
-    current_cwd: &Path,
     session_cwd: &Path,
-    remembered_current_cwd: &Path,
-    allow_remember_current: bool,
+    context: &crate::session_resume::ResumeCwdContext<'_>, // ALAB(accounts): retain workspace ownership when selecting the prompt default.
 ) -> Result<CwdPromptOutcome> {
     let mut screen = CwdPromptScreen::new(
         tui.frame_requester(),
         action,
-        current_cwd.display().to_string(),
+        context.current_cwd.display().to_string(),
         session_cwd.display().to_string(),
-        remembered_current_cwd.display().to_string(),
-        allow_remember_current,
+        context.remembered_current_cwd.display().to_string(),
+        context.allow_remember_current,
     );
+    alab_saved_cwd::set_default(&mut screen, codex_alab_core::active(), context.local_workspace, session_cwd, context.current_cwd).await; // ALAB(accounts): an absent local directory cannot run the resumed turn.
     tui.draw(u16::MAX, |frame| {
         frame.render_widget_ref(&screen, frame.area());
     })?;
@@ -155,7 +154,7 @@ pub(crate) async fn run_cwd_selection_prompt(
     if screen.should_exit {
         Ok(CwdPromptOutcome::Exit)
     } else {
-        let selection = screen.selection().unwrap_or(CwdSelection::Session);
+        let selection = screen.selection().unwrap_or(screen.default_selection); // ALAB(accounts): honor the displayed default on input closure.
         if let Some(error_line) =
             persist_remembered_cwd_selection(&LocalSettings::from(config), selection).await
         {
@@ -189,6 +188,7 @@ struct CwdPromptScreen {
     current_cwd: String,
     session_cwd: String,
     remembered_current_cwd: String,
+    default_selection: CwdSelection, // ALAB(accounts): Escape returns to the displayed initial choice.
     highlighted: CwdSelection,
     selection: Option<CwdSelection>,
     should_exit: bool,
@@ -210,6 +210,7 @@ impl CwdPromptScreen {
             current_cwd,
             session_cwd,
             remembered_current_cwd,
+            default_selection: CwdSelection::Session, // ALAB(accounts): preserve the normal session choice.
             highlighted: CwdSelection::Session,
             selection: None,
             should_exit: false,
@@ -251,7 +252,7 @@ impl CwdPromptScreen {
                 self.select(CwdSelection::CurrentAndRemember);
             }
             KeyCode::Enter => self.select(self.highlighted),
-            KeyCode::Esc => self.select(CwdSelection::Session),
+            KeyCode::Esc => self.select(self.default_selection), // ALAB(accounts): honor the displayed Escape action.
             _ => {}
         }
     }
@@ -305,6 +306,7 @@ impl WidgetRef for &CwdPromptScreen {
             .wrap(Wrap { trim: false })
             .inset(Insets::vh(/*v*/ 0, /*h*/ 2)),
         );
+        alab_saved_cwd::explain_default(self, &mut column); // ALAB(accounts): explain why the saved local directory is no longer highlighted.
         let mut labels = vec![
             format!("Use session directory ({session_cwd})"),
             format!("Use current directory ({current_cwd})"),
@@ -334,7 +336,7 @@ impl WidgetRef for &CwdPromptScreen {
                 key_hint::plain(KeyCode::Enter).into(),
                 " continue · ".dim(),
                 key_hint::plain(KeyCode::Esc).into(),
-                " use session · ".dim(),
+                alab_saved_cwd::escape_hint(self).dim(), // ALAB(accounts): describe the actual Escape choice.
                 key_hint::ctrl(KeyCode::Char('c')).into(),
                 " quit".dim(),
             ]))
@@ -367,9 +369,9 @@ mod tests {
         CwdPromptScreen::new(
             FrameRequester::test_dummy(),
             CwdPromptAction::Resume,
-            "/Users/example/current".to_string(),
-            "/Users/example/session".to_string(),
-            "/Users/example/current".to_string(),
+            "/repos/example/current".to_string(),
+            "/repos/example/session".to_string(),
+            "/repos/example/current".to_string(),
             /*allow_remember_current*/ true,
         )
     }
@@ -390,9 +392,9 @@ mod tests {
         let screen = CwdPromptScreen::new(
             FrameRequester::test_dummy(),
             CwdPromptAction::Fork,
-            "/Users/example/current".to_string(),
-            "/Users/example/session".to_string(),
-            "/Users/example/current".to_string(),
+            "/repos/example/current".to_string(),
+            "/repos/example/session".to_string(),
+            "/repos/example/current".to_string(),
             /*allow_remember_current*/ true,
         );
         let mut terminal =
@@ -408,9 +410,9 @@ mod tests {
         let screen = CwdPromptScreen::new(
             FrameRequester::test_dummy(),
             CwdPromptAction::Resume,
-            "/Users/example/current".to_string(),
-            "/Users/example/session".to_string(),
-            "/Users/example/current".to_string(),
+            "/repos/example/current".to_string(),
+            "/repos/example/session".to_string(),
+            "/repos/example/current".to_string(),
             /*allow_remember_current*/ false,
         );
         let mut terminal =
@@ -432,9 +434,9 @@ mod tests {
         let screen = CwdPromptScreen::new(
             FrameRequester::test_dummy(),
             CwdPromptAction::Resume,
-            "/Users/example/current".to_string(),
-            "/Users/example/session".to_string(),
-            "/Users/example/launched".to_string(),
+            "/repos/example/current".to_string(),
+            "/repos/example/session".to_string(),
+            "/repos/example/launched".to_string(),
             /*allow_remember_current*/ true,
         );
         let mut terminal =
@@ -491,9 +493,9 @@ mod tests {
         let mut screen = CwdPromptScreen::new(
             FrameRequester::test_dummy(),
             CwdPromptAction::Resume,
-            "/Users/example/current".to_string(),
-            "/Users/example/session".to_string(),
-            "/Users/example/current".to_string(),
+            "/repos/example/current".to_string(),
+            "/repos/example/session".to_string(),
+            "/repos/example/current".to_string(),
             /*allow_remember_current*/ false,
         );
 
@@ -518,9 +520,9 @@ mod tests {
             .codex_home(temp_dir.path().to_path_buf())
             .build()
             .await?;
-        let current_cwd = Path::new("/Users/example/current");
-        let session_cwd = Path::new("/Users/example/session");
-        let remembered_current_cwd = Path::new("/Users/example/launched");
+        let current_cwd = Path::new("/repos/example/current");
+        let session_cwd = Path::new("/repos/example/session");
+        let remembered_current_cwd = Path::new("/repos/example/launched");
 
         for (key, expected_selection, expected_mode, expected_cwd) in [
             (
@@ -585,3 +587,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[path = "../../alab-tui/glue/saved_cwd_prompt.rs"]
+mod alab_saved_cwd; // ALAB(accounts): local missing-directory default and its terminal controls.

@@ -4,6 +4,7 @@ mod delete_thread;
 mod helpers;
 mod history_revision;
 mod list_threads;
+#[path = "../../../alab-core/glue/resume_index_store.rs"] mod alab_resume_index; // ALAB(accounts): repair discovery from the selected, bounded local history.
 mod live_writer;
 mod model_context;
 #[path = "../../../alab-core/glue/exec_recovery_history.rs"]

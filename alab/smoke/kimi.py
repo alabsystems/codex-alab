@@ -13,11 +13,13 @@ import subprocess
 import tempfile
 import threading
 
+# Both packaged Kimi profiles explicitly request High. These are wire expectations,
+# including the model whose catalog has no reasoning-effort parameter.
 MODEL_EFFORTS = {
     "k3-256k": "high",
     "k3.1-pro": "high",
     "k3": "high",
-    "kimi-for-coding": "max",
+    "kimi-for-coding": "high",
     "k3.1-pro-highspeed": "high",
     "kimi-for-coding-highspeed": None,
 }
@@ -153,7 +155,7 @@ def contains_item(value, predicate):
     return False
 
 
-def run_model(executable, root, port, profile, model, expect_success=True, label=None):
+def run_model(executable, root, port, profile, model, expect_success=True, label=None, *, overrides=()):
     scratch = root / (label or f"{profile}-{model}")
     for name in ("home", "codex-home", "work", "tmp"):
         (scratch / name).mkdir(parents=True)
@@ -183,9 +185,10 @@ def run_model(executable, root, port, profile, model, expect_success=True, label
         "--sandbox", "read-only",
         "--json",
         "-c", f'model_providers.{profile}.base_url="http://127.0.0.1:{port}/coding/v1"',
-        "Inspect the image, update the plan, and report completion.",
-        "--image", str(image),
     ]
+    for key, value in overrides:
+        command.extend(["-c", f"{key}={json.dumps(value)}"])
+    command.extend(["Inspect the image, update the plan, and report completion.", "--image", str(image)])
     result = subprocess.run(
         command,
         cwd=scratch / "work",
@@ -236,7 +239,9 @@ def main():
             require(initial.get("model") == model, f"wrong model for {model}")
             require(initial.get("parallel_tool_calls") is True, f"parallel tools off for {model}")
             require(
-                (initial.get("reasoning") or {}).get("effort") == expected_effort,
+                all((body.get("reasoning") or {}).get("effort") == expected_effort
+                    and ("effort" in (body.get("reasoning") or {})) == (expected_effort is not None)
+                    for body in (initial, continued)),
                 f"wrong effort for {model}: {initial.get('reasoning')}",
             )
             require(

@@ -170,6 +170,9 @@ impl PreparedDraftCheckpoint {
     }
 }
 impl BottomPane {
+    pub(crate) fn alab_clear_draft_layout(&self) {
+        self.composer.draft.textarea.alab_clear_upgrade_layout();
+    }
     pub(crate) fn alab_draft_has_layout(&self) -> bool {
         self.composer.draft.textarea.alab_upgrade_has_layout()
     }

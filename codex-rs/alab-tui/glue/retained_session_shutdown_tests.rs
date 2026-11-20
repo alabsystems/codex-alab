@@ -211,7 +211,9 @@ async fn canceled_shutdown_join_restores_same_handle_and_preserves_exact_first_n
         if error.kind() != io::ErrorKind::PermissionDenied
             || !error
                 .get_ref()
-                .is_some_and(|payload| payload.is::<OriginalFailure>())
+                .is_some_and(
+                    <dyn std::error::Error + Send + Sync + 'static>::is::<OriginalFailure>,
+                )
         {
             return Err(invalid("first native shutdown error was flattened"));
         }

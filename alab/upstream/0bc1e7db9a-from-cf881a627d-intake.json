@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "base": "cf881a627dd52e7aecef63416c1acd2a89c4dfbd",
+  "target": "0bc1e7db9a6f033aa8d9b786f608e6bf5a403c96",
+  "frontier": "cf881a627dd52e7aecef63416c1acd2a89c4dfbd",
+  "commits": [
+    {
+      "sha": "0bc1e7db9a6f033aa8d9b786f608e6bf5a403c96",
+      "subject": "Allow per-sample model overrides in `thread/sample` (#62419)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/src/protocol/v2/thread_sample.rs",
+        "codex-rs/app-server/src/thread_sample.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_sample.rs"
+      ],
+      "classes": [
+        "feature",
+        "model",
+        "protocol"
+      ],
+      "features": [
+        "model-discovery",
+        "native-session",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Allow clients to sample a conversation using a different model for one request, while preserving the source conversation’s selection and history.",
+      "evidence": [
+        "The optional nullable model belongs to ThreadSampleParams. The sample looks up capabilities on its selected model before deciding whether the requested effort applies, then passes the override into the ephemeral sample’s ThreadSettingsOverrides.",
+        "Upstream adds a four-request integration case covering an override, inherited selection and the next ordinary turn. The protected protocol writer must reconcile the experimental export with ALab’s existing protocol changes."
+      ],
+      "revisit": "Check actual provider requests for an override, omitted and null selections, and the next ordinary turn on the same saved conversation. Confirm the original turns remain present and the saved model and effort survive."
+    }
+  ]
+}

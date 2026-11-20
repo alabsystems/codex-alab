@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "base": "9f80bb5957f0d863fdeaaff0ea193cac94c192d1",
+  "target": "6ee9bc1ba7b6375faf040042728add58f796e79c",
+  "frontier": "9f80bb5957f0d863fdeaaff0ea193cac94c192d1",
+  "commits": [
+    {
+      "sha": "6ee9bc1ba7b6375faf040042728add58f796e79c",
+      "subject": "Select process sandboxes during launch preparation (#62183)",
+      "paths": [
+        "codex-rs/app-server/tests/common/lib.rs",
+        "codex-rs/app-server/tests/common/local_websocket_exec_server.rs",
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox_tests.rs",
+        "codex-rs/core/src/shell_snapshot_tests.rs",
+        "codex-rs/core/src/tools/orchestrator.rs",
+        "codex-rs/core/src/tools/runtimes/apply_patch.rs",
+        "codex-rs/core/src/tools/runtimes/apply_patch_tests.rs",
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/sandboxing_tests.rs",
+        "codex-rs/core/src/unified_exec/mod.rs",
+        "codex-rs/exec-server/src/sandbox_selection.rs",
+        "codex-rs/protocol/src/models.rs",
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/protocol/src/permissions/target.rs",
+        "codex-rs/sandboxing/src/manager.rs"
+      ],
+      "classes": [
+        "security",
+        "fix",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "native-session",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Select and validate the process sandbox against the effective permission profile and roots on the actual execution host.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 137a0e4771d3534d7d714b1e962ec5a252e5207abe213e50c938db39859fd07d.",
+        "Launch preparation shares policy binding for local attempts and shell snapshots. Required exec-server launches still refuse a missing platform backend, and the concrete Windows paths are resolved only for that selected launcher.",
+        "Upstream source tests cover network-only restriction, workspace-relative grants for the command cwd, sibling-path denial, and the same bound target through WebSocket exec-server. Preserve ALab source and destination restrictions across retained execution."
+      ],
+      "revisit": "Exercise restricted operation and default policy in local and WebSocket routes, including destination workspace and network restrictions restored across native handoff."
+    }
+  ]
+}

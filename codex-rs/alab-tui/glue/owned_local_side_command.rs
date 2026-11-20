@@ -51,10 +51,11 @@ impl SideCompanion {
                 );
                 if let Some(active) = self.display.active.as_mut() {
                     let cell=active.as_any_mut().downcast_mut::<ExecCell>().ok_or_else(||eyre!("overlapping original active surfaces need their original grouping route"))?;
-                    if !cell.iter_calls().any(|call| call.call_id == *id) {
-                        if !cell.add_call(id.clone(), argv.clone(), parsed.clone(), *source, None) {
-                            bail!("original active command group rejected another call")
-                        }
+                    let missing_call = !cell.iter_calls().any(|call| call.call_id == *id);
+                    if missing_call
+                        && !cell.add_call(id.clone(), argv.clone(), parsed.clone(), *source, None)
+                    {
+                        bail!("original active command group rejected another call")
                     }
                     // Validate against the actual original call, not merely an
                     // ID. A full authoritative prefix replaces only its output.

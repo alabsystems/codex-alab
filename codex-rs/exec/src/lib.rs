@@ -998,7 +998,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
     let default_cwd = config.cwd.to_path_buf();
     let default_approval_policy = config.permissions.approval_policy.value();
-    let default_effort = config.model_reasoning_effort.clone();
+    let default_effort = config.model_reasoning_effort.clone().filter(|_| !config.alab_inherited_reasoning_effort()); // ALAB(defaults): the thread already owns its restored or configured effort.
 
     let recovery = alab_recovery; // ALAB(exec-recovery): use the native ticket inspected before startup and before any stdin/prompt read.
     let recovered_error_seen = if let Some(recovery) = &recovery { recovery.restore_renderer(event_processor.as_mut())? } else { false }; // ALAB(exec-recovery): restore output IDs and open items before emitting anything.
@@ -1203,7 +1203,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 request_id: request_ids.next(),
                 params: ThreadForkParams {
                     thread_id: source_thread_id,
-                    model: config.model.clone(),
+                    model: config.alab_request_model(), // ALAB(defaults): only scoped selections are exact model overrides.
                     model_provider: Some(config.model_provider_id.clone()),
                     cwd: Some(config.cwd.to_string_lossy().to_string()),
                     runtime_workspace_roots: Some(config.workspace_roots.clone()),
@@ -1562,7 +1562,7 @@ fn thread_start_params_from_config(
         )
     });
     ThreadStartParams {
-        model: config.model.clone(),
+        model: config.alab_request_model(), // ALAB(defaults): only scoped selections are exact model overrides.
         model_provider: Some(config.model_provider_id.clone()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
@@ -1592,7 +1592,7 @@ fn thread_resume_params_from_config(
     });
     ThreadResumeParams {
         thread_id,
-        model: config.model.clone(),
+        model: config.alab_request_model(), // ALAB(defaults): only scoped selections are exact model overrides.
         model_provider: Some(config.model_provider_id.clone()),
         cwd: Some(config.cwd.to_string_lossy().to_string()),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),

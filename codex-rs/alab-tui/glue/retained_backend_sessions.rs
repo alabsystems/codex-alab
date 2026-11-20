@@ -272,7 +272,7 @@ impl OriginalPins {
     }
 }
 impl<S> SessionResource<S> {
-    pub(crate) fn retained_candidate(
+    pub(in crate::app) fn retained_candidate(
         actual: AppServerSession,
         settings: Option<(BackendSettings, S)>,
     ) -> Self {
@@ -362,17 +362,14 @@ pub(crate) struct Refused<S> {
     pub(crate) data: Data<InputData, S>,
     pub(crate) resources: Resources<S>,
 }
+type PreparedBackendEvents = (
+    Vec<AppServerEvent>,
+    Vec<AppServerEvent>,
+    HashMap<codex_protocol::ThreadId, crate::chatwidget::ThreadInputState>,
+);
+
 impl<S: Serialize> Data<InputData, S> {
-    fn validate(
-        &self,
-        resources: &Resources<S>,
-    ) -> io::Result<
-        Vec<(
-            Vec<AppServerEvent>,
-            Vec<AppServerEvent>,
-            HashMap<codex_protocol::ThreadId, crate::chatwidget::ThreadInputState>,
-        )>,
-    > {
+    fn validate(&self, resources: &Resources<S>) -> io::Result<Vec<PreparedBackendEvents>> {
         if self.schema != 1
             || self.entries.is_empty()
             || self.entries.len() > 1024
@@ -401,15 +398,14 @@ impl<S: Serialize> Data<InputData, S> {
                     "backend aggregate lacks distinct actual owning sessions",
                 ));
             }
-            if let Some(key) = &entry.preference_key {
-                if key.is_empty()
+            if let Some(key) = &entry.preference_key
+                && (key.is_empty()
                     || !key
                         .bytes()
                         .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
-                    || !preferences.insert(key)
-                {
-                    return Err(invalid("backend aggregate preference keys differ"));
-                }
+                    || !preferences.insert(key))
+            {
+                return Err(invalid("backend aggregate preference keys differ"));
             }
             if service(&resource.session)? != entry.service {
                 return Err(invalid("backend resource changed actual retained service"));
@@ -422,14 +418,11 @@ impl<S: Serialize> Data<InputData, S> {
                             pin.request.matches(&resource.session.request_handle())
                         })
                 }
-                Origin::Retained => {
-                    entry.service.is_some()
-                        && (!entry.listening
-                            || resource
-                                .session
-                                .retained_frontend()
-                                .is_some_and(|tenure| tenure.alab_backend_delivery_open()))
-                }
+                Origin::Retained => entry.service.is_some()
+                    && (!entry.listening
+                        || resource.session.retained_frontend().is_some_and(
+                            crate::owned_local_frontend::FrontendTenure::alab_backend_delivery_open,
+                        )),
             };
             if !original {
                 return Err(invalid(
@@ -531,13 +524,13 @@ impl<S: Serialize> Data<InputData, S> {
                         .pending_events
                         .iter()
                         .cloned()
-                        .map(|event| event.into_data_event())
+                        .map(events::EventData::into_data_event)
                         .collect::<io::Result<Vec<_>>>()?,
                     entry
                         .side_startup
                         .iter()
                         .cloned()
-                        .map(|event| event.into_data_event())
+                        .map(events::EventData::into_data_event)
                         .collect::<io::Result<Vec<_>>>()?,
                 ),
             };
@@ -619,7 +612,7 @@ impl<S: Serialize> Data<InputData, S> {
     }
 }
 impl<S> Prepared<S> {
-    pub(crate) fn into_parts(self) -> (BackendSessions, RestoreRefs, Vec<(BackendRef, S)>) {
+    pub(in crate::app) fn into_parts(self) -> (BackendSessions, RestoreRefs, Vec<(BackendRef, S)>) {
         (self.backends, self.refs, self.settings_data)
     }
 }

@@ -23,18 +23,30 @@ use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
 use std::time::Duration;
 
+#[path = "goal_runtime_disconnect_test.rs"]
+mod disconnect;
+
 const CASE: &str = "ALAB_GOAL_RUNTIME_STATUS_CASE";
 const COMPLETE: &str = "ALAB_GOAL_RUNTIME_STATUS_OK";
 
 #[tokio::test]
+async fn goal_runtime_status_widget_backend_and_reset_controls() {
+    isolated_controls(&["activity", "backend", "reset"]).await;
+}
+
+#[tokio::test]
+async fn physical_disconnect_clears_held_goal_and_preserves_saved_active_status() {
+    isolated_controls(&["disconnect"]).await;
+}
+
 #[expect(
     clippy::print_stderr,
     reason = "record which isolated native status controls actually executed"
 )]
-async fn goal_runtime_status_widget_backend_and_reset_controls() {
+async fn isolated_controls(cases: &[&str]) {
     let (_, module) = module_path!().split_once("::").unwrap();
     let child = format!("{module}::goal_runtime_status_child");
-    for case in ["activity", "backend", "reset"] {
+    for &case in cases {
         let output = tokio::time::timeout(
             Duration::from_secs(90),
             tokio::process::Command::new(std::env::current_exe().unwrap())
@@ -79,6 +91,7 @@ async fn goal_runtime_status_child() {
         "activity" => activity().await,
         "backend" => backend().await,
         "reset" => reset().await,
+        "disconnect" => disconnect::exercise().await,
         _ => panic!("unknown native status control"),
     }
     println!("{COMPLETE}:{case}");

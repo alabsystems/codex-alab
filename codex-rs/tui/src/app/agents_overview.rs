@@ -1259,13 +1259,7 @@ impl App {
         {
             // Bootstrap's fallback model may be seeded from the client. Resolve tiers
             // against the server catalog when config/read cleared the model.
-            config.model = self
-                .model_catalog
-                .models
-                .iter()
-                .find(|model| model.is_default)
-                .or_else(|| self.model_catalog.models.first())
-                .map(|model| model.model.clone());
+            config.model = Config::alab_advertised_default(&self.model_catalog.models).map(|model| model.model.clone()); // ALAB(defaults): new thread tiers use the same eligible model.
         }
         Some((config, remote_cwd))
     }

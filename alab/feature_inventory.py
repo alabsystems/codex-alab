@@ -74,7 +74,7 @@ def main():
         env = git_environment()
         source = resolve_source(repo, args.source, env)
         catalog = tomllib.loads(subprocess.check_output(
-            ['git', 'show', source + ':alab/features.toml'], cwd=repo, env=env, text=True))
+            ['git', 'show', source + ':alab/features.toml'], cwd=repo, env=env, text=True, encoding='utf-8'))
         # Include directories and symlink entries, without following filesystem links
         # or letting untracked files satisfy a committed implementation path.
         entries = subprocess.check_output(

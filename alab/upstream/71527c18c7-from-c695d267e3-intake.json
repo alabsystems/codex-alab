@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "base": "c695d267e3ecbe135d7570cd9c6c19792b06868c",
+  "target": "71527c18c7caff2fe3f6fa1b84c4e8b3ff720288",
+  "frontier": "c695d267e3ecbe135d7570cd9c6c19792b06868c",
+  "commits": [
+    {
+      "sha": "71527c18c7caff2fe3f6fa1b84c4e8b3ff720288",
+      "subject": "Account for macOS voice build parallelism in Bazel (#62338)",
+      "paths": [
+        "third_party/voice/native.bzl"
+      ],
+      "classes": [
+        "removed-path",
+        "packaging"
+      ],
+      "features": [
+        "build-and-adoption"
+      ],
+      "decision": "adapt",
+      "reason": "Retain the established Bazel removal. The managed macOS package builds with Trust and its own build scheduler.",
+      "evidence": [
+        "Upstream replaces the literal eight voice build jobs with the same constant shared by the macOS Bazel action's CPU reservation. It changes only third_party/voice/native.bzl.",
+        "The existing **/*.bzl removal covers the sole modify/delete conflict. The resolved tree on 6dd029d1a4 keeps that path absent and retains Cargo voice inputs and native build scripts."
+      ],
+      "revisit": "Reassess the scheduling change if ALab adopts upstream's Bazel voice build."
+    }
+  ]
+}

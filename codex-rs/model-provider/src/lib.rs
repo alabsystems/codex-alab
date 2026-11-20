@@ -1,5 +1,6 @@
 mod amazon_bedrock;
 mod auth;
+#[path = "../../alab-core/glue/picker_provider_auth.rs"] mod alab_picker_provider; // ALAB(accounts): enforce a confirmed picker principal on the final model request signer.
 mod bearer_auth_provider;
 mod capabilities;
 mod catalog_factory;
@@ -10,6 +11,7 @@ mod gateway_auth;
 mod gateway_export;
 #[path = "../../alab-core/glue/gateway_request_recovery.rs"] pub mod alab_gateway_recovery; // ALAB(accounts): source-scoped export recovery retains the existing provider retry bound.
 mod gcp;
+#[path = "../../alab-core/glue/openai_api_catalog.rs"] pub mod alab_openai_api_catalog; // ALAB(defaults): match explicit OpenAI inference endpoints to their own account catalogs.
 mod models_endpoint;
 mod models_identity;
 mod provider;

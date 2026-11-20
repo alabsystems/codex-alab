@@ -374,12 +374,17 @@ pub(crate) enum AppEvent {
     CloseMisalignmentReview,
     /// Open the live command center for recent and locally retained root sessions.
     OpenAgentsOverview,
+    #[cfg(unix)]
+    AlabModelPolicy(codex_alab_tui::model_policy::Delivery), // ALAB(fleet-model): typed local application settings.
     AlabModeChanged, // ALAB(interface): reload both sides of the vanilla/enhanced contract
     OpenAlabAutopilotTimer, // ALAB(interface): collect a timed Cruise deadline in the native picker.
     OpenAlabTasks, // ALAB(tasks): inspect this session's plan, local agents and terminals
     AlabEnrollment { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::enrollment_ui::View>>, thread_id: Option<ThreadId>, event: codex_alab_tui::enrollment_ui::Event }, // ALAB(accounts): enrollment remains a local authenticated native operation.
     AlabAccountsRefresh { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::accounts_ui::View>>, thread_id: Option<ThreadId> }, // ALAB(accounts): refresh only the original open local view.
+    AlabAccountsPicker { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::accounts_ui::View>>, thread_id: Option<ThreadId>, action: codex_alab_tui::accounts_ui::PickerAction }, // ALAB(accounts): keep account selection bound to its local pane and thread.
+    AlabAccountsCheckInput { thread_id: Option<ThreadId>, reply: tokio::sync::oneshot::Sender<bool> }, // ALAB(accounts): ask the event loop that owns input across all conversations.
     AlabAccountsReady { view: std::sync::Weak<std::sync::Mutex<codex_alab_tui::accounts_ui::View>>, thread_id: Option<ThreadId>, text: codex_alab_tui::accounts_ui::Update }, // ALAB(accounts): sanitized metadata updates only the original view instance.
+    AlabThreadCredits { request: Uuid, thread_id: ThreadId, usage: codex_alab_tui::interface::ChatCreditUpdate }, // ALAB(interface): publish settled credit usage to the originating widget.
     AlabTasksBack { thread_id: Option<ThreadId> }, // ALAB(tasks): a deferred detail Back belongs only to its original thread.
     AlabTasksRefresh { view: std::sync::Weak<()>, thread_id: Option<ThreadId>, selected_key: Option<String>, selected_index: Option<usize>, query: Option<String> }, // ALAB(tasks): refresh only the still-open local view
     AlabTaskDetails { thread_id: Option<ThreadId>, key: String }, // ALAB(tasks): resolve details from current native state
@@ -513,6 +518,7 @@ pub(crate) enum AppEvent {
         request: uuid::Uuid,
         action: SideChatRemoval,
         result: Result<(), String>,
+        close_ack: Option<crate::app_server_session::SideCloseAck>, // ALAB(side-boundary): only the matching UI callback acknowledges its original reply.
     },
     SideChatArchived {
         backend_id: crate::backend_id::BackendId,
@@ -524,9 +530,11 @@ pub(crate) enum AppEvent {
         request: uuid::Uuid,
         result: Box<crate::app::thread_attachment::Prepared>,
     },
+    AlabSavedResumeObserved(crate::app::sidebar_loading::saved_history::Observation), // ALAB(retained-ui): record only the original saved opening observed on this read attempt.
     SavedChatReleased {
         target: crate::app::sidebar_loading::Target,
         request: uuid::Uuid,
+        receipt: crate::app_server_session::alab_session_work::saved_chat::SavedChatReleaseReceipt, // ALAB(retained-ui): deliver the original unsubscribe reply with its chooser operation.
     },
     StartQueuedSavedChat,
     SavedSideChatsLoaded {
@@ -1400,6 +1408,8 @@ pub(crate) enum AppEvent {
         scrollback_reflow: ConsolidationScrollbackReflow,
         deferred_history_cell: Option<Box<dyn HistoryCell>>,
     },
+
+    AlabFindingCommandFinished { thread_id: ThreadId, turn_id: String, call_id: String, cell: Arc<dyn HistoryCell>, #[cfg(unix)] alab_source: Option<crate::app::AlabSideCellSource> }, // ALAB(misalignment-review): an observed late exit corrects its own pending history row.
 
     /// Update a message already committed before a tool started with its completed text.
     CorrectFlushedAgentMessage {

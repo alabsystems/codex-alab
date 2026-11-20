@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "base": "b5e1f3ae9d810dec3fe005fcc55552766b577bdb",
+  "target": "d1d1ba0b837d34f314b7f469896e8babbc91f949",
+  "frontier": "b5e1f3ae9d810dec3fe005fcc55552766b577bdb",
+  "commits": [
+    {
+      "sha": "d1d1ba0b837d34f314b7f469896e8babbc91f949",
+      "subject": "Pass eligible connector results through to ChatGPT Responses (#62392)",
+      "paths": [
+        "codex-rs/codex-mcp/src/binding.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/mcp_tool_call/conversation_history.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/tools/context.rs",
+        "codex-rs/core/src/tools/context_tests.rs",
+        "codex-rs/core/src/tools/executed_tool_calls.rs",
+        "codex-rs/core/src/tools/executed_tool_calls/request_metadata.rs",
+        "codex-rs/core/src/tools/executed_tool_calls/request_metadata_tests.rs",
+        "codex-rs/core/src/tools/executed_tool_calls_direct_tests.rs",
+        "codex-rs/core/src/tools/handlers/mcp.rs",
+        "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/registry.rs",
+        "codex-rs/core/src/tools/registry_tests.rs",
+        "codex-rs/core/tests/common/apps_test_server.rs",
+        "codex-rs/core/tests/suite/direct_tool_metadata.rs",
+        "codex-rs/core/tests/suite/tool_lifecycle.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_recovery/telemetry_tests.rs",
+        "codex-rs/rollout-trace/src/inference.rs",
+        "codex-rs/tools/src/tool_output.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "defaults"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Adopt the upstream caller for optional Apps results on ChatGPT Responses HTTP. Keep connector_tool_result_passthrough off in both packaged defaults. Account, turn and transport checks must hold before original connector content can accompany a follow-up.",
+      "evidence": [
+        "An eligible direct Apps call captures the original successful MCP result before tool-output processing. The Apps binding checks its configured server against the actual streamable-HTTP transport and runtime authentication. Code Mode and unrelated shell calls cannot contribute bodies. The regular turn keeps at most 256 results and 1 MiB total in memory.",
+        "The sampling request checks the originating turn, current AuthManager owner and generation, physical input and approved ChatGPT Codex endpoint. The actual provider headers and selected inference credentials must qualify. API keys, third-party routes, a changed account and later turns receive no bodies. The WebSocket path keeps its ordinary Core payload.",
+        "Neither ALab default file enables the feature. The fork’s account-recovery hooks and canonical request diagnostics remain in the integrated tree. The source carries a loopback first-party HTTP test covering the same-turn frame and later-turn replay, plus shell HTTP/WebSocket exclusions, account-change, memory limits and the inference trace controls."
+      ],
+      "revisit": "Run the original connector and HTTP harness with synthetic account credentials and confirm a later turn and a changed owner omit the earlier body. Reassess activation separately if an endpoint, transport or caller broadens."
+    }
+  ]
+}

@@ -25,6 +25,14 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::Instant;
 
+#[path = "model_retirement_stream_prefix_tests.rs"]
+mod retirement;
+
+#[test]
+fn only_an_original_pre_output_wire_refusal_permits_model_replay() -> std::io::Result<()> {
+    isolated_capacity_case("model-retirement-prefix")
+}
+
 const CHILD_MARKER: &str = "ALAB_STREAM_CAPACITY_TEST_CHILD";
 const COMPLETE: &str = "ALAB_STREAM_CAPACITY_BOUNDARY_OK";
 
@@ -64,7 +72,7 @@ fn isolated_capacity_case(case: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-async fn capacity_before_eof(frame: Value) {
+async fn capacity_before_eof(frame: Value, opening_only: bool) {
     let before = Instant::now();
     let expected = if frame
         .pointer("/error/code")
@@ -76,12 +84,21 @@ async fn capacity_before_eof(frame: Value) {
     } else {
         CodexErrorInfo::ServerOverloaded
     };
-    let bytes =
-        stream::iter([Ok(Bytes::from(format!("data: {frame}\n\n")))]).chain(stream::pending());
+    let frame_delay = Duration::from_secs(2);
+    let bytes = stream::once(async move {
+        tokio::time::sleep(frame_delay).await;
+        Ok(Bytes::from(format!("data: {frame}\n\n")))
+    })
+    .chain(stream::pending());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from_static("11"),
+    );
     let mut response = spawn_response_stream(
         StreamResponse {
             status: StatusCode::OK,
-            headers: HeaderMap::new(),
+            headers,
             bytes: Box::pin(bytes),
         },
         Duration::from_secs(60),
@@ -102,10 +119,10 @@ async fn capacity_before_eof(frame: Value) {
     );
     assert_eq!(
         error.retry_after().map(RetryAfter::deadline),
-        Some(before + Duration::from_secs(7)),
-        "the original provider deadline reaches retry handling"
+        Some(before + Duration::from_secs(if opening_only { 11 } else { 9 })),
+        "opening advice starts at headers; event advice starts at the frame and takes precedence"
     );
-    assert_eq!(Instant::now(), before, "the idle deadline was not awaited");
+    assert_eq!(Instant::now(), before + frame_delay);
     assert!(response.next().await.is_none());
 }
 
@@ -122,6 +139,43 @@ fn a_statusless_capacity_error_keeps_top_level_advice_before_eof() -> std::io::R
 #[test]
 fn a_failed_capacity_response_reaches_retry_handling_before_eof() -> std::io::Result<()> {
     isolated_capacity_case("failed")
+}
+
+#[test]
+fn failed_responses_use_envelope_advice_for_both_capacity_reasons() -> std::io::Result<()> {
+    isolated_capacity_case("failed-envelope")?;
+    isolated_capacity_case("policy-failed-envelope")
+}
+
+#[test]
+fn inactive_failed_response_ignores_envelope_advice() {
+    assert!(!codex_alab_core::active());
+    let error = failed_event_with_envelope_advice(json!({"code": "server_is_overloaded"}));
+    assert!(matches!(
+        error,
+        ApiError::ServerOverloaded { retry_after: None }
+    ));
+}
+
+fn failed_event_with_envelope_advice(detail: Value) -> ApiError {
+    let event = serde_json::from_value(json!({
+        "type": "response.failed",
+        "response": {"error": detail},
+        "headers": {"retry-after": "7"}
+    }))
+    .unwrap_or_else(|error| panic!("failed response fixture: {error}"));
+    match process_responses_event(event) {
+        Err(error) => error.into_api_error(),
+        other => panic!("expected a failed response, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_streamed_capacity_failure_preserves_the_opening_http_deadline() -> std::io::Result<()> {
+    for case in ["opening", "policy-opening"] {
+        isolated_capacity_case(case)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -173,7 +227,10 @@ async fn failed_provider_before_eof(code: &str, later_completion: bool) {
     let mut response = spawn_response_stream(
         StreamResponse {
             status: StatusCode::OK,
-            headers: HeaderMap::new(),
+            headers: HeaderMap::from_iter([(
+                http::header::RETRY_AFTER,
+                http::HeaderValue::from_static("11"),
+            )]),
             bytes: Box::pin(bytes),
         },
         Duration::from_secs(60),
@@ -445,11 +502,16 @@ fn active_capacity_boundary_child() {
             case.as_deref(),
             Some(
                 "statusless"
+                    | "model-retirement-prefix"
                     | "failed"
+                    | "failed-envelope"
+                    | "policy-failed-envelope"
                     | "top-level"
                     | "policy-statusless"
                     | "policy-top-level"
                     | "policy-failed"
+                    | "opening"
+                    | "policy-opening"
                     | "known-capacity"
                     | "known-quota"
                     | "known-rate"
@@ -464,6 +526,15 @@ fn active_capacity_boundary_child() {
     }
     let case = case.unwrap_or_else(|| panic!("validated child case"));
     codex_alab_core::activate();
+    if case == "model-retirement-prefix" {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(retirement::exercise());
+        println!("{COMPLETE}:{case}");
+        return;
+    }
     if case.starts_with("known-") {
         let codes: &[&str] = match case.as_str() {
             "known-quota" => &[
@@ -526,7 +597,16 @@ fn active_capacity_boundary_child() {
         .map_or((case.as_str(), "server_is_overloaded"), |shape| {
             (shape, "policy_capacity_unavailable")
         });
-    let frame = if shape == "statusless" {
+    if shape == "failed-envelope" {
+        let error = failed_event_with_envelope_advice(json!({"code": code, "plan_type": 42}));
+        assert!(matches!(error, ApiError::Stream(_)));
+    }
+    let frame = if shape == "opening" {
+        json!({
+            "type": "response.failed",
+            "response": {"error": {"code": code, "message": "Capacity unavailable."}}
+        })
+    } else if shape == "statusless" {
         json!({
             "type": "error",
             "error": {"code": code, "message": "Capacity unavailable.",
@@ -538,9 +618,16 @@ fn active_capacity_boundary_child() {
             "error": {"code": code, "message": "Capacity unavailable."},
             "headers": {"Retry-After": "7"}
         })
+    } else if shape == "failed-envelope" {
+        json!({
+            "type": "response.failed",
+            "response": {"error": {"code": code, "message": "Capacity unavailable."}},
+            "headers": {"Retry-After": "7"}
+        })
     } else {
         json!({
             "type": "response.failed",
+            "headers": {"Retry-After": "17"},
             "response": {"error": {"code": code, "message": "Capacity unavailable.",
                                    "headers": {"Retry-After": "7"}}}
         })
@@ -550,7 +637,14 @@ fn active_capacity_boundary_child() {
         .start_paused(true)
         .build()
         .unwrap_or_else(|error| panic!("owned paused runtime: {error}"))
-        .block_on(capacity_before_eof(frame));
+        .block_on(async {
+            if shape == "opening" {
+                let mut invalid_advice = frame.clone();
+                invalid_advice["headers"] = json!({"Retry-After": "invalid"});
+                capacity_before_eof(invalid_advice, /*opening_only*/ true).await;
+            }
+            capacity_before_eof(frame, shape == "opening").await;
+        });
     unknown_statusless_reading();
     permanent_http_reading();
     terminal_statusless_reading();

@@ -284,7 +284,7 @@ class RenewalTailTests(unittest.TestCase):
 
     def matrix_helper_mutation(self, helper_name):
         with self.fixture(RuntimeError("not run")) as fixture:
-            fixture.world.package_records(rotation.CERTIFIED)
+            fixture.world.package_records(rotation.NATIVE_LAYOUT)
             host = fixture.world.host("record-only", attestation=rotation.native_host_record.CLEAN)
             matrix_source = Path(rotation.renewal_matrix.__file__).resolve()
             source_alab = matrix_source.parents[1]

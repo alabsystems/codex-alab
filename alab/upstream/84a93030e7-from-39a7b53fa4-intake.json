@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "base": "39a7b53fa47fc987acf7d2c268588da7cb5202ed",
+  "target": "84a93030e7399b25c694263f904963443a50f6e6",
+  "frontier": "39a7b53fa47fc987acf7d2c268588da7cb5202ed",
+  "commits": [
+    {
+      "sha": "8dcd56d0cb84fa8220c6056d3ecdb861b7b7b61c",
+      "subject": "Add external header auth for existing realtime calls (#62114)",
+      "paths": [
+        "codex-rs/core/src/realtime_conversation.rs",
+        "codex-rs/core/src/realtime_conversation/existing_call.rs",
+        "codex-rs/core/tests/common/runtime_auth.rs",
+        "codex-rs/core/tests/suite/realtime_attachment.rs",
+        "codex-rs/core/tests/suite/realtime_sideband_endpoint.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "classes": [
+        "feature",
+        "security",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "exec-handoff",
+        "provider-recovery"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Existing-call observation can use explicit trusted-host header authentication. Keep model-provider authentication as the default and preserve the native source, destination and workload checks for each route.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-17-after39a7.md",
+        "Exact Git patch SHA256 d88900212eac0bca7b0893cfb7d6b511756136ebe59698482916e42c4135bec1, 30965 bytes.",
+        "Reviewed the protocol option and both existing-call credential branches, plus realtime_sideband_endpoint.rs controls. Verify explicit destination, runtime mode isolation, cancellation and reconnect. Keep separate TUI call creation bound to the original backend native source.",
+        "Independent realtime source review packet SHA256 a2b7eaaf0da0afff9c948ba0ad5cad5f350c5f18dc84d39043aa948780338746, 22 source anchors and four rehashed payloads. Runtime cases are pending."
+      ],
+      "revisit": "Revisit native activation after proving the original backend and account binding plus native sideband source and destination admission. Confirm failed or cancelled attach discloses no provider credentials."
+    },
+    {
+      "sha": "b8f6787e95a5006d91bc712f59d72af32ef9b205",
+      "subject": "Stabilize TUI startup tests and strengthen daemon recovery coverage (#62116)",
+      "paths": [
+        "codex-rs/tui/tests/suite/daemon_compatibility.rs",
+        "codex-rs/tui/tests/suite/external_editor_tests.rs",
+        "codex-rs/tui/tests/suite/focus_palette.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-session",
+        "native-ui",
+        "qualification-fixtures",
+        "model-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Use a bundled model catalog in PTY setup and exercise the complete daemon version probe. The listener can identify reconnects after selecting embedded mode.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-17-after39a7.md",
+        "Exact Git patch SHA256 e326ad691a65736d6d956fdaf8858cd7109bbdce66fbe8d053fcff46f1f401e4, 8586 bytes.",
+        "Reviewed complete changes to daemon_compatibility.rs, external_editor_tests.rs and focus_palette.rs. Run both PTY paths on the merged binary and preserve editor draft, screen ownership and selected backend."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "53cd1894aa94185668d76e212e793e7950294f24",
+      "subject": "Fix Node launcher detection in the standalone installer (#62120)",
+      "paths": [
+        "scripts/install/install.sh",
+        "scripts/install/test_install_sh.py"
+      ],
+      "classes": [
+        "fix",
+        "removed-path",
+        "packaging"
+      ],
+      "features": [],
+      "decision": "superseded",
+      "reason": "The exact first-line Node shebang test fixes the upstream standalone installer. ALab removes the entire installer path and ships through its existing atpkg update ownership.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-17-after39a7.md",
+        "Exact Git patch SHA256 0ded27e00c0322f96bd39f4141385bd2b97f313526f03689fab08062da5946db, 4509 bytes.",
+        "Reviewed installer and positive/negative fixture, including a binary containing the text elsewhere. All changed paths are covered by the committed scripts/install removal. Verify whole-path absence after merge."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5f775c7f4f5f3e0b3bb6eb499b280e023e697f71",
+      "subject": "Add `/rc` to manage remote control from the TUI (#62121)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/remote_control.rs",
+        "codex-rs/tui/src/app/remote_control_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__remote_control__tests__rc_menu.snap",
+        "codex-rs/tui/src/app/startup.rs",
+        "codex-rs/tui/src/app/test_support.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/agents_navigation_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/reconnect_tests.rs",
+        "codex-rs/tui/src/bottom_pane/slash_commands.rs",
+        "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+        "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
+        "codex-rs/tui/src/slash_command.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-session",
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Expose explicit remote-control choices through the verified local daemon. Preserve managed daemon identity through requests and responses, existing disable policy, and the requirement for a user action before enable or pairing.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-17-after39a7.md",
+        "Exact Git patch SHA256 dc6dfdabeabd484c652b72b038bf4ce0008d5d7465c132f373671f80613b2bd7, 38699 bytes.",
+        "Reviewed remote_control.rs local backend selection, protected daemon reconnect, settings acknowledgement, redaction and bounded RPC outcomes. Run parked-local-from-Cloud, backend switch, no managed daemon, redaction and timed-out mutation cases."
+      ],
+      "revisit": "Revisit activation for a native backend only after its existing remote-control disable settings and backend identity checks are exercised on the integrated code."
+    },
+    {
+      "sha": "84a93030e7399b25c694263f904963443a50f6e6",
+      "subject": "Restrict control of the Windows sandbox service (#62122)",
+      "paths": [
+        "codex-rs/windows-sandbox-service/src/service.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "build-and-adoption"
+      ],
+      "decision": "adopt",
+      "reason": "Harden Windows sandbox service control before running the service lifecycle, preserving setup and query access. A policy-application failure remains visible as a startup failure.",
+      "evidence": [
+        "alab/reviews/upstream-intake-2026-11-17-after39a7.md",
+        "Exact Git patch SHA256 90ed28d1170bcfdfeba7dc7c24d38b150a47480296205a6693664a6d9a2062ea, 2943 bytes.",
+        "Reviewed service_main_inner and harden_service_dacl, including explicit descriptor cleanup. Verify Windows startup, ordinary setup/query access, denied unprivileged control and administrative stop/uninstall."
+      ],
+      "revisit": ""
+    }
+  ]
+}

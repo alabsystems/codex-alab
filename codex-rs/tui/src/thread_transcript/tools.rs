@@ -133,9 +133,8 @@ pub(crate) struct CommandHistory {
     pub(crate) command: Vec<String>,
     pub(crate) parsed: Vec<ParsedCommand>,
     pub(crate) source: CommandExecutionSource,
-    pub(crate) aggregated_output: String,
-    pub(crate) exit_code: i32,
-    pub(crate) duration: Duration,
+    pub(crate) output: CommandOutput, // ALAB(shell-output): share live and replayed outcome semantics.
+    pub(crate) duration: Option<Duration>,
 }
 
 impl CommandHistory {
@@ -158,13 +157,13 @@ impl CommandHistory {
         if source == CommandExecutionSource::UnifiedExecInteraction {
             return None;
         }
-        let exit_code = match status {
-            CommandExecutionStatus::InProgress | CommandExecutionStatus::Declined => return None,
-            CommandExecutionStatus::Completed => exit_code.unwrap_or_default(),
-            CommandExecutionStatus::Failed => {
-                exit_code.filter(|code| *code != 0).unwrap_or(/*default*/ 1)
-            }
-        };
+        if matches!(
+            status,
+            CommandExecutionStatus::InProgress | CommandExecutionStatus::Declined
+        ) {
+            return None;
+        }
+        let output = CommandOutput::from_execution(status, exit_code, source, aggregated_output);
         Some(Self {
             id,
             command: replay_command_args(&command)?,
@@ -173,14 +172,12 @@ impl CommandHistory {
                 .map(codex_app_server_protocol::CommandAction::into_core)
                 .collect(),
             source,
-            aggregated_output: aggregated_output.unwrap_or_default(),
-            exit_code,
-            duration: Duration::from_millis(duration_ms.unwrap_or_default().max(/*other*/ 0) as u64),
+            output,
+            duration: duration_ms.map(|ms| Duration::from_millis(ms.max(0) as u64)),
         })
     }
 
     pub(crate) fn into_cell(self) -> ExecCell {
-        let output = CommandOutput::new(self.exit_code, self.aggregated_output);
         let mut cell = new_active_exec_command(
             self.id.clone(),
             self.command,
@@ -189,7 +186,7 @@ impl CommandHistory {
             /*interaction_input*/ None,
             /*animations_enabled*/ false,
         );
-        let completed = cell.complete_call(&self.id, output, self.duration);
+        let completed = cell.complete_call(&self.id, self.output, self.duration);
         debug_assert!(completed, "new exec cell should contain {}", self.id);
         cell
     }

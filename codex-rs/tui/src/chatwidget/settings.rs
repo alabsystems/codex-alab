@@ -509,7 +509,7 @@ impl ChatWidget {
         let effective = self.effective_collaboration_mode();
         self.bottom_pane
             .stop_ineligible_sparkle(effective.model(), &self.local_settings.tui);
-        self.session_header.set_model(effective.model());
+        self.alab_refresh_banner_model(); // ALAB(banner): redraw the active conversation model and effort.
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
         self.sync_service_tier_commands();
@@ -584,6 +584,7 @@ impl ChatWidget {
         }
         settings.collaboration_mode.settings.model = settings.model;
         settings.collaboration_mode.settings.reasoning_effort = settings.effort;
+        self.alab_observed_thread_mode = Some(settings.collaboration_mode.clone()); // ALAB(defaults): remember what the server confirmed before the next compose.
         self.set_effective_collaboration_mode(settings.collaboration_mode);
         self.refresh_effective_service_tier();
         self.refresh_status_surfaces();

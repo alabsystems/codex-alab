@@ -101,7 +101,9 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         interaction_input: Some("input".to_string()),
         aggregated_output: "combined output".to_string(),
         exit_code: 0,
+        exit_code_unavailable: false, // ALAB(shell-output): the fixture has an actual process result.
         duration: Duration::from_millis(250),
+        duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
         status: ExecCommandStatus::Completed,
     });
 

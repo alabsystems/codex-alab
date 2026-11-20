@@ -23,14 +23,11 @@ import threading
 import time
 
 import provider_fixture
+from provider_fixture import CALL_ID, PLAN, PROMPT, plan_call
 
 MODEL = "gpt-5"
-PROMPT = "Keep this headless capacity smoke task and its completed plan."
-CALL_ID = "capacity-smoke-plan"
-PLAN = "Completed work survives a capacity retry"
 ANSWER = "Headless capacity recovery succeeded."
 RETRY_SECONDS = 2
-HEADER_EMISSION_LIMIT_SECONDS = 0.050
 COMMAND_TIMEOUT_SECONDS = 120
 COMMAND_CLEANUP_SECONDS = 5
 LISTENER_STARTUP_CLEANUP_SECONDS = 5
@@ -90,6 +87,21 @@ def case_error_fields(error):
     return fields
 
 
+def read_case_stdout(root, result, *, compaction):
+    """Retain the observed process and RPC outcome when the stdout trace is damaged."""
+    stream = "app" if compaction else "exec"
+    path = root / f"{stream}-stdout.jsonl"
+    try:
+        events = provider_fixture.read_stdout_events(path)
+        if any(not isinstance(event, dict) for event in events):
+            raise ValueError(f"{stream} event must be a JSON object")
+        return events
+    except (OSError, ValueError, RecursionError) as error:
+        result.update(case_error_fields(error))
+        result.update(provider_fixture.partial_stdout_observations(path, compaction=compaction))
+        return None
+
+
 def cleanup_case(server, thread, write_requests, result, primary):
     return cleanup_resources((("", server, thread),), (("write", write_requests),), result, primary)
 
@@ -143,25 +155,11 @@ def cleanup_resources(listeners, exports, result, primary, *, stop=None):
         result.setdefault("error", "case cleanup failed")
 
 
-def retry_after_delay(overload, retry):
-    """Measure from response headers, excluding request handling before them.
-
-    The client can receive headers between the two recorded header timestamps.
-    Use only that measured overlap, and refuse an inconclusive clock sample.
-    Handler entry is server-observed arrival, not a TCP wire-time measurement.
-    """
-    start, header, request = (overload.get("headerStartedAt"), overload.get("headerAt"),
-                              retry.get("requestStartedAt"))
-    require(all(type(value) in (int, float) and math.isfinite(value)
-                for value in (start, header, request)), "missing or invalid Retry-After timing")
-    emission = header - start
-    require(0 <= emission <= HEADER_EMISSION_LIMIT_SECONDS,
-            f"Retry-After timing inconclusive: header emission took {emission:.6f}s")
-    delay = request - header
-    deadline = start + RETRY_SECONDS
-    require(request >= math.nextafter(deadline, -math.inf),
-            f"Retry-After bypassed: {delay:.6f}s after headers")
-    return delay
+def retry_after_delay(overload, retry, seconds=RETRY_SECONDS, *, attempt=None, frame_delay=None):
+    try:
+        return provider_fixture.retry_after_delay(overload, retry, seconds, attempt=attempt, frame_delay=frame_delay)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def write_json(path, value):
@@ -252,6 +250,24 @@ def package_records(package):
     return build, manifest, executable
 
 
+def check_package_executable(build, observed):
+    """Match the executable to package.sh's build observation when the package carries one."""
+    compiler = build.get("compiler", {})
+    require(isinstance(compiler, dict), "invalid package compiler record")
+    if "verification" not in compiler:
+        return
+    try:
+        verification = compiler["verification"]
+        source = verification["source"]
+        executable = verification["binaries"]["codex"]
+        built = executable["built_sha256"]
+        packaged = executable["packaged_sha256"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("package verification lacks the codex build observation") from error
+    require(source == build["source"], "package verification source differs from the package source")
+    require(observed == packaged == built, "codex digest differs from the package build observation")
+
+
 def fresh_environment(root):
     for name in ("home", "codex-home", "work", "xdg", "tmp"):
         (root / name).mkdir()
@@ -330,7 +346,11 @@ class OutputLogs(OutputFiles):
         return self.streams[1]
 
 
-def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, timeout_seconds=None):
+class MissingProtocolReply(RuntimeError):
+    """The interactive reader reached stdout EOF while waiting for a reply."""
+
+
+def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, timeout_seconds=None, cwd=None):
     command_timeout = COMMAND_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     cleanup_timeout = COMMAND_CLEANUP_SECONDS
     command = [str(executable), *args]
@@ -344,6 +364,7 @@ def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, t
     write_json(root / (label + "-guardian-command.json"), guardian)
     with OutputLogs(root, label) as (stdout, stderr):
         child, pending, cleaning = None, None, False
+        missing_reply = None
         primary = None
         handlers = {}
 
@@ -365,13 +386,18 @@ def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, t
                 raise SystemExit(128 + pending)
             # The HTTP server has threads. All preexec/group handling belongs in
             # the dedicated single-threaded guardian, never in this process.
-            child = subprocess.Popen(guardian, cwd=root / "work", env=env,
+            child = subprocess.Popen(guardian, cwd=root / "work" if cwd is None else cwd, env=env,
                                      stdin=subprocess.PIPE if interact and stdin_pipe else subprocess.DEVNULL,
                                      stdout=subprocess.PIPE if interact else stdout, stderr=stderr)
             if pending is not None:
                 raise SystemExit(128 + pending)
             if interact:
-                interact(child, stdout)
+                try:
+                    interact(child, stdout)
+                except MissingProtocolReply as error:
+                    # EOF also follows a guardian-enforced timeout. Reap the
+                    # guardian and check its receipt before interpreting EOF.
+                    missing_reply = error
                 if child.stdin is not None:
                     child.stdin.close()
                     child.stdin = None
@@ -480,19 +506,28 @@ def run(executable, args, root, env, label, *, interact=None, stdin_pipe=True, t
             and result.get("argv") == command
             and type(result.get("timeout_seconds")) in (int, float)
             and result["timeout_seconds"] == command_timeout
-            and type(result.get("timed_out")) is bool, "invalid guardian command evidence")
-    raw = result.get("returncode")
+            and type(result.get("timed_out")) is bool and "returncode" in result, "invalid guardian command evidence")
+    raw = result["returncode"]
     if result["timed_out"]:
         require(raw is None and code == 124, "guardian timeout evidence disagrees with exit")
-        raise subprocess.TimeoutExpired(command, command_timeout)
+        raise subprocess.TimeoutExpired(command, command_timeout) from missing_reply
     require(type(raw) is int and -signal.NSIG < raw < 256,
             "missing or invalid raw command status")
     require(code == (raw if raw >= 0 else 128 - raw), "guardian exit disagrees with raw command status")
+    if missing_reply is not None:
+        raise missing_reply
     return raw
 
 
 def sse(events):
     return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
+
+
+def completed_plan_records(history):
+    try:
+        return provider_fixture.completed_plan_records(history)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def response(response_id, item, usage=None):
@@ -517,6 +552,9 @@ class Mock:
             number = len(self.requests) + 1
             record = {"at": time.monotonic(), "unixAt": time.time(), "body": body}
             self.requests.append(record)
+        return self.reply_for_attempt(number, record)
+
+    def reply_for_attempt(self, number, record):
         if self.negative or number == 2:
             status = 403 if self.negative else 503
             error = {"error": {"code": "server_is_overloaded", "message": "Model is at capacity."}}
@@ -533,8 +571,7 @@ class Mock:
                         "x-codex-rate-limit-reached-type": self.refusal_type}
             return status, json.dumps(error).encode(), "application/json", RETRY_SECONDS, record
         if number == 1:
-            item = {"type": "function_call", "call_id": CALL_ID, "name": "update_plan",
-                    "arguments": json.dumps({"plan": [{"step": PLAN, "status": "completed"}]})}
+            item = plan_call()
         elif number == 3:
             item = {"type": "message", "role": "assistant", "id": "recovered-message",
                     "content": [{"type": "output_text", "text": ANSWER}]}
@@ -666,27 +703,48 @@ def start_listener(handler, *, bind=None, prepare=None):
             raise error
 
 
-def serve(mock):
+def serve(mock, *, upgrade=None, send_failure_stream=None, on_post=None, prepare=None, wrap_input=None):
+    decode_length, decode_body = int, json.loads
+    if wrap_input is not None:
+        decode_length, decode_body = wrap_input(int), wrap_input(json.loads)
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
+        def do_GET(self):
+            started = time.monotonic()
+            if upgrade is None or self.path != "/v1/responses" or self.headers.get("Upgrade", "").lower() != "websocket":
+                self.send_error(501)
+                return
+            # A WebSocket client only decodes handshake refusals over HTTP/1.1.
+            self.protocol_version = "HTTP/1.1"
+            self.send_reply(started, upgrade(self.headers))
+
         def do_POST(self):
             request_started = time.monotonic()
+            if on_post is not None:
+                on_post()
             if self.path != "/v1/responses":
                 self.send_error(404)
                 return
-            length = int(self.headers.get("content-length", "0"))
+            length = decode_length(self.headers.get("content-length", "0"))
             if not 0 < length <= 8 * 1024 * 1024:
                 self.send_error(413)
                 return
-            body = json.loads(self.rfile.read(length))
-            status, data, content_type, retry_after, record = mock.reply(body)
+            body = decode_body(self.rfile.read(length))
+            self.send_reply(request_started, mock.reply(body))
+
+        def send_reply(self, request_started, reply):
+            status, data, content_type, retry_after, record = reply
             with mock.lock:
-                record["requestStartedAt"] = request_started
+                record.update(requestStartedAt=request_started, status=status, retryAfter=retry_after)
             self.send_response(status)
             self.send_header("content-type", content_type)
-            self.send_header("content-length", str(len(data)))
+            streaming = (send_failure_stream is not None and content_type == "text/event-stream"
+                         and record.get("holdFailureStream") is True)
+            if not streaming:
+                self.send_header("content-length", str(len(data)))
             if retry_after is not None:
                 self.send_header("Retry-After", str(retry_after))
             for key, value in record.get("responseHeaders", {}).items():
@@ -698,12 +756,23 @@ def serve(mock):
             # Retry-After starts at headers; body transmission must not move it.
             with mock.lock:
                 record.update(headerStartedAt=header_started, headerAt=header_at)
-            self.wfile.write(data)
+            if streaming:
+                # HTTP/1.0 delimits this body by connection close. Flush the
+                # complete SSE frame while withholding the transport EOF.
+                send_failure_stream(self.wfile, data, record)
+            elif "failureFrameDelay" in record:
+                time.sleep(record["failureFrameDelay"])
+                record["failureFrameStartedAt"] = time.monotonic()
+                self.wfile.write(data)
+                self.wfile.flush()
+                record["failureFrameFlushedAt"] = time.monotonic()
+            else:
+                self.wfile.write(data)
 
-    return start_listener(Handler)
+    return start_listener(Handler, prepare=prepare)
 
 
-def configure(root, port, *, stream_max_retries=0):
+def configure(root, port, *, stream_max_retries=0, supports_websockets=False):
     config = f'''model = "{MODEL}"
 model_provider = "capacity-smoke"
 approval_policy = "never"
@@ -720,3 +789,5 @@ stream_max_retries = {stream_max_retries}
 '''
     with (root / "codex-home/config.toml").open("x") as handle:
         handle.write(config)
+        if supports_websockets:
+            handle.write("supports_websockets = true\n")

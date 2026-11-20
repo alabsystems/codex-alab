@@ -1,7 +1,7 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
 
-//! Keep turn identities while projecting history in the item page's timeline order.
+//! Keep thread and turn identities while loading and projecting history.
 
 use std::collections::HashMap;
 
@@ -9,6 +9,38 @@ use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStatus;
+use codex_protocol::ThreadId;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ThreadResponseIdMismatch {
+    #[error("{method} for {requested} returned thread ID {returned}")]
+    Foreign {
+        method: &'static str,
+        requested: ThreadId,
+        returned: ThreadId,
+    },
+    #[error("{method} for {requested} returned an invalid thread ID")]
+    Invalid {
+        method: &'static str,
+        requested: ThreadId,
+    },
+}
+
+pub(super) fn validate_thread_response(
+    method: &'static str,
+    requested: ThreadId,
+    returned: &str,
+) -> Result<(), ThreadResponseIdMismatch> {
+    match ThreadId::from_string(returned) {
+        Ok(actual) if actual == requested => Ok(()),
+        Ok(returned) => Err(ThreadResponseIdMismatch::Foreign {
+            method,
+            requested,
+            returned,
+        }),
+        Err(_) => Err(ThreadResponseIdMismatch::Invalid { method, requested }),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryPageItem {

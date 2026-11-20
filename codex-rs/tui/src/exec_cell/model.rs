@@ -14,12 +14,15 @@ use std::time::Instant;
 use super::live_output::LiveCommandOutput;
 use crate::history_cell::ActivityGroup;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_protocol::parse_command::ParsedCommand;
 use itertools::Either;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)] // ALAB(misalignment-review): preserve bounded observed output when the exit omits its aggregate.
 pub(crate) struct CommandOutput {
-    pub(crate) exit_code: i32,
+    pub(crate) exit_code: Option<i32>,
+    // ALAB(shell-output): keep a terminal status independently of an observed exit.
+    reported_status: Option<CommandExecutionStatus>,
     /// The finalized, interleaved stderr and stdout that replaces any streamed preview.
     aggregated_output: String,
     /// The live preview while command-output deltas are still arriving.
@@ -27,28 +30,10 @@ pub(crate) struct CommandOutput {
 }
 
 impl CommandOutput {
-    pub(crate) fn from_execution(
-        status: codex_app_server_protocol::CommandExecutionStatus,
-        exit_code: Option<i32>,
-        source: ExecCommandSource,
-        output: Option<String>,
-    ) -> Self {
-        let exit_code = if status == codex_app_server_protocol::CommandExecutionStatus::Completed {
-            exit_code.unwrap_or_default()
-        } else {
-            exit_code.filter(|code| *code != 0).unwrap_or(1)
-        };
-        let output = if source == ExecCommandSource::UnifiedExecInteraction {
-            String::new()
-        } else {
-            output.unwrap_or_default()
-        };
-        Self::new(exit_code, output)
-    }
-
     pub(crate) fn new(exit_code: i32, aggregated_output: String) -> Self {
         Self {
-            exit_code,
+            exit_code: Some(exit_code),
+            reported_status: None,
             aggregated_output,
             live_output: None,
         }
@@ -162,7 +147,7 @@ impl ExecCell {
         &mut self,
         call_id: &str,
         output: CommandOutput,
-        duration: Duration,
+        duration: impl Into<Option<Duration>>,
     ) -> bool {
         let Some(call) = self
             .group
@@ -174,28 +159,25 @@ impl ExecCell {
             return false;
         };
         call.output = Some(output);
-        call.duration = Some(duration);
+        call.duration = duration.into(); // ALAB(shell-output): an unreported duration is distinct from zero.
         call.start_time = None;
         true
     }
 
     pub(crate) fn should_flush(&self) -> bool {
         // Exploration stays open for adjacent calls, including after a failed read/list/search.
-        !self.is_exploring_cell() && self.group.calls.iter().all(|c| c.duration.is_some())
+        !self.is_exploring_cell() && self.group.calls.iter().all(|c| !c.is_pending())
     }
 
     pub(crate) fn mark_failed(&mut self) {
         for call in self.group.calls.iter_mut() {
-            if call.duration.is_none() {
-                let elapsed = call
-                    .start_time
-                    .map(|st| st.elapsed())
-                    .unwrap_or_else(|| Duration::from_millis(0));
+            if call.is_pending() {
+                let elapsed = call.start_time.map(|st| st.elapsed());
                 call.start_time = None;
-                call.duration = Some(elapsed);
+                call.duration = elapsed;
                 call.output
                     .get_or_insert_with(CommandOutput::default)
-                    .exit_code = 1;
+                    .set_result(CommandExecutionStatus::Failed, None);
             }
         }
     }
@@ -205,14 +187,14 @@ impl ExecCell {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.group.calls.iter().any(|c| c.duration.is_none())
+        self.group.calls.iter().any(ExecCall::is_pending)
     }
 
     pub(crate) fn active_start_time(&self) -> Option<Instant> {
         self.group
             .calls
             .iter()
-            .find(|c| c.duration.is_none())
+            .find(|c| c.is_pending())
             .and_then(|c| c.start_time)
     }
 
@@ -276,3 +258,6 @@ impl ExecCall {
 #[cfg(unix)]
 #[path = "../../../alab-tui/glue/retained_history_command_output.rs"]
 pub(super) mod alab_retained_output; // ALAB(retained-ui): preserve exact native activity state and shared graph identity.
+
+// ALAB(shell-output): keep observed command outcomes in live and restored cells.
+include!("../../../alab-tui/glue/command_completion.rs");

@@ -15,8 +15,18 @@ use std::sync::OnceLock;
 
 /// Joined runtime format: Core/config, goals, input and terminal startup. Bump
 /// whenever a nested schema or receiver contract becomes incompatible.
-pub const VERSION: u32 = 2;
-pub const MAGIC: &[u8] = b"codex-runtime-state-v2\n";
+pub const VERSION: u32 = 5;
+pub const MAGIC: &[u8] = b"codex-runtime-state-v5\n";
+// The released v2 format and this v5 format retain client-input records. The resolved-media v3
+// and v4 readers live with upstream's resolved user input representation.
+const READABLE_FORMATS: &[(u32, &[u8])] = &[(2, b"codex-runtime-state-v2\n"), (VERSION, MAGIC)];
+
+pub(crate) fn reader_versions() -> Vec<u32> {
+    READABLE_FORMATS
+        .iter()
+        .map(|(version, _)| *version)
+        .collect()
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Frame<'a> {
@@ -57,12 +67,12 @@ pub fn encode(
             editor: serde_json::from_slice(editor)?,
         },
     };
-    let mut bytes = MAGIC.to_vec();
-    serde_json::to_writer(&mut bytes, &frame)?;
-    if bytes.len() > upgrade_exec_custody::MAX_STATE_BYTES {
-        return Err(invalid("oversized runtime state"));
-    }
-    Ok(bytes)
+    crate::upgrade_frame::encode(
+        MAGIC,
+        &frame,
+        upgrade_exec_custody::MAX_STATE_BYTES,
+        "oversized runtime state",
+    )
 }
 /// Parse the terminal envelope while leaving Core/config data opaque. A reader
 /// separately validates its own schema and independently obtains native authority.
@@ -70,11 +80,12 @@ pub fn data(bytes: &[u8]) -> io::Result<Frame<'_>> {
     if bytes.len() > upgrade_exec_custody::MAX_STATE_BYTES {
         return Err(invalid("oversized runtime state"));
     }
-    let body = bytes
-        .strip_prefix(MAGIC)
+    let (version, body) = READABLE_FORMATS
+        .iter()
+        .find_map(|(version, magic)| bytes.strip_prefix(*magic).map(|body| (*version, body)))
         .ok_or_else(|| invalid("unknown runtime state frame"))?;
     let frame: Frame<'_> = serde_json::from_slice(body)?;
-    if frame.version != VERSION {
+    if frame.version != version {
         return Err(invalid("incompatible runtime state version"));
     }
     frame.terminal.startup.validate()?;
@@ -92,8 +103,10 @@ pub fn goal_bytes<'a>(bytes: &'a [u8], expected_primary: &str) -> io::Result<&'a
 /// Retain the complete original frame through startup, including failures. Its
 /// opaque goal body is not a native SDK source or permission to resume work.
 pub struct Pending {
+    deadline: tokio::time::Instant,
     bytes: Arc<[u8]>,
     primary: String,
+    continuation: tokio::sync::OnceCell<Arc<dyn codex_alab_core::runtime_upgrade::Continuation>>,
 }
 impl Pending {
     pub fn primary(&self) -> &str {
@@ -106,6 +119,42 @@ impl Pending {
             ));
         }
         Ok(())
+    }
+    /// One startup deadline covers constructor loading, workspace selection
+    /// and restoration on the final embedded server.
+    pub fn deadline(&self) -> tokio::time::Instant {
+        self.deadline
+    }
+    /// Bind this exact checkpoint to the fresh native constructor before the
+    /// CLI loads ordinary configuration or connects to an app server.
+    pub async fn admit(&self) -> io::Result<()> {
+        self.continuation
+            .get_or_try_init(|| async {
+                let host = codex_alab_core::native_source_launch::runtime_upgrade()?;
+                let build = upgrade_exec_custody::adopted_build()
+                    .ok_or_else(|| invalid("runtime restoration has no admitted package"))?;
+                tokio::time::timeout_at(
+                    self.deadline,
+                    host.load(self.primary(), self.bytes(), build),
+                )
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "native runtime load deadline elapsed",
+                    )
+                })?
+            })
+            .await?;
+        Ok(())
+    }
+    pub fn continuation(
+        &self,
+    ) -> io::Result<Arc<dyn codex_alab_core::runtime_upgrade::Continuation>> {
+        self.continuation
+            .get()
+            .cloned()
+            .ok_or_else(|| invalid("runtime startup has no native continuation"))
     }
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -141,39 +190,94 @@ impl Drop for Recovery {
 /// before a runtime or credential/config reader. Other opaque namespaces remain
 /// owned by their consumers. This does not authenticate SDK constructor grants.
 pub fn stage_before_runtime() -> io::Result<Recovery> {
-    let Some(bytes) =
-        upgrade_exec_custody::take_state_if(|bytes| bytes.starts_with(b"codex-runtime-state-"))
-    else {
-        return Ok(Recovery {
-            installed: false,
-            cleanup: None,
-        });
-    };
-    if PENDING.get().is_some() {
-        return Err(invalid("runtime startup state was already installed"));
-    }
-    let parsed = data(&bytes)?;
-    upgrade_startup::restore(
-        parsed.terminal.startup,
-        &parsed.terminal.modes,
-        parsed.terminal.input.get().as_bytes(),
+    let installed = upgrade_exec_custody::install_state_if(
+        |bytes| bytes.starts_with(b"codex-runtime-state-"),
+        |bytes| {
+            // The custody lock serializes this module's only Pending publisher.
+            // A rejected install retains the original frame, never absence.
+            if PENDING.get().is_some() {
+                return Err(invalid("runtime startup state was already installed"));
+            }
+            let parsed = data(bytes)?;
+            let pending = Pending {
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(120),
+                bytes: Arc::from(bytes),
+                primary: parsed.primary,
+                continuation: tokio::sync::OnceCell::const_new(),
+            };
+            upgrade_startup::restore(
+                parsed.terminal.startup,
+                &parsed.terminal.modes,
+                parsed.terminal.input.get().as_bytes(),
+            )?;
+            let recovery = Recovery {
+                installed: true,
+                cleanup: None,
+            };
+            PENDING
+                .set(pending)
+                .map_err(|_| invalid("runtime startup state was already installed"))?;
+            Ok(recovery)
+        },
     )?;
-    let recovery = Recovery {
-        installed: true,
+    Ok(installed.unwrap_or(Recovery {
+        installed: false,
         cleanup: None,
-    };
-    let primary = parsed.primary;
-    PENDING
-        .set(Pending {
-            bytes: bytes.into(),
-            primary,
-        })
-        .map_err(|_| invalid("runtime startup state was already installed"))?;
-    Ok(recovery)
+    }))
 }
 pub fn pending() -> Option<&'static Pending> {
     PENDING.get()
 }
 fn invalid(why: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_existing_frames_and_writes_the_queued_result_format() {
+        // Frozen 0.11 terminal envelope. Its decoder leaves goals, editor and input
+        // opaque here.
+        const RELEASED: &[u8] = br#"codex-runtime-state-v2
+{"version":2,"primary":"00000000-0000-4000-8000-000000000001","goals":null,"terminal":{
+  "input":{"version":1,"buffer":[],"ready":[],"escape":null,"discarded_sequence":null},
+  "modes":{"version":1,"operating_system":"macos","terminal":{"device":1,"inode":2,"rdevice":3},
+    "original":{"flags":[11010,3,19200,1483],"characters":[4,255,255,127,23,21,18,255,3,28,26,25,17,19,22,15,1,0,20,255],"input_speed":9600,"output_speed":9600,"line":0},
+    "running":{"flags":[10240,2,19200,67],"characters":[4,255,255,127,23,21,18,255,3,28,26,25,17,19,22,15,1,0,20,255],"input_speed":9600,"output_speed":9600,"line":0}},
+  "startup":{"version":1,"cursor":[0,0],"colors":null,"enhanced_keys":false,
+    "terminal_app_over_ssh":false,"reports_key_releases":true,"da1_supported":false,"tmux_image_base":null,
+    "viewport":[0,0,80,24],"saved_viewport":null,"hidden_cursor":true,"visible_history_rows":0,
+    "screen":{"active":true,"mouse_active":true,"mouse_capture_disabled":false,"input_configured":true,
+      "keyboard_active":true,"parent_reports_key_releases":true,"pointer":0},
+    "focused":true,"owned_screen":true,"alt_screen_enabled":true,"mouse_capture":0},
+  "editor":{"synthetic_terminal_failure_fixture":true}}}"#;
+        let mut previous = data(RELEASED).unwrap();
+        let encoded = encode(
+            &previous.primary,
+            previous.goals.get().as_bytes(),
+            previous.terminal.input.get().as_bytes(),
+            &previous.terminal.modes,
+            &previous.terminal.startup,
+            previous.terminal.editor.get().as_bytes(),
+        )
+        .unwrap();
+        let v2 = b"codex-runtime-state-v2\n".as_slice();
+        let v5 = b"codex-runtime-state-v5\n".as_slice();
+        previous.version = VERSION;
+        let mut expected = v5.to_vec();
+        expected.extend(serde_json::to_vec(&previous).unwrap());
+        assert_eq!(encoded, expected);
+        let current_body = encoded.strip_prefix(v5).unwrap();
+        assert_eq!(data(&encoded).unwrap().version, 5);
+        assert_eq!(reader_versions(), [2, 5]);
+        for mismatched in [
+            [v2, current_body].concat(),
+            [v5, RELEASED.strip_prefix(v2).unwrap()].concat(),
+            [b"codex-runtime-state-v4\n", current_body].concat(),
+        ] {
+            assert!(data(&mismatched).is_err());
+        }
+    }
 }

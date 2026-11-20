@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "base": "bc63849ff6ba67033e6887bf7c37c18c7bd631ad",
+  "target": "fecf5cc672538029b3b1adc00204a78e416a19a3",
+  "frontier": "bc63849ff6ba67033e6887bf7c37c18c7bd631ad",
+  "commits": [
+    {
+      "sha": "8bbe7c7d66e5a0b22e516659d058a48ed019374f",
+      "subject": "Make Guardian V3 routing and retrieval guidance configurable (#62372)",
+      "paths": [
+        "codex-rs/app-server/src/extensions.rs",
+        "codex-rs/config/src/loader/mod.rs",
+        "codex-rs/config/src/loader/tests.rs",
+        "codex-rs/config/src/merge.rs",
+        "codex-rs/config/src/merge_tests.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/guardian/attached_review.rs",
+        "codex-rs/core/src/guardian/reviewer_config.rs",
+        "codex-rs/core/src/guardian_review.rs",
+        "codex-rs/ext/guardian-v3/src/actor.rs",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper_sampler.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/guidance.rs",
+        "codex-rs/features/src/feature_configs.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/features/src/tests.rs",
+        "codex-rs/thread-manager-sample/src/main.rs"
+      ],
+      "classes": [
+        "feature",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry configurable Guardian guidance under the upstream feature settings. Keep the repository-level trust boundary and existing ALab defaults.",
+      "evidence": [
+        "The project config loader strips routing and retrieval instructions and their token cap. Prompt settings alone do not enable Guardian.",
+        "The sampler accounts for custom guidance and schema size, chooses a prefix of complete evidence items, and leaves the cursor in place when the first record cannot fit.",
+        "The fork changes packaged defaults and profile loading in this loader. Those hooks are separate from the project guidance filter."
+      ],
+      "revisit": "Run prompt filtering and limit tests, bounded routing and the packaged policy checks after integration."
+    },
+    {
+      "sha": "d7c289ec258b5810ee0a5532039b645cf57cc14d",
+      "subject": "Add opt-in in-memory message boards for Guardian v3 (#62373)",
+      "paths": [
+        "codex-rs/core/config.schema.json",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/features/src/feature_configs.rs",
+        "codex-rs/features/src/tests.rs",
+        "codex-rs/message-board/src/local.rs",
+        "codex-rs/message-board/src/local/options.rs",
+        "codex-rs/state/src/sqlite.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Keep file-backed Guardian boards as the default. Carry the isolated in-memory board for fresh or cleared roots when explicitly configured.",
+      "evidence": [
+        "The writer and restricted reviewer share a SQLite pool. A new root receives its own board and the last closed handle releases it.",
+        "The host checks history initialization before opening a memory board. A cold-resumed root cannot recover evidence from a prior in-memory board.",
+        "The restriction concerns attached Guardian review. It leaves ordinary conversation resume, model promotion and persisted thread history available."
+      ],
+      "revisit": "Exercise the upstream file and memory catch-up cases and cold resume before release."
+    },
+    {
+      "sha": "fecf5cc672538029b3b1adc00204a78e416a19a3",
+      "subject": "Reconsider denials in attached Guardian reviews (#62374)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/guardian_v3_sync_tests.rs",
+        "codex-rs/core/src/guardian/attached_review.rs",
+        "codex-rs/core/src/guardian/review_session.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Apply the existing opt-in denial reconsideration policy consistently to attached and standalone Guardian reviews.",
+      "evidence": [
+        "The shared verdict runner installs DenialResample only when the feature is enabled and removes it when the attempt finishes.",
+        "The attached path drains the interrupted sample at its deadline. Its first denial and rationale can survive the timeout. Cancellation and authority invalidation still have dedicated checks.",
+        "The app-server integration case covers identical resampling input, the second verdict and the timed-out retry on an actual pending MCP action."
+      ],
+      "revisit": "Run the app-server pending MCP review matrix and verify an interrupted second sample keeps the original denial."
+    }
+  ]
+}

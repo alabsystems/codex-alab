@@ -377,6 +377,13 @@ async fn restore(
         }
     }
     .map_err(anyhow::Error::msg)?;
+    if reload != 0 {
+        assert_ne!(fixture.config.cwd, secondary_cwd);
+        assert_eq!(
+            request.primary_resume_cwd(),
+            Some(fixture.config.cwd.as_path())
+        );
+    }
     let bootstrap = sender.bootstrap_upgrade_forest(request.clone()).await;
     if reload == 2 {
         let error = bootstrap
@@ -463,6 +470,21 @@ async fn restore(
     assert!(
         destination.requests().is_empty(),
         "first root sampled before the final root's native admission"
+    );
+    // A durable queue caller can reach a restored public root while native
+    // admission is held. Cancellation here must leave its message unaccepted.
+    let waiting_input =
+        configured.threads[&secondary_id].start_turn_if_idle(TurnInputRequest::user_input(vec![
+            UserInput::Text {
+                text: "cancelled before native release".into(),
+                text_elements: vec![],
+            },
+        ]));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), waiting_input)
+            .await
+            .is_err(),
+        "a queued caller obtained a turn before the native forest release"
     );
     if goal_case != 0 {
         let row = db

@@ -73,22 +73,22 @@ impl StartedData {
         let s = &original.session;
         Self {
             session: Session {
-                daybreak_enabled: s.daybreak_enabled.clone(),
+                daybreak_enabled: s.daybreak_enabled,
                 windows_sandbox_host: match s.windows_sandbox_host {
                     crate::app::WindowsSandboxHost::Local => Host::Local,
                     crate::app::WindowsSandboxHost::Mixed => Host::Mixed,
                     crate::app::WindowsSandboxHost::Remote => Host::Remote,
                     crate::app::WindowsSandboxHost::Unknown => Host::Unknown,
                 },
-                thread_id: s.thread_id.clone(),
-                forked_from_id: s.forked_from_id.clone(),
+                thread_id: s.thread_id,
+                forked_from_id: s.forked_from_id,
                 fork_parent_title: s.fork_parent_title.clone(),
                 thread_name: s.thread_name.clone(),
                 model: s.model.clone(),
                 model_provider_id: s.model_provider_id.clone(),
                 service_tier: s.service_tier.clone(),
-                approval_policy: s.approval_policy.clone(),
-                approvals_reviewer: s.approvals_reviewer.clone(),
+                approval_policy: s.approval_policy,
+                approvals_reviewer: s.approvals_reviewer,
                 permission_profile: s.permission_profile.clone(),
                 active_permission_profile: s.active_permission_profile.clone(),
                 cwd: s.cwd.clone(),

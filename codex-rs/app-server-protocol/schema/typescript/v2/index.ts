@@ -472,6 +472,7 @@ export type { RequestHeader } from "./RequestHeader";
 export type { RequestPermissionProfile } from "./RequestPermissionProfile";
 export type { ResidencyRequirement } from "./ResidencyRequirement";
 export type { ResponseUsageMetadata } from "./ResponseUsageMetadata";
+export type { RetainedConfiguredNotification } from "./RetainedConfiguredNotification";
 export type { RetainedFrontierFailure } from "./RetainedFrontierFailure";
 export type { RetainedFrontierNotification } from "./RetainedFrontierNotification";
 export type { RetainedFrontierOutcome } from "./RetainedFrontierOutcome";

@@ -44,6 +44,31 @@ use std::time::Instant;
 mod watch;
 pub use watch::directories as watch_directories;
 
+/// Native process and descriptor waits share this physical deadline. Start the async
+/// timer with the remaining budget, including after a runtime clock adjustment.
+pub(crate) async fn wait_until<T>(
+    deadline: Instant,
+    operation: impl Future<Output = T>,
+) -> Option<T> {
+    let remaining = deadline.checked_duration_since(Instant::now())?;
+    let mut operation = std::pin::pin!(operation);
+    let guarded = std::future::poll_fn(|cx| {
+        if Instant::now() >= deadline {
+            return std::task::Poll::Ready(None);
+        }
+        operation.as_mut().poll(cx).map(Some)
+    });
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep(remaining) => None,
+        value = guarded => value,
+    }
+}
+
+#[cfg(test)]
+#[path = "upgrade_deadline_tests.rs"]
+mod deadline_tests;
+
 #[cfg(test)]
 #[path = "upgrade_prepared_tests.rs"]
 mod prepared_tests;
@@ -252,11 +277,11 @@ pub(crate) fn pending() -> bool {
 }
 
 /// Report degraded notification delivery while the independent minute check keeps running.
-pub fn update_watch_error(message: impl Into<String>) {
+pub fn set_watch_error(error: Option<String>) {
     UPDATE_STATUS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .watch_error = Some(message.into());
+        .watch_error = error;
 }
 
 /// Read-only details for `/alab update`, available with either presentation setting.
@@ -285,7 +310,7 @@ pub fn update_report(source: &str) -> String {
         source_details(
             source,
             codex_alab_core::version::running_version(env!("CARGO_PKG_VERSION")),
-            codex_alab_core::version::upstream_release(),
+            codex_alab_core::version::display_baseline(),
             codex_alab_core::version::upstream_commit(),
         )
     )
@@ -470,12 +495,12 @@ fn local_channel_report(root: &Path, version: &str, selected_source: &str) -> Op
 fn source_details(
     source: &str,
     client_version: &str,
-    upstream_release: Option<&str>,
+    baseline: Option<&str>,
     upstream_commit: Option<&str>,
 ) -> String {
     format!(
         "Running ALab source: {source}\nCodex client version: {client_version}\nOpenAI Codex base: {}\nOpenAI source: {}",
-        upstream_release.unwrap_or("unreleased"),
+        baseline.unwrap_or("unreleased"),
         upstream_commit.unwrap_or("unavailable"),
     )
 }
@@ -510,7 +535,6 @@ fn status_report(
             "Notifications: {error}; checking the launch target every minute"
         ));
     }
-    lines.push("aterm installs package updates; this session resumes on the new build when its idle checks permit it.".into());
     lines.join("\n")
 }
 
@@ -536,6 +560,30 @@ mod status_tests {
         assert!(unknown.contains("Running ALab source: dev"));
         assert!(unknown.contains("OpenAI Codex base: unreleased"));
         assert!(unknown.contains("OpenAI source: unavailable"));
+    }
+
+    #[test]
+    fn installed_successor_with_unavailable_handoff_reports_the_observed_state() {
+        for reason in [
+            "aterm reports that live session handoff is unavailable",
+            "aterm has not confirmed support for live session handoff",
+            "timed out waiting for aterm to report live session handoff support",
+        ] {
+            let status = UpdateStatus {
+                pending: true,
+                state: Some(format!("Update pending: {reason}")),
+                ..UpdateStatus::default()
+            };
+            assert_eq!(
+                status_report("0.11.0", Some("0.12.0 (/package/bin/codex)"), None, &status),
+                format!(
+                    "Running codex-alab 0.11.0\n\
+                     Launch target: 0.12.0 (/package/bin/codex)\n\
+                     Launch source: unavailable\n\
+                     Last check: Update pending: {reason}"
+                )
+            );
+        }
     }
 
     /// A freshly installed package is not the image that runs this session. The report
@@ -1085,6 +1133,7 @@ impl PreparedExec {
     /// Recheck selection at the final source boundary. The launch shim must
     /// still select this exact admitted image rather than a newer replacement.
     pub fn validate_launch(&self, shared: &Shared) -> Result<(), String> {
+        selection_allows_upgrade(shared)?;
         self.validate()?;
         let selected = shared
             .launch()
@@ -1133,17 +1182,15 @@ pub async fn prepare_admitted(
     client: &codex_alab_aterm::Client,
     deadline: Instant,
 ) -> Result<PreparedExec, String> {
+    selection_allows_upgrade(shared)?;
     #[cfg(feature = "test-support")]
     if let Some(prepared) = test_support::prepare_if_registered(shared) {
         return prepared;
     }
-    let permit = tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        PREPARATION.acquire(),
-    )
-    .await
-    .map_err(|_| "another target preparation is still running".to_owned())?
-    .map_err(|error| error.to_string())?;
+    let permit = wait_until(deadline, PREPARATION.acquire())
+        .await
+        .ok_or_else(|| "another target preparation is still running".to_owned())?
+        .map_err(|error| error.to_string())?;
     let host = crate::upgrade_host::Host::capture(client)?;
     let image = shared
         .launch()
@@ -1200,9 +1247,24 @@ pub fn plan_for(
     })
 }
 
+// An in-place replacement would lose this process's confirmed principal or its frozen
+// restart custody. Surface the ordinary recoverable upgrade hold before native preparation.
+fn selection_allows_upgrade(shared: &Shared) -> Result<(), String> {
+    if codex_alab_core::bound_picker::expected().is_some() {
+        return Err("This session continues on its confirmed subscription. Open a new Codex session to use the update.".into());
+    }
+    if crate::session::selection_writer(shared).is_some_and(|writer| {
+        writer.manual_selection_state() != crate::session::ManualSelectionState::None
+    }) {
+        return Err("This session continues while its account switch is pending. Open /accounts to check its status.".into());
+    }
+    Ok(())
+}
+
 /// The exec for this process now: its launch, codex's clap definition, and the primary
 /// thread, whose rollout must be on disk (a resume cannot find it otherwise).
 pub fn exec_plan(shared: &Shared) -> Result<ExecPlan, String> {
+    selection_allows_upgrade(shared)?;
     let launch = shared.launch().ok_or("no launch snapshot")?;
     check_launch_cwd(launch.cwd.as_deref())?;
     let command = resume_argv::command().ok_or("codex's command line was not captured")?;

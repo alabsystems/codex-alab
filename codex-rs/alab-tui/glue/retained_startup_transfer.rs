@@ -268,7 +268,7 @@ impl PreparedStartup {
             max_bytes,
             max_generations,
         )?;
-        editor.install(&mut pump.bottom_pane)?;
+        editor.install_with_clock(&mut pump.bottom_pane, /*clock*/ None)?;
         // Every remaining operation is an infallible move after editor preflight.
         pump.initial_screen = match self.data.initial_screen {
             InitialScreenData::Composer => StartupDraftInitialScreen::Composer,

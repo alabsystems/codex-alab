@@ -18,7 +18,7 @@ async fn actual_direct_core_boundary_records_in_ephemeral_legacy_and_paginated_m
         ),
     ] {
         let model = MockServer::start().await;
-        let mut h = Harness::new_with_history_mode(&model.uri(), persistent, Some(mode)).await?;
+        let h = Harness::new_with_history_mode(&model.uri(), persistent, Some(mode)).await?;
         let result: Result<()> = async {
             let original = h.parent.prepare_retained_side_boundary()?;
             let checkpoint = original.clone();

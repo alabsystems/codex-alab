@@ -92,8 +92,7 @@ impl App {
         cell: &dyn HistoryCell,
         width: u16,
     ) -> Vec<HyperlinkLine> {
-        let mut display =
-            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+        let mut display = self.native_cell_lines(cell, width); // ALAB(image-history): paint pasted images into terminal-owned scrollback.
         if !display.is_empty() && !cell.is_stream_continuation() {
             if self.has_emitted_history_lines {
                 display.insert(/*index*/ 0, HyperlinkLine::new(Line::from("")));
@@ -114,6 +113,7 @@ impl App {
             tui.frame_requester().schedule_frame();
             return;
         }
+        #[cfg(any(windows, test))] let preceded_by_history = self.has_emitted_history_lines; // ALAB(banner): a session prefix follows one native separator when history precedes it.
         let display = self.display_lines_for_history_insert(cell, width);
         if display.is_empty() {
             return;
@@ -121,6 +121,10 @@ impl App {
         if self.overlay.is_some() {
             self.deferred_history_lines.extend(display);
         } else {
+            #[cfg(any(windows, test))] // ALAB(banner): preserve the art's original facts until its first inline write.
+            if let Some(art) = history_cell::SessionInfoCell::pending_inline_art(cell, width, self.chat_widget.history_render_mode(), preceded_by_history) {
+                return tui.queue_inline_launch(display, self.history_line_wrap_policy(), art);
+            }
             tui.insert_history_hyperlink_lines_with_wrap_policy(
                 display,
                 self.history_line_wrap_policy(),
@@ -664,8 +668,7 @@ impl App {
         while start > 0 {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
-            let lines = cell
-                .display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+            let lines = self.native_cell_lines(cell.as_ref(), width); // ALAB(image-history): rebuild the same preview rows on resize and replay.
             rendered_rows += lines.len();
             cell_displays.push_front(ReflowCellDisplay {
                 lines,
@@ -689,10 +692,7 @@ impl App {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
             cell_displays.push_front(ReflowCellDisplay {
-                lines: cell.display_hyperlink_lines_for_mode(
-                    width,
-                    self.chat_widget.history_render_mode(),
-                ),
+                lines: self.native_cell_lines(cell.as_ref(), width), // ALAB(image-history): include previews at the start of a continuation run.
                 is_stream_continuation: cell.is_stream_continuation(),
             });
         }
@@ -773,3 +773,5 @@ impl App {
 #[cfg(test)]
 #[path = "resize_reflow_tests.rs"]
 mod tests;
+
+#[path = "../../../alab-tui/glue/native_image_history.rs"] mod alab_image_history; // ALAB(image-history): render bounded thumbnail rows only for native scrollback.

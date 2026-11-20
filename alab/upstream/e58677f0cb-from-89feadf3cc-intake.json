@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "base": "89feadf3cca2a53d01bbf4c35ce53227704b2417",
+  "target": "e58677f0cbff983a3438a773fdd7c96a88ab0359",
+  "frontier": "89feadf3cca2a53d01bbf4c35ce53227704b2417",
+  "commits": [
+    {
+      "sha": "e58677f0cbff983a3438a773fdd7c96a88ab0359",
+      "subject": "Add task group navigation to the agent command center (#62200)",
+      "paths": [
+        "codex-rs/config/src/tui_keymap.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/tui/src/app/agent_center/hints.rs",
+        "codex-rs/tui/src/app/agent_center/mod.rs",
+        "codex-rs/tui/src/app/agent_center/navigation.rs",
+        "codex-rs/tui/src/app/agent_center_tests.rs",
+        "codex-rs/tui/src/app/agents_overview_view.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_custom_help.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_help_one_column.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_help_three_columns.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_help_two_columns.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_navigation_and_complete_hints.snap",
+        "codex-rs/tui/src/keymap.rs",
+        "codex-rs/tui/src/keymap/bindings.rs",
+        "codex-rs/tui/src/keymap_setup/actions.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_agents_actions.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_custom.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_fast_mode_enabled.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_first_actions.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_global_chord.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_narrow.snap",
+        "codex-rs/tui/src/snapshots/codex_tui__keymap_setup__tests__keymap_picker_wide.snap"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Expose upstream task-group jumps in the agent command center. Derive jump destinations from the visible row layout and keep bindings in the existing Agents keymap, search and rename handling, and shortcut display.",
+      "evidence": [
+        "Reviewed all 22 paths against parent 89feadf3cca2a53d01bbf4c35ce53227704b2417. Binary diff SHA-256 67e1f2eae4df33120acc7b85e9c0b21c69798e8dc7a26ed41b0c83522253f148.",
+        "Selection follows actual Group rows and clamps at either end. Both actions flow through the typed keymap and its local and chord registration. Shift arrows and uppercase letters use the existing keys.",
+        "The upstream source fixture covers forward and backward movement, both ends, text input during search, and a custom function binding during rename. Verify the live view and aterm key handling after integration, together with the retained keymap and slash navigation scenarios."
+      ],
+      "revisit": "Run live_center_navigates_sections, the center navigation and keymap fixture suites, and the aterm alias and chord dispatch checks on the integrated source."
+    }
+  ]
+}

@@ -697,6 +697,75 @@ fn snapshots() {
     }
 }
 
+#[test]
+fn cruise_deadline_uses_only_the_existing_opening_card_padding() {
+    let details = vec![
+        Line::from("model: GPT-6"),
+        Line::from("directory: ~/codex-alab"),
+        Line::from("permissions: YOLO mode"),
+    ];
+    for depth in DEPTHS {
+        let banner = Banner::new(Style::Codex, depth, Theme::default(), "0.12.0")
+            .with_upstream(Some("0.169.1".into()));
+        let draw = |width, mode, details: &[Line<'static>], deadline| {
+            super::codex::render_session_with_deadline(
+                &banner,
+                width,
+                mode,
+                details.to_vec(),
+                deadline,
+            )
+        };
+        for (width, facts, deadline, fits) in [
+            (15, details.as_slice(), "18:00", false),
+            (16, &details, "18:00", true),
+            (19, &details, "Fri 06:00", false),
+            (20, &details, "Fri 06:00", true),
+            (27, &details, "18:00", false), // Keep the Autopilot caption.
+            (28, &details, "18:00", true),
+            (28, &details, "Fri 06:00", false),
+            (31, &details, "18:00", false), // Keep the compact Codex mark.
+            (64, &[], "18:00", false),      // The mode shares this row with the kitty.
+            (68, &[], "18:00", true),
+            (80, &details, "Fri 06:00", true),
+        ] {
+            let mode = Some(Mode::Cruise);
+            let ordinary = draw(width, mode, facts, None);
+            let timed = draw(width, mode, facts, Some(deadline));
+            if !fits {
+                assert_eq!(timed, ordinary, "{width} {deadline} {depth:?}");
+                continue;
+            }
+            assert_eq!(ordinary.len(), timed.len());
+            let status = ordinary
+                .iter()
+                .position(|line| text(line).contains("∞ cruise"))
+                .unwrap();
+            for (row, line) in timed.iter().enumerate() {
+                if row != status {
+                    assert_eq!(line, &ordinary[row]);
+                }
+            }
+            let before = text(&ordinary[status]);
+            let after = text(&timed[status]);
+            let (left, right) = before.split_once("∞ cruise").unwrap();
+            let suffix = format!(" ⤓{deadline}");
+            let remaining = if before.ends_with('│') {
+                right.strip_prefix(&" ".repeat(suffix.width())).unwrap()
+            } else {
+                right
+            };
+            assert_eq!(after, format!("{left}∞ cruise{suffix}{remaining}"));
+        }
+        for mode in [None, Some(Mode::Off), Some(Mode::Land)] {
+            assert_eq!(
+                draw(80, mode, &details, Some("18:00")),
+                draw(80, mode, &details, None)
+            );
+        }
+    }
+}
+
 /// The harness row names the session's real Autopilot word under aterm's harness, as aterm's
 /// glass does: `∞ cruise`, `⤓ land`, and `○ off` for the harness on with Autopilot off.
 /// The row disappears where the full mode will not fit. Negative controls: no row with no supervisor or unsupervised, and no

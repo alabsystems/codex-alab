@@ -2,6 +2,1026 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Parallel logins and quota rotation
 
+Signed Codex 0.11.0 kept two real subscriptions signed in on m159. In an idle
+conversation, `/accounts use <label>` switched to the other subscription and
+preserved the thread. Open `/accounts` to see the slots on your Mac.
+[Enrollment and switching instructions](interface.md#sign-in-and-separate-accounts)
+
+Signed aterm 0.208.0 and 0.209.0 both failed to switch automatically when a
+test subscription hit its weekly limit during a turn. A locally built aterm
+completed automatic switches in tests with two and three fresh sign-ins.
+When the first two subscriptions reached their weekly limits, the third
+finished the same turn. The fix has not shipped.
+[Signed-host trials](#automatic-switching-in-the-full-aterm-host-on-m74-november-18) ·
+[Three-account development trial](#three-registry-logins-on-the-integrated-development-host-november-20-utc)
+
+Signed aterm 0.209.0 on m159 also preserved the conversation when switching
+from a named account whose credential path the parent shell had exported.
+The test used the installed Codex 0.11.0 and its ordinary signed-in accounts.
+
+## Installed Codex 0.11.0 verification, 2026-11-17
+
+The installed package from `70d6391259` completed two concurrent
+`codex login --device-auth` flows against a loopback issuer, starting with
+empty account slots and one shared Codex home. Each `codex exec` request
+presented the exact bearer and account ID issued for its slot. Both requests
+completed, both credential files retained their post-login hashes, and the
+shared home contained no default credential. Reproduce with
+`alab/smoke/parallel_logins.py --package <package> --count 2 --device-login --output <new-directory>`.
+
+The same package passed `weekly-quota-chain` and `weekly-quota-exhausted`
+against a native host built from clean aterm commit `7caf64284b7`.
+The first case consumed two handoffs across three fixture subscriptions and
+completed the original turn with its input and tool results. The second kept
+the original task when every subscription was exhausted.
+
+On m74, the native registry probe found two OpenAI account associations. One
+was preferred and the other was observed in the default login. Installed
+aterm 0.206.0 reported a single roster row and an identity mismatch for that
+row. A shared-file refresh followed by a named account add was refused at
+native receipt admission. A staged renewal of the preferred account stopped
+at the provider challenge. A switch between two live subscriptions on m74
+remains unverified.
+
+On November 19 the read-only registry probe on m74 again found two distinct
+OpenAI account associations for m74. Both stable account keys from its installed
+Codex roster matched the registry associations for that same machine. The same
+local registry replica returned zero for m159. On m159, the local check described below
+verified both sign-ins by loading each login. Registry associations and local sign-in state
+come from separate reads.
+
+The November 19 `--here` check on m74 found one signed machine registration
+and two distinct registered sign-in addresses. Both account keys matched the
+local roster. The Registry preferred one account and placed the other on this
+Mac. After the update to signed aterm 0.209.0 (build `1795094132`), the
+same two assignments still matched the roster. Aterm could confirm an
+enrolled login for one slot. The live overview stopped at the enrollment
+check before opening either account for a provider request.
+
+Two complete reads of `aterm db alab mail` on m74 matched the preferred
+subscription's registered login address to one live mailbox through a
+provider observation. The placed subscription's login address had no
+effective Registry route. On signed aterm 0.209.0, `--here --show-mail-routes`
+confirmed the same two assignments and matched the preferred account's
+observed route to a live mailbox. It exited 1 because the placed account
+still had no effective route. The command reads replicated routing
+metadata. A later check found no explicit mailbox owner on either address.
+At 02:43 UTC on November 20, lookup by m74's stable machine key and by
+`--here` agreed on both accounts. At 03:10 UTC, `--here --show-alias-declarations`
+read each selected address twice, reported `absent` for both, and exited 0.
+The separate mail-route check at 03:11 UTC exited 1. The preferred login
+had an `observed` mailbox and the placed login had `no-effective-route`.
+Local delivery remains unverified.
+
+At 19:20 UTC on November 19, the empty slot on m74 was the preferred
+account with the observed mailbox route. The placed account had an enrolled
+login matching its slot. Signed aterm 0.209.0 listed no `sign-in needed`
+instruction for either row. The overview identified the empty slot and
+directed the operator to `/accounts add` before making a provider request.
+
+To discover the registered sign-in addresses of OpenAI accounts currently
+preferred or placed on this Mac, run the following in the checkout.
+
+```sh
+python3 alab/account_registry_probe.py --here --show-logins
+```
+
+The probe reads aterm's published `lab/machines` file before and after
+the account lookup. Both reads must identify the same live `here=yes` row.
+To look up a named machine, pass `--machine "$machine"` with its exact
+Registry label or stable key. Each returned account has a `registered_login`
+field, which can be an alias.
+The probe checks the machine twice and verifies each account’s login reference
+and unique reverse lookup across the reads. It compares the keys and login
+fields in the typed tables with the complete, live Registry views from
+`aterm db ai-accounts --registry` and `aterm db emails`. Discovery requires
+both views to report their standing. A changed association or binding, an
+incomplete view, or a dispute that could claim a selected login withholds
+every address. An unrelated login dispute can coexist with a verified result
+when both Registry views agree on its candidates. Only a current machine
+preference or placement qualifies an account for this view.
+Use the live check below to verify the subscriptions can authenticate.
+
+To check just the saved alias links, use `--here --show-alias-declarations`.
+The report gives each assigned login's `alias_declaration` from the Registry
+address table and can run without mailbox metadata.
+
+To see which mailbox the Registry lists for a selected login's verification mail,
+run `python3 alab/account_registry_probe.py --here --show-mail-routes`.
+It looks up both the registered address and its mailbox twice. Each reported
+route includes the mailbox's stable key and the Registry evidence (`owner`
+or `observed`). Two logins can report the same mailbox.
+`mail_route.alias_declaration` describes the registered login address's own
+`alias_of` field. Its value is `declared` for a stored address reference,
+`absent` for an unset field, `disputed` for competing references or clears,
+and `unconfirmed` for a raw, invalid or unavailable field. A declared link
+can have no effective inbox. A provider observation can establish an inbox
+when the alias is absent. A route that follows a raw or disputed alias is
+`unconfirmed` even when the native summary shows a mailbox. The probe keeps
+all alias targets private. It withholds the report if a settled alias it
+checks disagrees with the native mail summary or changes between reads.
+The native mail view does not supply the mailbox's login address.
+A `no-effective-route` row means
+the Registry returned no destination for that login. If its typed address
+assigns a live owner mailbox directly or reaches one through confirmed
+explicit aliases, an empty summary disagrees with those records. The route is
+`unconfirmed` and the probe withholds the mailbox key. The probe checks the
+selected mailbox's lifecycle against its typed Registry row. A legacy row
+with an unwritten lifecycle is live. If a typed address detail marks the
+address or lifecycle as raw or disputed, a route through that address is
+`unconfirmed`, including a direct owner or provider observation at that
+address. The probe also withholds the mailbox key when a field used to
+select the destination is marked raw or disputed. This includes protection
+on a tagged address's base and a mailbox hint consulted before falling back
+to a provider observation. An owner mailbox takes
+precedence over an alias link. A hint, a routing rule, or a mailbox with a
+disputed lifecycle also yields `unconfirmed`. Exit 1
+indicates that an assignment count or route was unresolved, and exit 2
+indicates an unavailable or changing lookup. The command reads Registry
+metadata only.
+
+To check addresses you already know and report the resolved account keys,
+supply the registered login addresses as expectations.
+
+```sh
+python3 alab/account_registry_probe.py --machine "$machine" \
+  --expect-login "$first_login" --expect-login "$second_login"
+```
+
+The probe resolves each requested address to a live address row and then to
+the unique live OpenAI account whose `login` references it. The same complete
+account and email views corroborate both reads. A provider's canonical identity
+and the receiving mailbox can each have a different address. The resulting
+keys are in request order. If several machines share the requested label, the
+login check returns `ambiguous-machine` without listing their accounts. Use
+the intended machine's stable `mc-` key to select it. An unresolved or ambiguous
+login, or a binding that changes between reads, leaves the result unverified.
+Before reporting a match or a missing key, the probe rechecks the selected
+machine, its seats, preferences, placements and retained observations. A
+change in the sources associating a login with the machine leaves the answer
+unverified. An updated observation on the same machine can supply fresh
+observation metadata for a stable association.
+Named login lookups omit account labels and unrecognized observation CLI
+names. A lookup by machine key or by an email-shaped machine label identifies
+the machine by its stable key in the report.
+If the stable keys are known, use `--expect-account "$first_account_key"
+--expect-account "$second_account_key"` in place of the two login selectors.
+
+The probe checks that the selected machine has an association for each
+requested key. Other OpenAI accounts may also be present. A missing key means
+the completed Registry reads contained no association for it on that machine.
+
+The machine’s `machine_facts_seat_count` gives the number of signed registrations
+recorded for it. In a disposable Mac test, two Registry replicas agreed on both
+subscription assignments and their receiving mailboxes. The planned machine
+had zero signed registrations, and aterm declined to import its accounts.
+A positive count applies to the machine selected in the report. Identifying
+the Mac running the probe requires its own matching registration.
+
+If the Registry is unavailable, the identities of the accounts it assigns to
+the machine remain unknown. A command receipt with `commons-membership-not-ready`
+means the local Commons service refused the table read because its membership
+was not ready. The `local_account_file` entry describes the separately
+materialized snapshot. On m159, `aterm members status` confirmed fleet
+membership while the table reads still refused access. The read-only
+`aterm db commons-lineage` command also reported that writer succession
+was preserving old records. The Commons runtime advances writer recovery.
+After table access returns, repeat the probe to verify the Registry bindings.
+The live subscription check below can verify both provider logins and
+their allowances while the Registry is unavailable.
+
+If the `--here` diagnostic reports `published_file.state` as `never` and
+`complete` as `false`, this Mac has no published Registry machine table.
+The command receipt records the native reason when recognized. The account
+overview can still check the two enrolled logins with `--overview` alone.
+When `--overview --registry-here` finds this on its first read, it shows how to
+repeat the local check with the same options and any named provider addresses.
+
+From the checkout, select Python 3.11 or newer for the account checks in this
+guide. The second command verifies the subscriptions assigned to this Mac.
+
+```sh
+account_python="$(bash -c 'source alab/lib.sh && alab_python_311')"
+"$account_python" alab/smoke/live_account_quota.py --overview --registry-here
+```
+
+With at least two assignments, the check confirms the local machine and
+each assigned account before opening their slots. It reads up to two
+subscriptions at a time. Before starting another batch or retrying a read,
+it checks that the Registry still assigns those accounts to this Mac and
+that aterm still matches them to the same slots. It checks the registrations
+again before showing results. Replacing a registration stops the check even
+if the machine key and assigned accounts stay the same.
+
+To compare local logins with a particular Registry machine, use
+`--registry-machine "$machine"` with its label or stable key. Each local
+login must pass its provider check and keep the same unique enrolled account
+key across the observations. The report distinguishes a preference, a placement
+and a retained observation. It reports a missing association only after a
+complete read for one identified machine. A held or locally edited working
+view leaves the association unverified when the host reports that provenance.
+A failed Registry check returns a nonzero exit and preserves the live account
+results. Omit `--overview` for JSON, or add `--defaults` to check fresh
+thread defaults as well.
+
+With more than two local roster entries, a read-only `--registry-machine`
+lookup without addresses selects that machine's two current assignments.
+For `--registry-here`, every assigned subscription joins the check in
+Registry order. Both modes match the registered sign-in address and stable
+key to the local roster and verify each provider identity. A reassignment
+withholds the report. To check a specific pair, supply its two provider
+addresses. An explicit `--refresh` on a larger roster requires those addresses.
+To check whether the Registry saved an alias for an assigned login, use
+the [`--show-alias-declarations` lookup](interface.md#sign-in-and-separate-accounts).
+
+### Live registry binding on m74, 2026-11-18
+
+A normal release-profile CLI built from aterm v0.206.0 with the settled
+machine-label fix (`6b6dfb68cc8`) admitted the native add of the exact second
+registry key. Both rows then appeared in installed aterm. The existing default
+login belonged to the newly added pool row. Sync still refused to bind it,
+because it searched only the preferred account list for the declaration.
+
+With the pool-account identity check also applied (trial source `03b7e557afe`,
+binary SHA-256 `cc6b8608bafe8be50f43a0833975c6a536679cc56bcd09c4cd98805bef16268c`),
+`aterm harness accounts sync alab --cli codex --json` succeeded. The
+installed 0.206.0 roster selected `oai-45e23d5c93058fd5` for the next launch.
+Using the registered default login, the installed Codex 0.11.0 app server
+returned the matching identity from `account/read` and a `promax` usage
+snapshot with allowance windows and `ordinaryUsageAllowed=true` from
+`account/rateLimits/read`. No credential was copied or displayed. The
+preferred row still needs its own provider sign-in. The rotated three-account
+run above used a test provider.
+
+### Local enrollment on m159, 2026-11-18
+
+The initial roster marked the default slot usable, but the identity reported
+by its credential belonged to the other requested subscription. The corrected
+roster associates the default slot with that identity and gives the second
+subscription its own directory. On signed Codex 0.11.0, the default slot
+returned the expected email and a Pro Max plan from `account/read` and a live
+allowance from `account/rateLimits/read`.
+
+The ordinary browser initially returned the default identity again. Native
+enrollment rejected the mismatch and preserved both bindings. A subsequent
+interactive request in the second subscription's own browser profile reached
+OpenAI's email verification step. The native mail connector refused to read
+from a mailbox whose identity it could not verify. At that checkpoint only
+the default slot had passed the live checks.
+
+The account owner identified the receiving inbox for the alias. The native
+mail connector read the matching verification email there, the provider
+accepted the code, and the consent page displayed the expected account before
+approval. Native enrollment then bound the second login. Two concurrent
+installed app servers, one per slot, each returned its expected email, a Pro
+Max plan and live quota. Both native credential observations matched the roster.
+
+The default subscription completed an inference request. The other
+subscription returned a usage-limit error both on a fresh thread and after
+resuming a thread from the default subscription. Its live quota showed 100%
+used, with a reset at 09:23 Pacific on November 20. Resuming the limited
+subscription's thread on the default subscription completed a turn on its
+original thread ID. These first probes used the app-server protocol directly.
+
+After those turns, aterm 0.207.0 still listed the limited account as usable
+and first in the launch order. A second pair of concurrent provider reads
+showed weekly usage of 100% and 2% for the two respective subscriptions.
+The account pane therefore offers a switch request based on the host's cached
+eligibility. The destination's live allowance is checked at launch.
+
+For a two-account verification, check the expected email and a successful
+quota response separately for each slot. A roster condition can describe an
+existing credential even when its identity differs from the roster address.
+Run `python3 alab/smoke/live_account_quota.py <first-email> <second-email>`
+on the enrolled Mac to repeat the check with the installed Codex. It opens
+two app servers with separate temporary configuration homes, checks the
+requested identities against distinct provider account IDs and reports each
+subscription's live usage windows. Each quota read skips the separate
+reset-credit detail lookup. A full window is a valid result. The check sends
+no model request and does not change the pool assignment.
+If one login is missing, the report still includes the other account's live
+result and exits with status 1 because the pair could not be verified.
+The address lookup, live check and renewal check use aterm's ASCII
+case-insensitive email comparison. The two requested addresses must remain
+distinct under that rule. Dots and plus tags remain part of the address.
+A successful live row shows the provider's spelling and follows request order.
+The `ordinaryUsageAllowed` field reports the provider's decision for that
+login. A null value means permission is unknown, even if a usage window
+shows remaining quota.
+If the provider allows ordinary usage and simultaneously reports a spending
+block, a reached limit, an exhausted individual allowance or an upsell, the JSON
+retains its permission flag and adds `ordinaryUsageConflict: true`. The human
+overview displays `Unknown` for that combination, as the native inspector does.
+The overview withholds a switch request when the provider reports a reached
+spend control or rate limit, even if ordinary usage is allowed or unknown.
+A fresh check restores the command when it finds the switch available again.
+On signed Codex 0.11.0, the Enhanced composer footer shows the connected
+email and weekly usage as soon as the account loads. When the footer shortens
+the address, click its account section or open `/alab account` to see the full
+email. After a switch, `/status` shows the connected email and conversation ID
+together.
+
+Use `"$account_python" alab/smoke/live_account_quota.py --overview` for a single
+terminal view of the two subscriptions. It shows each account's full email,
+configured switch label, provider permission and reported windows. It discovers
+the pair when the roster contains exactly two distinct provider addresses.
+On larger rosters, supply the two addresses to check or select the Registry
+machine as described above. Because a label can be
+reassigned during the provider calls, the report displays it only when the
+address has the same unique label at discovery and in the roster samples on
+either side of the final native observation. A conflicting switch label in
+that observation also withholds the label. An unavailable label or a failed
+account check returns status 1 and keeps the other results visible.
+When aterm explicitly selects no roster account for the next launch, the
+overview reports that decision after confirming the selected identities and
+the same host decision across roster reads. The host's diagnostic can include
+private paths and addresses. The overview displays only the launch outcome.
+Add `--show-logins` to display a configured sign-in address that differs from
+its provider email. The overview shows it only while the native roster and
+credential binding agree on the alias and the provider verifies the account.
+A verified label stays visible when the provider blocks ordinary usage or the
+host reports a hold, a usage limit, a sign-out or missing enrollment. A refusal
+in any sampled roster withholds the switch command for that check. Each login
+and quota result keeps its own verification status.
+On signed aterm 0.208.0, an isolated roster kept the same label and address
+while a renewal binding moved its effective credential directory. The
+overview withdrew that switch command and kept the sibling's command.
+Editing the directory in the roster produced the same result.
+When aterm refused the whole roster, both commands disappeared. A stable
+renewal directory and a stable default login kept both commands. All five
+cases used native roster reads and synthetic provider results.
+
+The sign-in line confirms the slot's identity independently of
+its allowance. A final aterm observation must still tie that address to the same
+credential path. A change to the effective slot withdraws its verification even
+when the old file, switch label and email all survive. If an ordinary renewal
+replaces a credential at that same path during the check,
+the probe opens the replacement once and checks its email, subscription ID
+and quota again. If the old quota call failed, the first identity reply must
+already have confirmed a distinct workspace before the replacement can be
+checked. A vanished slot or a second change withdraws that slot's
+result. The overview and ordinary JSON check both leave renewal to the
+signed CLI's ordinary credential handling.
+
+Run `"$account_python" alab/smoke/live_account_quota.py --labels-only` to list
+all configured addresses and their exact switch labels.
+This helps when the pane shows the same mask for two accounts. The command
+reads the local roster named by aterm and lists one row per slot in roster order.
+Each row shows its expected provider address (`identity_email` when set,
+otherwise `email`), or `null` if neither is recorded. To look up just two
+addresses, append them to the command. That form reports a label only for a
+unique match and keeps the addresses in the order supplied. Both forms read
+the roster without opening a Codex app server or requesting an OAuth refresh.
+An isolated aterm 0.207.0 roster with two unenrolled accounts returned both
+expected labels even when one login address was the other's provider address.
+
+On signed Codex 0.11.0, a loopback comparison with both usable and exhausted
+fixture accounts measured one usage GET per quota read. Skipping credit details
+removed one additional GET per read and preserved each account's identity,
+usage permission, windows and reset times.
+
+Run `"$account_python" alab/smoke/live_account_quota.py --overview --defaults`
+to check the packaged defaults for the two local logins. Use `--defaults`
+alone for the JSON report. Each authenticated app server starts a temporary
+thread with no model or effort override. The check compares the selected
+model and effort to the newest visible, unretired Sol supporting Ultra in
+that account's catalog. It checks the catalog before and after startup and
+sends zero model turns. A weekly quota block still permits this check.
+A mismatch produces a nonzero exit and preserves the verified login and
+quota in the report.
+
+Pass `--refresh` to check browser-free renewal on the two original slots.
+After both accounts pass the identity and quota checks, the probe requests
+one OAuth refresh at a time. Immediately before each request it checks that
+aterm still binds both addresses to their original slots and that both files
+still match their sampled revisions. It marks an account `refreshVerified: true`
+when its slot was atomically replaced with a later modification time, the
+other slot stayed unchanged, and a fresh process read the original provider
+account ID, email and live quota. When a file’s modification time is exactly
+the start of the current second, the probe waits for the next second before
+rechecking both slots and requesting renewal. This lets a filesystem with
+whole-second timestamps distinguish a fast renewal. An inconclusive result
+stops the remaining refresh requests and returns a nonzero exit status. A
+verified first account stays in the report if the second check fails.
+
+Codex can answer a refresh request with a cached identity even when renewal
+fails. This probe observes the files around the request. A concurrent writer
+refreshing the same slot can also produce the observed replacement.
+
+**Renewal after idle time.** When signed Codex 0.11.0 needs credentials for a
+ChatGPT account, it checks the selected slot's access token. It attempts an
+OAuth refresh if the token expires within five minutes or has already expired.
+If the token has no readable expiry, Codex checks whether its last refresh was
+more than eight days ago. [Codex auth manager](../codex-rs/login/src/auth/manager.rs)
+
+On November 18, signed build `2026111701` exercised this path against a
+loopback issuer with two synthetic slots. One access token had expired ten
+minutes earlier and the other had two minutes left. Ordinary app-server
+startup renewed each exactly once. Each slot's quota reads used the new
+credential and its original account ID, and its sibling's file stayed
+unchanged. Reopening each slot used the saved credential without another
+exchange. The test issued zero forced refresh, sign-in, or model requests.
+
+The same signed binary also renewed two synthetic slots concurrently against
+one loopback issuer with one OAuth client and a shared Codex home. The issuer
+held both valid refresh requests before replying to either. The first server
+completed its renewal while the second slot's file still matched its original
+fingerprint. Releasing the second left the first file intact. With both
+processes still open, each again read its own email, account ID and weekly
+usage (17% and 74%). Reopening the slots in reverse order gave the same results.
+Each slot exchanged its grant once and made three authenticated usage reads.
+
+The concurrent renewal check also exercises a quota-blocked subscription. Its
+second account has used 100% of its weekly allowance. On startup, while both
+servers remain open, and after reopening, the check requires the provider’s
+ordinary usage permission for each account. The result records the final RPC
+permission and weekly percentage for both renewed logins.
+
+To repeat the check on macOS, replace `/path/to/codex-package` with the
+directory containing the package's `bin/codex` and `alab-build.json`.
+The command writes `result.json` in a new output directory. It runs Codex
+with temporary account files and limits its outbound connections to the
+loopback issuer.
+
+```sh
+python3 alab/smoke/ordinary_account_renewal.py \
+  --package /path/to/codex-package --output ./ordinary-renewal-result
+```
+
+Signed Codex 0.11.0 also resumed a terminal conversation with an expired
+destination login. Both synthetic account files were present while the
+source completed its turn. On `codex resume <thread-id>`, the destination
+renewed once. The catalog, workspace and model requests used its newly
+issued credential. The reply continued on the original thread with the
+first turn's tool result, and the command that produced it ran once. The
+source login stayed unchanged. [Terminal resume test](README.md#resuming-local-work-after-switching-accounts)
+
+On November 19, signed build `2026111701` also resumed an `exec` conversation
+by ID from a different project directory on m159. Two synthetic accounts each
+completed a turn on the same thread. The destination renewed once and used its
+own credential for both requests. Its shell ran in the thread's original
+directory with the source tool result in history. To reproduce this case, run
+`alab/smoke/account_resume.py` with `--seed-surface exec --surface exec-project-id`,
+`--separate-auth-files --renew-destination`, `--codex` pointing to the packaged
+binary and `--output` pointing to a new private directory.
+
+The terminal and cross-project exec checks on m159 also ran with a stricter
+test provider. Each model request and each model-catalog and workspace read
+had exactly one authorization header and one workspace header for its login.
+Repeating either header, even with the same value, invalidates the routing
+evidence.
+
+Separately, aterm 0.207.0 can schedule sign-in for an eligible account used on
+this Mac in the past week when its records show that the login ended or is due
+within five days. After more than a week without a session on that slot,
+scheduled upkeep leaves it for its next use. The two-account live check above
+can exercise an ordinary credential read on each.
+
+### Interactive switch on m159, 2026-11-18
+
+A disposable terminal ran signed Codex 0.11.0 under aterm 0.207.0 in the
+ordinary shared Codex home. Its footer showed the named subscription at
+100% weekly use. Naming the fresh conversation with `/rename` made it
+resumable without sending a turn. In that idle, supervised conversation,
+`/accounts use codex-current-default` restarted Codex. The original process
+had selected its named credential for that invocation only. The successor's
+`/status` showed the other email, the same conversation name and ID,
+Sol 6.2 Ultra and 93% weekly allowance left. A model turn in that terminal
+returned the requested `SWITCH-OK` reply.
+
+Requesting the exhausted account via `/accounts use main` made the host
+read its live quota. The terminal resumed on the serving subscription with
+the same conversation and reply. The refreshed `/accounts` pane showed
+the current subscription at 7% and the other enrolled subscription at 100%.
+The host then selected the serving subscription for the next launch.
+
+The same named-to-default request had a different outcome when the parent
+shell exported the named credential path. The host verified and selected the
+default subscription, but its typed relaunch command omitted the credential
+variable and the successor inherited the named login from the shell. The
+new PID and unchanged thread ID alone gave a false positive. The successful
+trial above scoped the named login to the initial process. Verify the actual
+email and allowance in the successor before counting a switch.
+
+Aterm’s main branch explicitly clears the inherited credential when a restart
+selects the default account. The executed shell regression covered both that move and
+an ordinary restart. All eight landing checks passed. The live m159 test used
+0.207.0, which predates the fix.
+[Aterm landing](https://github.com/alabsystems/aterm/commit/0feb4aa6f6ab27058f914a45230db80cc35ba86e)
+
+Later on November 18, two native tabs under aterm 0.208.0 (build
+`1795032367`) showed the two different Pro subscriptions concurrently in signed
+Codex 0.11.0. An idle companion conversation started with the named credential
+scoped to that invocation. Its `/accounts use codex-current-default` request
+resumed on the serving account. The successor's `/status` showed the other full
+email, the original conversation ID and GPT-6.2-Sol with Ultra reasoning.
+Reopening the same conversation with the named credential returned the
+companion tab to its original login even while that subscription had no weekly
+allowance.
+These checks used local commands and sent no model turn. The 0.208.0 release
+also predates the fix for a credential exported by the parent shell.
+
+On November 19, m159 repeated that failing case under signed aterm 0.209.0
+(build `1795094132`, commit `a47d6247152c`) and signed Codex 0.11.0.
+In a disposable terminal, the parent shell exported the named account's
+`CODEX_AUTH_PATH`. With Autopilot Off the client explained that aterm
+requires a supervised session. With Land enabled on that tab,
+`/accounts use codex-current-default` restarted Codex. The successor's
+`/status` showed the other full account email, GPT-6.2-Sol Ultra, and the
+original conversation name and ID. The same shell still held its original
+export after Codex exited. The conversation recorded zero model turns.
+
+On November 19, one signed Codex 0.11.0 terminal on m159 followed three
+successive app servers on the same private Unix socket. It completed a turn
+on the first fixture account, another on the second, then returned to the
+first account for a third turn. Each freshly cleared `/status` card showed
+the serving account’s full email and the original thread ID. The final model
+request included the first two prompts and replies in order.
+
+Run `"$account_python" alab/smoke/account_reconnect.py --codex /path/to/codex --output /new/result-directory`
+to repeat the test. The fixture replaces each server directly. Each server
+has a separate loopback provider listener. After shutdown the test checks
+that each listener received one model request and that its model, catalog
+and workspace requests used the expected login and workspace. Both named
+credentials retain their original contents. Only the synthetic result is retained.
+
+Run `"$account_python" alab/smoke/account_enrollment.py --codex /path/to/codex --output /new/result-directory`
+to test `/accounts add` with two synthetic slots that share a masked email. The
+terminal selects the second slot. The fixture holds the host's first reply
+until the terminal shows which slot it submitted. The same label must remain
+visible after acknowledgment, when sign-in is required, and after completion. The
+fixture host checks the selected slot ID, the roster revision, and both polls
+of the original operation. The test uses a private terminal and local sockets.
+
+Add `--check-picker-guidance` to inspect the picker before selecting a slot.
+It checks for both target masks and the local sign-in lookup in the picker
+subtitle, then dismisses the picker and verifies that the host received zero
+enrollment changes. On m159, signed Codex 0.11.0 displayed both slot labels
+and omitted their masks. The read-only run recorded that limitation. The
+separate selection run sent one start for the intended second slot and polled
+its original operation twice. A focused source check of the development
+picker rendered the lookup for colliding target masks at widths from 48 to
+120 columns, including when an unknown label reopened the choices.
+
+Use `--check-refusal-guidance` to have the fixture refuse the selected
+slot's enrollment. The test checks the local account-list command on the
+refusal screen and presses Enter to open `/accounts`. It verifies that the
+host received one enrollment start and two polls for that operation.
+Signed Codex 0.11.0 offered to refresh the refused operation and omitted
+the command. The development Codex passed in a real terminal connected
+to the fixture host. The selected slot's label remained visible through
+the refusal, and opening the account list showed the original active slot.
+
+The two enrolled logins also passed a browser-free OAuth refresh on signed
+0.11.0. Each original credential slot received one `account/read` request
+with `refreshToken: true`, in sequence. Each operation replaced only the
+selected file (a new inode and later modification time); the sibling's inode
+and modification time stayed the same. A fresh process then read the expected
+email, Pro Max plan and live quota from each refreshed slot.
+Repeating the check with `live_account_quota.py --refresh` on m159 returned
+`refreshVerified: true` for both subscriptions. The named account reported
+100% weekly usage and the default account reported 13%.
+
+### Reopening an interrupted turn on m159, 2026-11-19
+
+Signed Codex 0.11.0 (build `2026111701`) ran one shell command under
+fixture account A. When it submitted the command output, the loopback
+provider returned HTTP 429. A fresh client under fixture account B read
+the same thread and turn. It showed `failed` with `usageLimitExceeded`,
+the original prompt and the successful command output. Reading the
+thread sent zero model requests. An explicit `codex exec resume` with
+a follow-up sent one request under B's bearer and workspace, completed a
+new turn on that thread, and carried the identical tool call and output.
+The command executed once and both credential slots kept their contents.
+
+Run `"$account_python" alab/smoke/account_resume_after_quota.py --codex /path/to/bin/codex --output /new/result-directory`
+to repeat the quota case with a private Codex home and a loopback issuer.
+
+In a separate check on the same binary, the fixture killed its own source
+app-server after the provider received the command output and before it
+answered. B read the original turn as `interrupted` and completed a new
+turn with the saved result. That command also executed once. Both checks
+explicitly started the destination client. The automatic host handoff
+has its own results below.
+
+On signed Codex 0.11.0, the interactive terminal also replayed A's saved
+quota error as a new limit on B. In a two-account loopback test, B's usage
+request was held open. The terminal displayed “Queued follow-up inputs”
+until that request returned. With a completed source turn, B sent the
+same follow-up while the usage request was still pending. In both cases
+B answered on the original thread and the original command ran once.
+
+The Codex source now renders a saved usage-limit error or exhausted HTTP
+429 retry in the transcript without starting recovery for the current
+login. Live quota errors continue to drive recovery. Seven focused source
+checks passed. Running the rebuilt full widget remains pending on m159.
+Run `"$account_python" alab/smoke/account_resume_quota_queue.py --codex /path/to/bin/codex --output /new/result-directory`
+to check an installed binary. A terminal that delays the failed-thread
+follow-up until its usage request completes fails this check.
+
+### Automatic switching in the full aterm host on m74, November 18
+
+A private headless aterm ran signed Codex 0.11.0 and two synthetic
+subscriptions against a loopback provider. This run included the terminal's
+ordinary handling of a Codex process exit. The provider accepted the first
+request, then returned a weekly quota error. Aterm read both subscriptions'
+usage, selected the second account and signalled the source process. Its
+receipt recorded `launch_attempted=true` before a successor had started.
+The original zsh prompt returned, and aterm recorded the exit as
+`signal-not-aterms`. After one retry, aterm retired the handoff with
+`successor-never-attached`. Its recovery path relaunched the original
+conversation on the exhausted account, which hit the same limit again.
+The destination had received no model request. The debug aterm executable's SHA-256 was
+`cbf83ab04f2e3f1dfb99ceb8ade55f075bd7c0f572a9decc4bebb9575cae0ad7`.
+
+For this case, completion requires the destination account to authenticate
+the continued request on the original thread and turn. A selected
+destination, the source process's exit and the launch marker alone can all
+occur while the terminal sits at the shell prompt.
+
+The same test on the fix's unchanged parent, aterm `4b9ad154d31`,
+confirmed that the host saw both usage windows and retired its handoff
+without starting a successor. The provider received only the source's two
+requests. Its debug executable's SHA-256 was
+`2636b5d6268b957821601d864cf48bac6f0b9a943cb5485290b576f851fbe5fe`.
+
+With the fix in aterm `3d78c489351`, the host kept the conversation while
+its quota handler replaced the source process. The provider saw one accepted
+request and one quota refusal on the source, then one accepted request on the
+destination. Each request's bearer and account header matched. The terminal
+resumed the original thread and turn with the same input and completed tool
+result. The host observed 100% weekly usage on the source and 0% on the
+destination. It consumed one handoff and recorded one successful switch.
+The corrected debug executable's SHA-256 was
+`92eaf3a2461b48b4170b7ed32e841e548dbc67e4579b2f9211f4ed5ec44192e2`.
+
+The same test also passed on aterm `72bd023512d`, which includes the registry
+fixes for resolving machine labels and binding a registered account to the
+default login. With that build the destination authenticated the third request
+and completed the original turn. Its debug executable's SHA-256 was
+`e0f42721e528691fbd1d6b4ed8b76375e91f31fc3657463bbe2f2876dcbe5911`.
+
+A separate run used signed aterm 0.208.0 (build `1795032367`) and signed
+Codex 0.11.0 inside an isolated macOS VM. With automatic rotation enabled,
+the host used each fixture subscription's matching credentials to read its
+weekly allowance. It saw 100% used on the source and 0% on the destination.
+The source process exited after its request hit the limit. The host retried
+once, retired the original handoff as `successor_never_attached` and opened
+a second handoff. The destination received no model request.
+
+Signed aterm 0.209.0 (build `1795094132`, source `a47d6247152c`) and
+signed Codex 0.11.0 reproduced the failure in two isolated macOS VMs.
+The first started with two enrolled test accounts. Aterm twice confirmed
+that the source was exhausted and the destination had its full weekly
+allowance. Its first handoff expired with `successor_never_attached`, and
+it opened a second handoff. In the other VM, Codex completed two separate
+device sign-ins against a loopback issuer, starting with empty slots.
+After the source hit its limit, each native quota read presented the token
+issued for that slot and its matching workspace. Aterm retired the handoff
+without recording an accepted turn. The destination received no model
+request in either VM.
+
+For subsequent host runs, the rotation fixture also inspects the saved
+source turn when a handoff retires, repeats or times out. It matches the
+source request, receipt and rollout by thread and turn, then reports whether
+the original prompt and completed plan are present. An available history
+still leaves the handoff failed until the destination answers on that turn.
+
+The native account-switch worker and the terminal's normal exit handler can
+both observe the source process leaving. For a quota-triggered restart, test
+that the terminal keeps the conversation until the next login resumes it.
+Delay the exit handler until after the destination publishes its own session,
+then verify its account, task and thread still belong to that destination.
+Also stop the operation after the source receives its signal and before the
+successor starts. Neither account should receive another model request.
+A signal the host failed to send and an unrelated process that reuses the
+source PID must still follow the normal exit rules.
+
+After merging the registry and rotation fixes with aterm main, debug build
+`8ec03b41d26` also passed. The test recorded `receipt_slot_bindings_verified`
+after checking the consumed handoff against each fixture's login file, account
+and user, and the original turn. The destination answered on that turn and
+the host recorded one successful switch.
+
+On November 19, a local release-profile build of `8ec03b41d26` passed the
+VM scenario that failed on signed 0.208.0. The build used the project's
+ad hoc development signature and the same signed Codex 0.11.0 package.
+The kernel reported the source's exit. The destination authenticated the
+retry with its own bearer and account header, received the exact input that
+had hit the limit and finished the original turn. The host consumed one
+handoff bound to both login files. The rollout contained one user prompt
+and one completed plan. The candidate's executable SHA-256 was
+`d5428ebbace6c3f089d6ee2740ccf2312f28c795f26c985c49f782aad847c5a7`.
+This candidate was tested in a disposable guest and has not shipped.
+
+After further aterm changes, the full debug host at `5eab65adcd1` and signed
+Codex 0.11.0 completed the weekly-limit case again in a disposable macOS VM.
+The isolated test at codex-alab `72a5986a47` also verified when and where
+the host checked each subscription. After the source received HTTP 429 and
+before the destination retried, aterm read the configured usage endpoint once
+for each test account. Each read sent one workspace header matching its bearer.
+The source had used 100% of its weekly allowance and the destination 0%.
+The destination finished the original turn with the same input and completed
+plan. The host consumed receipt `6757f3429d7da1e9eb9a732c542173ce`.
+
+To repeat the isolated test on macOS, use Python 3.11 or newer, a debug aterm
+executable, the aterm-lab executable and a completed Codex package.
+Use the host and helper from the same native revision. If the verifier already
+built both, use the ordinary executable paths from its successful compiler
+output. Check the fixture's `host_sha256` and `lab_sha256` against those
+compiler records. The fixture runs private copies of both programs. On APFS
+they can share storage with the originals while a later build replaces them.
+
+For a standalone build in the native aterm checkout, the test profile inherits
+the dev profile's incremental setting. The first standalone build on m159
+created 8.45 GiB of incremental files. This command disables incremental
+compilation and records the executable paths and digests in a fresh directory.
+
+```sh
+records=$(mktemp -d)
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 targo --unverified build --locked --profile test \
+  -Zfeature-unification --config 'resolver.feature-unification="workspace"' \
+  --config 'profile.dev.incremental=false' \
+  -p aterm --bin aterm -p aterm-lab --bin aterm-lab \
+  --message-format=json-render-diagnostics > "$records/compiler-events.jsonl"
+```
+
+After a successful build, use the `executable` from each ordinary binary's
+`compiler-artifact` record as the corresponding argument below.
+
+```sh
+python3.14 alab/smoke/tui_host_rotation.py \
+  --aterm /path/to/debug/aterm --aterm-lab /path/to/aterm-lab \
+  --package /path/to/codex-package --result ./rotation-result.json
+```
+
+Add `--device-login` to start with two empty credential slots. In the
+headless ordinary weekly case, the test reads the terminal footer before
+the refusal and after the successor completes the original turn. The
+`visible_weekly_footers` result records each displayed fixture email and
+its process ID. Signed Codex
+0.11.0 completed a device sign-in for each slot against the loopback issuer.
+With the full debug aterm host at `5eab65adcd1`, the provider recognized the
+exact tokens it had issued on all three model requests and both native
+quota reads. The second account completed the original turn. Both login
+files kept their contents and the shared Codex home had no default login.
+This run used a locally configured test roster.
+
+Add `--account-card` to check the address list in a focused, private Mac
+window. This mode needs a Codex package with **Show account addresses** and
+a host with `codex-accounts-display show`. It signs two fixture accounts
+with the same address mask into separate slots. The test opens the source
+card before the provider returns its weekly limit, dismisses the accounts
+pane, and checks that the destination finishes the original turn.
+
+After the handoff, the test opens the destination card and requests a
+restart of that specific fixture process. It checks for the kernel exit
+and for the card to disappear from the same focused window before its
+ordinary expiry. The control reply identifies the card and its session.
+The card's address rows stay in the native window.
+
+On November 19, two fresh loopback-only VMs ran the device-login test at
+Codex `3f4a993ef0` with signed Codex 0.11.0. Each VM used a debug aterm
+host and an `aterm-lab` helper built from the same source. In both VMs,
+two test accounts signed in. After the source hit its weekly limit, aterm
+confirmed that the source had used 100% and the destination 0%.
+
+On aterm main `7db13135155`, the host attempted the handoff, then retired
+its receipt without starting a successor. The destination received no model
+request. With the pending fixes from `fde8da2baa0` merged into the same
+base, the host consumed one receipt and the second account completed the
+original turn with its input and plan intact. The patched host had SHA-256
+`0baa30d8c26ca68c2d928cbe1644314f18eaa320f41da3db57d2f38a089dc58e`.
+
+A release-profile build of that merge (`da72d7c7246d`) passed the device-login
+test that failed on signed aterm 0.209.0. The isolated Mac used an ad hoc
+development signature and signed Codex 0.11.0. Both empty slots signed in to
+the local test issuer. After the source received HTTP 429, aterm checked each
+account with its own token and confirmed weekly usage of 100% and 0%.
+The destination answered on the original turn with the same input and
+completed plan. Aterm consumed one handoff. The tested executable had SHA-256
+`f547a24df1bbf84a9e8ef6f533916501656d8b4ec7469362a6381467567c8f83`.
+
+The same build also passed with slots created from two account keys in a
+fresh, private aterm Registry. In a separate isolated Mac, each
+`aterm harness accounts add <account-key> --cli codex` created its own login
+directory. The Registry resolved the two receiving mailbox routes. Both
+subscriptions signed in to the local test issuer, and the destination finished
+the original turn after the source hit its weekly limit. The roster kept the
+same hash from before device sign-in through completion. This run used
+explicit key selection in a Registry with no machine registrations.
+
+A fresh isolated Mac repeated the test with three accounts added by their
+Registry keys. Each signed in through the device flow and reported available
+quota before the prompt. The first two accounts then hit their weekly limits
+in the same turn. The third completed the original input and plan. Aterm
+recorded exactly two switches and all three login files kept their contents.
+The qualification record has SHA-256
+`a3f7f04310b7ebef2b69eda0e3ce1881b72c39ceb41018859f27c192151ed65a`.
+
+In a separate run the third account initially reported exhausted quota and
+a reset about a day away. When the second account reached its limit, the
+test provider restored the third account early. An independent authenticated
+read confirmed available quota. Aterm made no further quota request, and
+the third account received no model request before the 450-second test ended.
+The run recorded one switch. Its qualification record has SHA-256
+`c4f6954f9214bfed29da60a7d570d0c1c247930dbb45766c0b4e2b3504838765`.
+
+On the same merged source, 32 native tests passed. They covered Registry
+mailbox credential resolution with a synthetic secret store, protected
+accounts waiting for a local sign-in, and the host retaining the source
+conversation through a quota handoff. The full native verifier against
+`7db13135155` passed seven of its eight checks, including lint, the
+cross-platform builds and AppKit. The test stage recorded 73,126 passing
+cases and 41 failures across 15 of its 223 binaries. The Registry
+default-login checks and the Codex quota-restart checks passed.
+
+Two of the passing Registry tests ran a pair of local replicas. A peer
+resolved a synthetic mailbox password and TOTP secret before and after
+the Registry processes restarted. The tests covered both sealed mailbox
+fields and references to a test vault. A changed mailbox binding or a
+missing credential prevented either credential from reaching the consumer.
+
+For a model-specific limit, append `--limit codex_other` and use a separate
+result file. Both test subscriptions have ordinary quota. Only the source
+has exhausted the named model. The test requires the second account to
+receive the same model request and checks the limit recorded on the handoff.
+
+For either limit, the fixture records when it finishes writing the source's
+429 and when it records the destination's model request. Both native usage
+reads must begin after the first event and finish writing their responses
+before the second. The result retains those server-side timestamps. An
+overlap or a tie leaves the ordering unverified. Each qualifying native
+usage GET must also reach the usage path on the configured fixture listener
+and send exactly one workspace header matching the account in its fixture
+bearer. For each account, the last completed usage response in that interval
+must support the switch. Responses that finish on the same clock tick must
+agree on the relevant quota. For a model-specific switch, the last response
+must still identify that model's limit. Results that lack the timestamps,
+endpoint observation or header observation leave the corresponding check
+unverified. The separate
+destination request and rollout checks establish that the original turn
+completed.
+
+On November 19, signed Codex 0.11.0 passed the ordinary weekly control with
+aterm build `8ec03b41d26`. In the model-specific control, the source retried
+on another turn and the destination received no request. The updated Codex
+source adds the model's limit to the handoff. Packaging that source at
+`465e6c83e0` stopped when the pinned Trust compiler refused the application's
+in-process procedural macro dependencies. A successful packaged run of the
+model-specific case is still outstanding.
+
+The native Codex integration test `rotation_named_limit` exercises the
+HTTP refusal, persisted handoff and successor against a loopback provider
+and simulated aterm. It observed the same model and turn on both fixture
+logins. The second login sent the exact refused input, including the
+original prompt and tool result. A host that omitted named-limit support
+made no rotation request. Separately, aterm's native selector and commit
+tests at `8ec03b41d26` exercised its own reading of the named limit.
+The selector skipped accounts whose model allowance was missing or spent
+and chose an account that had 30% used on that model.
+
+On physical m159, the native debug host and lab at `b8c674088216` ran
+signed Codex 0.11.0 (`70d6391259`) against two empty device-login slots
+and a loopback provider. A weekly refusal produced one successor. Both
+account tokens were verified, the successor completed the same turn with
+its original input and plan, and both login files kept their contents.
+The weekly result has SHA-256
+`428e70070bd794341a4a3e48ed448fbddcb5c5317b307398a400b584f7ef0b29`.
+
+With `--limit codex_other`, the same signed client issued another request
+on the exhausted source. The provider returned a second 429 and the native
+host recorded no handoff receipt. This client predates the interactive
+named-limit change in `790238e449`. A physical run with a package containing
+that change remains open. The named-limit diagnostic result has SHA-256
+`feb8a9edfd482640c1b6b98ca83ba91c4aeb27e9873aadeb06a64abc10f991e3`.
+
+On November 19, m159 repeated both controls with signed Codex `70d6391259`.
+The native verifier's test compilation succeeded on clean aterm `4252c8a4a5f6`.
+The fixture ran APFS clones of its `aterm` and `aterm-lab` binaries, each
+matching the SHA-256 recorded by Trust. The weekly handoff consumed one
+receipt and the destination completed the original turn (result SHA-256
+`cfad40bb4a105572c355e5b17d56b399dd8bb205654770d2b31d5a51ce0aa162`).
+With `codex_other`, the client retried on the source in a new turn, received
+a second HTTP 429 and produced no handoff receipt (result SHA-256
+`d51ae029ff9668ab890df6dd3d0be587e96a67b2d0afc3edb67ee0d8baa95856`).
+
+### Three Registry logins on the integrated development host, November 20 UTC
+
+Signed Codex 0.11.0 completed a turn on its third subscription in an isolated
+macOS guest. The host was a locally signed release-profile build of aterm
+0.210.0 at `e1dd1fab1d01`. A fresh Registry supplied three synthetic account
+keys, sign-in addresses and receiving inboxes. The native account command
+created a separate slot for each key. All three device logins completed
+against the guest's loopback issuer.
+
+The first and second subscriptions each received a weekly quota refusal.
+Before each retry, aterm read the exhausted account's usage at 100% and the
+next account's at 0% using the matching credentials. The third account
+finished the original input and plan. Both handoff receipts named the same
+accepted turn, and the saved login files kept their original contents. The
+three-account qualification passed all 12 checks. Its receipt has SHA-256
+`f349116337f928a250b77a7ef41b4388bb394f3bc11a458243e23cf813b90a51`.
+
+A second guest ran the same host and client with the third account initially
+at 100%. The middle account reached its limit 173 seconds before the third
+account's advertised weekly reset. Codex kept the original turn pending. An
+independent authenticated read confirmed the refill 0.103 seconds after the
+reset. Aterm read the third account's usage 160.229 seconds after the reset,
+including its 150-second grace period. The third account answered 169.525
+seconds after the reset. The run recorded two consumed handoffs, two rotation
+charges and one completed plan. All 13 checks passed. The receipt has SHA-256
+`759e91979ce6bf4f15f1e36d602b7ed14e384d58d1e582ee5edf28180e5436a6`.
+
+Earlier attempts stopped at two checks in the test fixture. The corrected
+fixture required an empty `waiting` list in each Registry scan and verified
+the account store's completed synchronization record when checking a
+retired handoff. All nine preparations that retired in the reset trial left
+the source running and used no rotation charge. Both qualifying guests
+were shut down and deleted. Automatic weekly rotation on the signed host
+still has the failing result recorded above.
+
+On m74, the standalone development app contains the executable used in both
+guest trials. Run its executable with `new-window` to open that copy while
+the installed app is running.
+
+```sh
+build="$HOME/.local/share/codex-alab/development-builds/aterm-e1dd1fab1d01"
+"$build/aterm (dev).app/Contents/MacOS/aterm" new-window
+```
+
+In the new window, `aterm ctl version` identifies the host that answers the
+tab. Check for commit `e1dd1fab1d01` and profile `release`, then run `codex`
+and open `/accounts`. This uses the managed Codex package and the Mac's
+existing Registry assignments. Automatic switching needs two eligible sign-ins.
+
+### Headless exec controls on m74, November 19
+
+Signed Codex 0.11.0 (`70d6391259`) ran the same original exec task with two synthetic
+logins and a loopback provider against clean Rust native-host fixtures at `7caf64284b7`
+and `1f230063648`. For an ordinary weekly wall both runs completed on the
+second login, preserved the original PID and turn, and consumed one receipt each
+(`0c834a275edb584b57d2a7a4d8ef1c09` and `cadcca2296756c8f3ef346df1b6b1e36`).
+With `exec_accounts.py --limit codex_other`, ordinary usage stayed at 5% of the session
+and 10% of the week, while the provider named `codex_other` and returned 100% weekly
+usage for it. With each host, the provider saw two source model requests, HTTP
+200 then 429 on the same turn. Over 200 seconds neither run produced a native account
+selection read, a receipt or a destination model request.
+
+The updated exec client at `0924442e01` received the same model refusal and sent
+the correct source, destination, turn and limit through prepare, arm and reserve
+to a simulated aterm. It cancelled before issuing a destination request.
+A diagnostic run at `f3827ec491` traced the cancellation to decoding the saved
+conversation. Its token-count events included the provider’s usage percentages
+of 0.0 and 100.0. The history reader failed while decoding a decimal number.
+The original prompt and completed tool call were still in the source history.
+
+The debug exec integration test at `8a7dc6967251` ran against FakeAterm and the
+loopback provider. For both `codex_other` and the ordinary weekly control, the
+source completed the plan and then received HTTP 429. The destination supplied
+its own bearer and account header and received HTTP 200 for the exact refused
+input. Each run finished the original thread and turn once. The foreground PID
+across exec was 77376 for the named limit and 77395 for the ordinary limit.
+The saved usage events for each tested bucket showed 0%, 100% and 0% of the
+week used. FakeAterm observed all eight handoff stages, from selection through
+completion. A run combining the updated signed Codex package and native host
+remains outstanding. This client still selects Trust 15698, the compiler that
+refused the CLI’s procedural macros before collecting a proof. The project’s
+next compiler adoption trial stopped at dependency build-script execution.
+[Trust 27009 adoption result](reviews/trust27009-adoption-build-script-refusal-2026-11-16.md)
+
+At `fa9e546a25`, both cases passed again. A third run switched rotation off
+after the first named selection request and restored the setting while the
+original turn was waiting. The client released its claim, read the policy
+again after 30 seconds and finished on the destination. All three runs saved
+the original input and tool result and completed the original turn once.
+To repeat the setting change, pass `--restore-policy` with `--limit codex_other`.
+
+Separately, nine native aterm tests passed on `1f230063648`. They checked
+eligibility against the requested model, source and destination identity,
+agreement between the named quota and saved request, claim ownership and the
+ordinary request encoding.
+
+To repeat the client check on macOS, build the debug test target
+`named-exec-probe` from `codex-alab-native-source-probe` with the
+`named-exec-probe` feature in the source-selected test environment. Set
+`STABLE_GIT_COMMIT` to the full clean checkout revision when building. Use its
+Cargo-reported executable as `TEST_DRIVER`. Build the `fake_aterm` example
+from `codex-alab-aterm` with the `test-support` feature and set `FAKE_ATERM`
+to that executable. From the repository root, use fresh output directories.
+
+```sh
+revision=$(git rev-parse HEAD)
+digest=$(shasum -a 256 "$TEST_DRIVER" | awk '{print $1}')
+RESULTS=$(mktemp -d)
+for limit in codex codex_other; do
+  python3.14 alab/smoke/exec_named_simulated.py --limit "$limit" \
+    --test-driver "$TEST_DRIVER" --test-driver-source "$revision" \
+    --test-driver-sha256 "$digest" --fake-aterm "$FAKE_ATERM" \
+    --output "$RESULTS/$limit"
+done
+```
+
 ## Requirement audit, 2026-11-03
 
 The target is an unbounded account roster, simultaneous account logins, and
@@ -17,20 +1037,19 @@ Current source and installed-host evidence:
 | Refresh serialization per login | `alab-core/src/auth_lock.rs`: a separate `<auth-file>.lock` for every slot | Busy/refused locks now return transient failures instead of sending without a lock; all eight lock tests pass, including retry and 32 simultaneous slots |
 | Roster and session capacity | Aterm removes fixed account, preparation, history and session-count truncation; bounded storage writes remain atomic | Count caps removed from roster, sessions, claims and activity; 40 concurrent processes and 256-claim round trips passed; storage byte budgets remain |
 | Account selection on launch | Installed `aterm harness accounts --help` describes Codex pool selection with `CODEX_AUTH_PATH` | Host supports selection; not evidence of mid-task rotation |
-| Move a running interactive task to a different account after quota exhaustion | Separate typed rotation protocol, two-identity receipts, native quota selection and original-turn continuation; real-process happy path passed | Fixture-qualified on 2026-11-13: `weekly-quota`, `weekly-quota-chain`, `weekly-quota-exhausted` and `weekly-quota-rollback` passed against a `built-from-clean-commit` host from aterm main `40e85159240` with the signed 0.7.0 package ("Qualifying runs of 2026-11-13"). Not live: this Mac has one signed-in Codex account. In the installed aterm by its tag's ancestry, not run there: aterm 0.201.0, installed here by 2026-11-14 (tag `v0.201.0`, `3793545d7da`), contains aterm main `40e85159240`, the commit the qualifying host was built from, and so the in-place claim renewal (`2020f39c770`) that 0.199.0 and 0.200.0 lacked; no installed aterm and package were run together, and codex-alab's seal for older aterms (`1eb3459fbe`) is in no release |
-| Move a running interactive task off a five-hour wall that is far from its reset | Since `4b4a67dc1d` (in 0.7.0) a creditless turn refused on its five-hour window ends and asks the host, where the host's policy prints `codex_rotation_five_hour=<seconds>` and the reset is further off than that bound plus a minute; aterm main moves such a session as it moves one at a spent week (`6380d03f686`). A nearer reset is waited out on the session's own account | Fixture-qualified on 2026-11-13: `five-hour-wall-far` passed three times, and again in a six-case `renewal_matrix.py` run that passed, against the `built-from-clean-commit` host from aterm main `753cca585a4` with the signed 0.7.0 package ("The five-hour handoff, 2026-11-13"); `five-hour-wall-soon` passed on the same host. With the walled account's title request refused too, as a provider refuses it, the session was moved about 30 s later than with it answered: 45 s from the refusal to the answer, against 14 s. Not live: this Mac has one signed-in Codex account, and whether the live backend's 429 names the five-hour window's own reset is not determined; since `986bb020b1` (in no release) that no longer decides whether the wall is offered (gap 6 below). Not in an installed aterm, for the reason in the row above |
-| Move a running interactive session to another signed-in account on request | `/accounts use <label>` and `/accounts auto` ask aterm `restart account=<label>` or `account-auto`, which restarts the session on its conversation under that login (`alab/design/accounts-assignment.md`); the in-process assignment request path is removed. It is asked and carried only at the session record's rest, so a running background terminal (a dev server, a watch build) must be stopped first; nothing ends it for the person. A session moved while it waits at a recorded usage wall comes back at that wall bound to the new login, and that login's next accepted usage read that permits the wall's bucket resumes it at once, whatever rung the old login's tries had reached (since `c1688363b1` and `1d171802e3`; gap 3 below). codex-alab's client, its schema 2 snapshot reader, the TUI refusals and that resume are tested against alab-aterm's fake host only | Unqualified: aterm's side is on aterm main since `9bd84e2a0c2` (2026-11-13), and its rest check (`account-busy`) since `d20a22e9ed2` (2026-11-13); aterm 0.201.0, installed here by 2026-11-14, carries `9bd84e2a0c2` and the rest check by its tag's ancestry and its `ctl help restart` lists `account=<label>`; the installed codex-alab 0.7.0 lacks the client (`05950d02ef`, in 0.8.0's source). aterm 0.199.0 answered schema 2 `ERR codex-accounts invalid request` and `restart account=` `ERR bad restart argument`, at which codex-alab refuses with "Account changes are unavailable on this host." No live move was run |
+| Move a running interactive task to a different account after quota exhaustion | Separate typed rotation protocol, two-identity receipts, native quota selection and original-turn continuation; real-process happy path passed | Fixture-qualified on 2026-11-13: `weekly-quota`, `weekly-quota-chain`, `weekly-quota-exhausted` and `weekly-quota-rollback` passed against a `built-from-clean-commit` host from aterm main `40e85159240` with the signed 0.7.0 package ("Qualifying runs of 2026-11-13"). The November 13 host had one signed-in account. The [November 18 m159 run](#interactive-switch-on-m159-2026-11-18) verified a requested switch at a live weekly limit. Automatic continuation of an in-flight turn passed the native fixture. In the [full terminal host on m74](#automatic-switching-in-the-full-aterm-host-on-m74-november-18), the earlier host returned to the exhausted account. The corrected debug host completed the same turn on the second fixture subscription with signed Codex 0.11.0. In the installed aterm by its tag's ancestry, not run there: aterm 0.201.0, installed here by 2026-11-14 (tag `v0.201.0`, `3793545d7da`), contains aterm main `40e85159240`, the commit the qualifying host was built from, and so the in-place claim renewal (`2020f39c770`) that 0.199.0 and 0.200.0 lacked; that fixture ran on the clean-commit host, and the signed 0.7.0 package predates codex-alab's seal for older aterms (`1eb3459fbe`) |
+| Move a running interactive task off a five-hour wall that is far from its reset | Since `4b4a67dc1d` (in 0.7.0) a creditless turn refused on its five-hour window ends and asks the host, where the host's policy prints `codex_rotation_five_hour=<seconds>` and the reset is further off than that bound plus a minute; aterm main moves such a session as it moves one at a spent week (`6380d03f686`). A nearer reset is waited out on the session's own account | Fixture-qualified on 2026-11-13: `five-hour-wall-far` passed three times, and again in a six-case `renewal_matrix.py` run that passed, against the `built-from-clean-commit` host from aterm main `753cca585a4` with the signed 0.7.0 package ("The five-hour handoff, 2026-11-13"); `five-hour-wall-soon` passed on the same host. With the walled account's title request refused too, as a provider refuses it, the session was moved about 30 s later than with it answered: 45 s from the refusal to the answer, against 14 s. The five-hour trial used a fixture on the November 13 host, which had one signed-in account. Whether the live backend's 429 names the five-hour window's own reset remains unverified; since `986bb020b1` (in no release) that no longer decides whether the wall is offered (gap 6 below). Not in an installed aterm, for the reason in the row above |
+| Move a running interactive session to another signed-in account on request | `/accounts use <label>` and `/accounts auto` ask aterm `restart account=<label>` or `account-auto`, which restarts the session on its conversation under that login (`alab/design/accounts-assignment.md`); the in-process assignment request path is removed. It is asked and carried only at the session record's rest, so a running background terminal (a dev server, a watch build) must be stopped first; nothing ends it for the person. A session moved while it waits at a recorded usage wall comes back at that wall bound to the new login, and that login's next accepted usage read that permits the wall's bucket resumes it at once, whatever rung the old login's tries had reached (since `c1688363b1` and `1d171802e3`; gap 3 below). the fake host covers the client, schema 2 snapshot reader, TUI refusals and wall resumption | On m159, the signed 0.11.0 terminal and installed aterm 0.207.0 completed a live move and exercised fallback at a real quota wall ([interactive verification](#interactive-switch-on-m159-2026-11-18)). Earlier host coverage: aterm's side is on aterm main since `9bd84e2a0c2` (2026-11-13), and its rest check (`account-busy`) since `d20a22e9ed2` (2026-11-13); aterm 0.201.0, installed here by 2026-11-14, carries `9bd84e2a0c2` and the rest check by its tag's ancestry and its `ctl help restart` lists `account=<label>`; the installed codex-alab 0.7.0 lacks the client (`05950d02ef`, in 0.8.0's source). aterm 0.199.0 answered schema 2 `ERR codex-accounts invalid request` and `restart account=` `ERR bad restart argument`, at which codex-alab refuses with "Account changes are unavailable on this host." |
 | Move a running headless exec task after quota exhaustion | Native contract 3 reserves through aterm before Core suspension; four/eight shared-pool sessions, repeated moves and lost acknowledgements pass. Codex `7a6cae40a6` also retains the original managed checkout, owner and local edits across repeated handoffs | Ordinary and managed-worktree exec continuation qualified locally; ephemeral/review modes and failures after suspension remain incomplete. Only a run that leads its tab's foreground process group moves; every other shape waits out its reset (gap #2 in "Known gaps", the planned admission in `CONTRACT.md` §1.1) |
 | All eligible accounts exhausted | Real-process `weekly-quota-exhausted` checks both accounts at 100%, two native prepare polls, retained original task and no native actions | Passed without a rotation charge or replayed model request |
 | Consecutive quota handoffs | Real-process `weekly-quota-chain` exhausts the source and first replacement, then continues on a third account | Passed with the same original turn, one completed plan, two native handoffs and two charges |
-| Email authentication | Codex and Claude use aterm's common mailbox reader; 75 mailbox tests and the cross-CLI sender-scope test passed; the updated native CLI reached OpenAI | Live email-code login remains unverified because Cloudflare stopped the authorization flow before OTP retrieval |
+| Email authentication | Codex and Claude use aterm's common mailbox reader; 75 mailbox tests and the cross-CLI sender-scope test passed; the updated native CLI reached OpenAI | On m159 the provider accepted the email code from the verified receiving inbox and the signed client authenticated both subscriptions ([local enrollment](#local-enrollment-on-m159-2026-11-18)). The earlier provider challenge on m74 is recorded separately above. |
 | Shared roster and machine identity | Aterm discovers registered roster/mailbox pointers; Codex uses shared claim publication, home-account discovery and upkeep; two-machine claim and native-commit tests passed | Local replicated-table tests passed; live fleet control excludes this installation, so live cross-machine placement remains unqualified |
 
-The native account report selected `main` and excluded `codex-m22` as not enrolled.
+In the earlier single-account trial, the native account report selected `main` and excluded `codex-m22` as not enrolled.
 Its signed Commons state excludes this installation from control. The registered
 secrets inventory and native enrollment flow were consulted without displaying
-secret values. The unchanged provider challenge has not been bypassed, and no
-live login was changed by the stopped enrollment attempt.
+secret values. The provider challenge stopped that enrollment attempt before it changed a live login.
 
 ## Current integration and qualification
 
@@ -414,24 +1433,20 @@ is fixed (below, with what it leaves).
      workspace wall. An exec review's own turn, which only its delegate
      samples for, is the tree's root turn the keep and the grant name.
 
-     What this moves, by aterm. Against an aterm that does not print
-     `codex_rotation_refusal=1` (every aterm today): nothing new moves; an
-     exec run at a workspace or spend-control wall ends after one 30 s wait,
-     not at once, and an interactive turn there ends as before. A Reserve
-     wall is ordinary: exec asks its host to move it, as it asks for any
-     ordinary wall. Once aterm's S2 lands: interactive workspace,
-     spend-control and credit-only walls move (S2 alone); in exec, a
-     workspace or spend-control wall moves within the 10 min bound, and a
-     credit-only wall, which is ordinary, takes the ordinary exec move where
-     S2's reading also answers exec's `prepare`. Still not moving after S2:
-     a model's own limit, interactive or exec (exec waits out its reset),
-     until S4 and S5; a run at a workspace wall that the bound or a refusal
-     ended; and the Entitlement class, below. S2, S4, S5 and S6 remain.
-   - S4 (aterm): per-limit reads, kept apart from the ordinary walls, an
-     optional `limit=` on prepare, and `codex_rotation_limits=1`.
-   - S5 (codex-alab): the wall's limit id on the wire, only for a model-limit
-     wall bound to the current identity and only to a host that advertises
-     S4; after gap 3, which rebinds that bucket.
+     At S3, a host without `codex_rotation_refusal=1` gave an exec run at a workspace
+     or spend-control wall one 30-second wait. With host support, exec can move
+     that run while the host looks for an account outside the workspace. Ordinary
+     and Reserve limits use the ordinary account allowance. A model-specific
+     limit requires the additional source and host support described below.
+   - S4 (aterm) supports per-limit reads, an optional `limit=` on quota prepare,
+     and the capability `codex_rotation_limits=1`.
+   - S5 (codex-alab) carries the refused limit on an interactive prepare and in
+     the durable handoff. The current login must own the quota binding and the
+     host must advertise S4. A bound receipt keeps its original limit across
+     restart. A foreground exec run also requires `codex_exec_rotation_limits=1`
+     from its host. Its prepare, arm and original-turn checkpoint all carry
+     the limit ID. Hosts that can select a named limit but cannot arm it leave
+     exec waiting for the model's reset.
    - S6 (aterm, optional): aterm-lab stub modes that drive each kind to a
      committed move.
 
@@ -1153,28 +2168,28 @@ qualifies nothing.
 
 `alab/smoke/package_standing.py` reads a package's own `alab-build.json` and
 says whether it qualifies a run. It reads the record and verifies no
-signature. A record qualifies only when it holds what a certified packager
-always writes:
+signature. Smoke eligibility depends on the fields the packager records.
 
-- `source` is a full 40-hex commit, and `version`, `target`, `packager`,
-  `ripgrep` and `ripgrep_features` are stated;
-- `compiler.admitted` is `true`, `compiler.rustc_vV` names `binary: trustc`
-  and begins with `compiler.rustc`, `compiler.sysroot` is stated,
-  `compiler.binaries_sha256` is 64 hex digits, and `compiler.id` is the first
-  16 hex digits of the sha256 of those three joined by NUL, as both packagers
-  compute it;
-- `compiler.lane`, where present, is `certify`;
-- its packager's own evidence of a certified build. codex-release's native
-  layout, which wrote the signed releases, names itself
-  (`packager: "codex-release/native-layout-v1"`) and records
-  `build_observation_sha256` and `ripgrep_build_observation_sha256`.
-  `alab/package.sh` names its own 40-hex commit as `packager` and records
-  `rusty_v8`, `built_at` and `compiler.verification`: a `certify` build of
-  the same source with dependencies included, with the report's hash and the
-  built and packaged hashes of `codex` (`alab/proof_build.py`). A
-  `verification` on any record must be that;
-- there is no `trial` key, the version does not name a trial in any case,
-  and every string in the record is Unicode text.
+- `source` is a full 40-hex commit. The record gives the `version`, `target`,
+  `packager`, `ripgrep` and `ripgrep_features`.
+- `compiler.admitted` is `true`. `compiler.rustc_vV` names `binary: trustc`
+  and begins with `compiler.rustc`. The record gives `compiler.sysroot` and
+  a 64-hex `compiler.binaries_sha256`. `compiler.id` is the first 16 hex
+  digits of the SHA-256 of the version output, sysroot and binaries digest
+  joined by NUL.
+- `compiler.lane`, where present, is `certify`.
+- The native layout identifies itself as `codex-release/native-layout-v1`
+  and records `build_observation_sha256` and `ripgrep_build_observation_sha256`.
+  These identify observations of the product and ripgrep builds. The native
+  publisher builds both with `targo --unverified`.
+- `alab/package.sh` identifies the packager by its 40-hex commit. It records
+  `rusty_v8`, `built_at` and `compiler.verification`. The last field records
+  a `certify` build of the package source with dependencies included, the report
+  hash, and matching built and packaged hashes for every recorded executable,
+  including `codex`. The reader checks `compiler.verification` whenever present
+  and reports certified build evidence only from that field.
+- The record holds Unicode text. The reader rejects a `trial` key or any
+  version containing `trial`, matched case-insensitively.
 
 `compiler.admitted: true` alone shows no certified build. package.sh wrote
 it while its release build was still `targo --unverified build --release`,

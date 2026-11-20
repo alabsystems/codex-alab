@@ -24,8 +24,13 @@ pub(crate) fn take_preparation(
     let Some(meta) = params.get_mut(META).and_then(Value::as_object_mut) else {
         return Ok(None);
     };
+    let marker = meta.remove(metadata::preparation::SAVED_OPENING_KEY);
     let Some(value) = meta.remove(metadata::preparation::KEY) else {
-        return Ok(None);
+        return if marker.is_some() {
+            Err(invalid())
+        } else {
+            Ok(None)
+        };
     };
     if request.method != "config/read"
         || [
@@ -40,12 +45,35 @@ pub(crate) fn take_preparation(
     {
         return Err(invalid());
     }
-    let claim: PreparationRequest = serde_json::from_value(value).map_err(|_| invalid())?;
+    let mut claim: PreparationRequest =
+        serde::Deserialize::deserialize(&value).map_err(|_| invalid())?;
+    let tagged = marker.is_some();
+    if let PreparationRequest::Prepare(original) = &mut claim {
+        // Older servers decode the same closed Prepare. Only a server that
+        // recognizes its sibling metadata freezes the saved chooser marker.
+        if value.get("savedOpening").is_some() {
+            return Err(invalid());
+        }
+        if let Some(marker) = marker {
+            original.saved_opening = Some(marker.as_str().ok_or_else(invalid)?.to_owned());
+        }
+    } else if tagged {
+        return Err(invalid());
+    }
     if !claim.valid() {
         return Err(invalid());
     }
     if meta.is_empty() {
         params.remove(META);
+    }
+    let query = matches!(&claim, PreparationRequest::ReadSavedResume { .. });
+    if (query || tagged)
+        && (params.len() != 1 || params.get("includeLayers") != Some(&Value::Bool(false)))
+    {
+        return Err(invalid());
+    }
+    if query && serde_json::to_value(&claim).map_err(|_| invalid())? != value {
+        return Err(invalid());
     }
     Ok(Some(PreparationClaim(Arc::new(claim))))
 }

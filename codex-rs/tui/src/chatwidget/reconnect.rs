@@ -126,6 +126,7 @@ impl ChatWidget {
             &mut self.input_queue.queued_user_message_history_records,
             confirmed_message_ids,
         );
+        self.alab_reconcile_recovered_queue(); // ALAB(misalignment-review): confirmed delivery can retire the last recovered prompt.
         self.refresh_pending_input_preview();
     }
 

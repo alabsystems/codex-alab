@@ -35,6 +35,8 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::process_state::ProcessState;
+use super::shell_output::ShellLog; // ALAB(shell-output): raw capture.
+#[path = "../../../alab-core/glue/shell_retired_readers.rs"] pub(super) mod retired_readers; // ALAB(shell-output): keep only the original reader after a terminal poll.
 use crate::shell_snapshot::ShellSnapshotFile;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
@@ -44,12 +46,20 @@ const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 /// Append both under the same lock so cancellation cannot split an update.
 #[derive(Default)]
 pub(crate) struct OutputBuffers<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
+    pub(super) shell_log: Option<ShellLog>, // ALAB(shell-output): one capture across polls.
+    capture_local_chunks: bool, // ALAB(shell-output): exec-server has an earlier tap.
     pub(super) pending: HeadTailBuffer<MAX_BYTES>,
     pub(super) transcript: HeadTailBuffer<MAX_BYTES>,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
     pub(super) fn push_chunk(&mut self, _stream: ExecOutputStream, chunk: &[u8]) {
+        // ALAB(shell-output): collect direct pipes before either buffer can clip.
+        if self.capture_local_chunks
+            && let Some(log) = &self.shell_log
+        {
+            log.append(chunk);
+        }
         self.pending.push_chunk(chunk);
         self.transcript.push_chunk(chunk);
     }
@@ -69,12 +79,18 @@ pub(crate) struct OutputHandles<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX
 }
 
 struct OutputTaskGuard {
+    shell_log: Option<ShellLog>, // ALAB(shell-output): record incomplete drains.
+    complete: bool, // ALAB(shell-output): distinguish EOF from cancellation.
     output_closed: Arc<AtomicBool>,
     output_closed_notify: Arc<Notify>,
 }
 
 impl Drop for OutputTaskGuard {
     fn drop(&mut self) {
+        // ALAB(shell-output): publish capture state before closed.
+        if let Some(log) = &self.shell_log {
+            log.close(self.complete);
+        }
         self.output_closed.store(true, Ordering::Release);
         self.output_closed_notify.notify_waiters();
     }
@@ -99,6 +115,8 @@ enum ProcessHandle {
 /// processes.
 pub(crate) struct UnifiedExecProcess {
     process_handle: ProcessHandle,
+    server_capture: Option<retired_readers::ServerCapture>, // ALAB(shell-output): custody of the raw reader from startup through final ownership release.
+    pub(super) invocation_id: Option<uuid::Uuid>, // ALAB(shell-invocation): immutable identity of this process's shell log.
     output_tx: broadcast::Sender<Vec<u8>>,
     output: OutputHandles,
     output_drained: Arc<Notify>,
@@ -129,9 +147,17 @@ impl UnifiedExecProcess {
         process_handle: ProcessHandle,
         sandbox_type: Option<SandboxType>,
         drain_policy: OutputDrainPolicy,
+        shell_log: Option<ShellLog>, // ALAB(shell-output): install before starting the collector.
     ) -> Self {
+        let server_capture = retired_readers::ServerCapture::new(&process_handle, shell_log.as_ref()); // ALAB(shell-output): only the durable bundled native tap needs cancellation custody.
+        let invocation_id = shell_log.as_ref().map(ShellLog::invocation_id); // ALAB(shell-invocation): the same token for live snapshots and input.
         let output = OutputHandles {
-            output_buffer: Arc::new(Mutex::new(OutputBuffers::default())),
+            // ALAB(shell-output): server-backed local processes capture on ingress.
+            output_buffer: Arc::new(Mutex::new(OutputBuffers {
+                shell_log,
+                capture_local_chunks: matches!(&process_handle, ProcessHandle::Local(_)),
+                ..OutputBuffers::default()
+            })),
             output_notify: Arc::new(Notify::new()),
             output_closed: Arc::new(AtomicBool::new(false)),
             output_closed_notify: Arc::new(Notify::new()),
@@ -145,6 +171,8 @@ impl UnifiedExecProcess {
 
         Self {
             process_handle,
+            server_capture, // ALAB(shell-output): exact raw reader of this launch.
+            invocation_id, // ALAB(shell-invocation): keep this process's original token.
             output_tx,
             output,
             output_drained,
@@ -216,6 +244,11 @@ impl UnifiedExecProcess {
         if self.timed_out() {
             return Some(124);
         }
+        self.observed_exit_code()
+    }
+
+    // ALAB(shell-output): command history needs the backend's observation even when the tool returns timeout 124.
+    pub(super) fn observed_exit_code(&self) -> Option<i32> {
         let state = self.state_rx.borrow().clone();
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => {
@@ -264,7 +297,7 @@ impl UnifiedExecProcess {
                     .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?;
             }
         }
-        self.signal_exit(self.exit_code());
+        self.signal_exit(self.observed_exit_code());
         self.finish_termination();
         Ok(())
     }
@@ -348,7 +381,9 @@ impl UnifiedExecProcess {
             } else {
                 snippet
             };
-            return Err(UnifiedExecError::sandbox_denied(message, exec_output));
+            // ALAB(shell-output): retain bytes emitted before a denied operation.
+            let log = self.output.output_buffer.lock().await.denied_shell_log();
+            return Err(UnifiedExecError::sandbox_denied(message, exec_output, log));
         }
         Ok(())
     }
@@ -356,6 +391,7 @@ impl UnifiedExecProcess {
     pub(super) async fn from_spawned(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
+        shell_log: Option<ShellLog>, // ALAB(shell-output): install before starting the collector.
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -363,20 +399,26 @@ impl UnifiedExecProcess {
             stderr_rx,
             mut exit_rx,
         } = spawned;
+        let native_eof = process_handle.native_output_eof(); // ALAB(shell-output): original native pipe or PTY EOF.
+        let watcher = shell_log.clone(); // ALAB(shell-invocation): observe the actual child wait on its original capture.
         let mut managed = Self::new(
             ProcessHandle::Local(Box::new(process_handle)),
             Some(sandbox_type),
             OutputDrainPolicy::BoundedAfterExit,
+            shell_log, // ALAB(shell-output): local pipes and PTYs.
         );
         managed.output_task = Some(Self::spawn_local_output_task(
             stdout_rx,
             stderr_rx,
             managed.output_handles().clone(),
             managed.output_tx.clone(),
+            native_eof, // ALAB(shell-output): bind this collector to its original descriptors.
+            watcher.clone(), // ALAB(shell-output): an unstarted consumer can still close its capture on cancellation.
         ));
 
         match exit_rx.try_recv() {
             Ok(exit_code) => {
+                super::shell_observation::observe_local_exit(watcher.as_ref(), Some(exit_code)).await; // ALAB(shell-invocation): an immediately available wait result.
                 managed.signal_exit(Some(exit_code));
                 managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
@@ -390,6 +432,7 @@ impl UnifiedExecProcess {
         }
 
         if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
+            super::shell_observation::observe_local_exit(watcher.as_ref(), exit_result.as_ref().ok().copied()).await; // ALAB(shell-invocation): closed senders carry no wait result.
             managed.signal_exit(exit_result.ok());
             managed.check_for_sandbox_denial().await?;
             return Ok(managed);
@@ -400,6 +443,7 @@ impl UnifiedExecProcess {
             let cancellation_token = managed.output.cancellation_token.clone();
             async move {
                 let exit_code = exit_rx.await.ok();
+                super::shell_observation::observe_local_exit(watcher.as_ref(), exit_code).await; // ALAB(shell-invocation): retain the wait result before publishing completion to other tasks.
                 let state = state_tx.borrow().clone();
                 let _ = state_tx.send_replace(state.exited(exit_code));
                 cancellation_token.cancel();
@@ -412,12 +456,14 @@ impl UnifiedExecProcess {
     pub(super) async fn from_exec_server_started(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
+        shell_log: Option<ShellLog>, // ALAB(shell-output): install before starting the collector.
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         // Older peers do not report this field. In that case, skip local
         // classification rather than attributing a violation to a guessed backend.
         let sandbox_type = started.sandbox_type;
-        let mut managed = Self::new(process_handle, sandbox_type, output_drain_policy);
+        // ALAB(shell-output): expose the exec-server capture to polling.
+        let mut managed = Self::new(process_handle, sandbox_type, output_drain_policy, shell_log);
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
@@ -446,6 +492,7 @@ impl UnifiedExecProcess {
             managed.check_for_sandbox_denial().await?;
         }
 
+        managed.release_startup_or_handoff(); // ALAB(shell-output): the native server wrapper completed startup.
         Ok(managed)
     }
 
@@ -470,7 +517,11 @@ impl UnifiedExecProcess {
         let mut events = process.subscribe_events();
         let mut state_rx = state_tx.subscribe();
         tokio::spawn(async move {
+            // ALAB(shell-output): flag replay clipping for the preview.
+            let shell_log = output_buffer.lock().await.shell_log.clone();
             let _output_task_guard = OutputTaskGuard {
+                shell_log: None, // ALAB(shell-output): native exec server owns capture closure.
+                complete: false,
                 output_closed: Arc::clone(&output_closed),
                 output_closed_notify: Arc::clone(&output_closed_notify),
             };
@@ -516,6 +567,7 @@ impl UnifiedExecProcess {
                     }
                     ExecProcessEvent::Failed(_) => None,
                 });
+                super::shell_observation::observe_server_event(shell_log.as_ref(), event.as_ref(), last_seq).await; // ALAB(shell-invocation): retain original exit evidence even when ancillary replay fails.
                 let missing_sandbox_denial = matches!(
                     event.as_ref(),
                     Some(ExecProcessEvent::Exited {
@@ -556,6 +608,18 @@ impl UnifiedExecProcess {
                         failure,
                         sandbox_denied,
                     } = response;
+                    super::shell_observation::observe_server_read(shell_log.as_ref(), exited && failure.is_none(), exit_code).await; // ALAB(shell-invocation): retain an explicit exit before replaying output or waking subscribers.
+                    // ALAB(shell-output): an evicted replay prefix can clip the
+                    // preview before the unified buffers see it. Exit and EOF
+                    // each consume a sequence number without carrying output.
+                    if let Some(log) = &shell_log {
+                        let events = next_seq.saturating_sub(last_seq.saturating_add(1));
+                        let terminal_events = u64::from(exited && !state_tx.borrow().has_exited)
+                            + u64::from(closed);
+                        if events > chunks.len() as u64 + terminal_events {
+                            log.mark_replay_clipped();
+                        }
+                    }
                     for chunk in chunks.into_iter().filter(|chunk| chunk.seq > last_seq) {
                         let bytes = chunk.chunk.into_inner();
                         let mut guard = output_buffer.lock().await;
@@ -659,6 +723,8 @@ impl UnifiedExecProcess {
         mut stderr: tokio::sync::mpsc::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
+        native_eof: codex_utils_pty::NativeOutputEof, // ALAB(shell-output): genuine EOF receipts from the local descriptors.
+        shell_log: Option<ShellLog>, // ALAB(shell-output): complete cancellation even before the reader task starts.
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -667,11 +733,9 @@ impl UnifiedExecProcess {
             output_closed_notify,
             ..
         } = output_handles;
+        // ALAB(shell-output): guard the future itself so an abort before its first poll still settles the log.
+        let mut output_task_guard = OutputTaskGuard { shell_log, complete: false, output_closed, output_closed_notify };
         tokio::spawn(async move {
-            let _output_task_guard = OutputTaskGuard {
-                output_closed: Arc::clone(&output_closed),
-                output_closed_notify: Arc::clone(&output_closed_notify),
-            };
             let mut stdout_open = true;
             let mut stderr_open = true;
             while stdout_open || stderr_open {
@@ -689,7 +753,12 @@ impl UnifiedExecProcess {
                     stderr_open = false;
                 }
             }
+            output_task_guard.finish_native(native_eof); // ALAB(shell-output): qualify suffix before notifying pollers.
         })
+    }
+
+    pub(super) async fn drain_finished_local_failure(&self, log: &ShellLog, code: Option<i32>) { // ALAB(shell-output): only drain an already-closed native input stream.
+        if code.is_some_and(|code| code != 0 && code != -1) && !self.timed_out() && let ProcessHandle::Local(original) = &self.process_handle && original.native_output_eof().observed() == Some(true) { log.wait_for_local_drain().await; } // ALAB(shell-output): a descendant cannot extend this bounded mpsc backlog.
     }
 
     fn signal_exit(&self, exit_code: Option<i32>) {
@@ -701,6 +770,7 @@ impl UnifiedExecProcess {
 
 impl Drop for UnifiedExecProcess {
     fn drop(&mut self) {
+        if self.dispose_final_server_capture() { return; } // ALAB(shell-output): decide from the original backend status before releasing unsettled native readers.
         self.terminate();
     }
 }

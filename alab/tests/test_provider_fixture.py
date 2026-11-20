@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SMOKE = Path(__file__).resolve().parents[1] / "smoke"
@@ -48,9 +49,9 @@ def refuse_source(case, model):
     return [reply[4] for reply in replies]
 
 
-def served(case, model):
+def served(case, model, *, handoff_usage_path=None):
     """The fixture server over plain loopback HTTP, stopped when the test ends."""
-    server, worker = renewal.serve(model, secure=False)
+    server, worker = renewal.serve(model, secure=False, handoff_usage_path=handoff_usage_path)
 
     def stop():
         server.shutdown()
@@ -171,6 +172,49 @@ class ReplyShapeTests(unittest.TestCase):
         self.assertEqual(five_hour["primary_window"], {"used_percent": 100,
             "limit_window_seconds": 18000, "reset_after_seconds": 600, "reset_at": 1600})
         self.assertEqual(five_hour["secondary_window"]["used_percent"], 10)
+
+    def test_named_exec_refuses_only_the_spent_model_bucket(self):
+        from exec_accounts import Model
+        with tempfile.TemporaryDirectory() as directory:
+            model = Model(Path(directory), limit=provider.GOLDEN_MODEL_LIMIT)
+            self.assertEqual(model.reply(foreground(), "old")[0], 200)
+            refusal = model.reply(foreground(), "old")
+            self.assertEqual(refusal[0], 429)
+            headers = refusal[-1]["responseHeaders"]
+            self.assertEqual(headers["x-codex-active-limit"], model.limit)
+            self.assertEqual(headers["x-codex-other-secondary-used-percent"], "100")
+            self.assertEqual(headers["x-codex-secondary-used-percent"], "10")
+            self.assertEqual(model.reply(title(), "old")[0], 429)
+            for generation, allowed, week in (("old", False, 100), ("new", True, 0)):
+                usage = model.usage_body(generation)
+                self.assertTrue(usage["rate_limit"]["allowed"])
+                entry, = usage["additional_rate_limits"]
+                self.assertEqual(entry["limit_name"], model.limit)
+                self.assertIs(entry["rate_limit"]["allowed"], allowed)
+                self.assertEqual(entry["rate_limit"]["secondary_window"]["used_percent"], week)
+
+    def test_named_handoff_accepts_only_native_usage_between_wall_and_target_request(self):
+        limit = provider.GOLDEN_MODEL_LIMIT
+        source = {"account": "source", "method": "GET", "client": "host", "path": USAGE, "routingAccountMatched": True,
+                  "usageEndpointMatched": True, "sessionUsed": 5, "weekUsed": 10,
+                  "allowed": True, "additionalLimits": {limit: {"weekUsed": 100, "allowed": False}}}
+        target = {**source, "account": "target", "additionalLimits": {limit: {"weekUsed": 0, "allowed": True}}}
+        events = [dict(target, monotonicUs=1, responseWrittenUs=2),
+                  {"kind": "foreground", "account": "source", "status": 429, "monotonicUs": 3, "responseWrittenUs": 5},
+                  dict(target, monotonicUs=4, responseWrittenUs=6),
+                  dict(source, client="codex", monotonicUs=6, responseWrittenUs=7),
+                  dict(source, monotonicUs=8, responseWrittenUs=9), dict(target, monotonicUs=10, responseWrittenUs=11),
+                  dict(target, monotonicUs=12, responseWrittenUs=15),
+                  {"kind": "foreground", "account": "target", "monotonicUs": 13}, dict(source, monotonicUs=14)]
+        self.assertEqual(renewal.named_usage_between_requests(events, limit),
+                         [("source", 5, 10, True, 100, False), ("target", 5, 10, True, 0, True)])
+        self.assertEqual(renewal.named_usage_between_requests(events, "another"), [])
+        old_events = [{k: v for k, v in e.items() if k != "responseWrittenUs"} for e in events]
+        self.assertEqual(renewal.named_usage_between_requests(old_events, limit), [])
+        unbound = [{k: v for k, v in e.items() if k != "routingAccountMatched"} for e in events]
+        self.assertEqual(renewal.named_usage_between_requests(unbound, limit), [])
+        unknown_endpoint = [{k: v for k, v in e.items() if k != "usageEndpointMatched"} for e in events]
+        self.assertEqual(renewal.named_usage_between_requests(unknown_endpoint, limit), [])
 
     def test_the_rotation_fixture_serves_a_decodable_reply_to_each_login(self):
         (self.root / "renewed").touch()
@@ -739,6 +783,67 @@ class WallKindTests(unittest.TestCase):
 class ServedReplyTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_named_handoff_measures_complete_usage_exchanges_on_loopback(self):
+        self.check_handoff_on_loopback(shared=True)
+
+    def test_named_handoff_measures_only_the_configured_usage_listener(self):
+        self.check_handoff_on_loopback(shared=False)
+
+    def check_handoff_on_loopback(self, *, shared):
+        model = renewal.Model(self.root, weekly_quota=True)
+        model.limit = provider.GOLDEN_MODEL_LIMIT
+        base = served(self, model, handoff_usage_path=renewal.ROOT_USAGE_PATH)
+        model_base = base if shared else served(self, model)
+
+        def post(generation):
+            request = urllib.request.Request(model_base + "/v1/responses", data=json.dumps(foreground()).encode(),
+                                            headers={"authorization": bearer(generation),
+                                                     "ChatGPT-Account-Id": renewal.QUOTA_ACCOUNTS[generation][1]})
+            try:
+                response = urllib.request.urlopen(request, timeout=10)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                response.read()
+                return response.status
+
+        get(base, USAGE, "old", agent="codex-cli")
+        self.assertEqual(post("old"), 200)
+        self.assertEqual(post("old"), 429)
+        (self.root / "renewed").touch()
+        for generation, other in (("old", "new"), ("new", "old")):
+            account = renewal.QUOTA_ACCOUNTS[generation][1]
+            sibling = renewal.QUOTA_ACCOUNTS[other][1]
+            cases = [(base, USAGE, routes, routes == [account], True) for routes in
+                     ([account], [], [sibling], [account, account], [account, sibling])]
+            cases.append((base, "/other/usage", [account], True, False))
+            if not shared:
+                cases.append((model_base, USAGE, [account], True, False))
+            for origin, path, routes, account_matches, endpoint_matches in cases:
+                with self.subTest(generation=generation, path=path, routes=routes):
+                    conn = http.client.HTTPConnection(urllib.parse.urlsplit(origin).netloc, timeout=10)
+                    try:
+                        conn.putrequest("GET", path)
+                        conn.putheader("Authorization", bearer(generation))
+                        conn.putheader("User-Agent", "codex-cli")
+                        for route in routes:
+                            conn.putheader("cHaTgPt-AccOunt-Id", route)
+                        conn.endheaders()
+                        response = conn.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.loads(response.read())["account_id"], account)
+                    finally:
+                        conn.close()
+                    event = model.http_events[-1]
+                    self.assertIs(event["routingAccountMatched"], account_matches)
+                    self.assertIs(event["usageEndpointMatched"], endpoint_matches)
+        self.assertEqual(post("new"), 200)
+        get(base, USAGE, "new", agent="codex-cli")
+        self.assertEqual([e["routingAccountMatched"] for e in model.http_events if e.get("kind") == "foreground"],
+                         [True, True, True])
+        self.assertEqual(renewal.named_usage_between_requests(model.http_events, model.limit),
+                         [("source", 5, 10, True, 100, False), ("target", 5, 10, True, 0, True)])
         (self.root / "renewed").touch()
 
     def test_a_reply_the_fixture_cannot_build_is_a_recorded_fault_not_a_silent_hang(self):
@@ -786,6 +891,9 @@ class ServedReplyTests(unittest.TestCase):
 
     def test_the_exec_fixture_serves_the_same_decodable_named_reply(self):
         import exec_accounts
+        # Independently generated reset instants need the same provider clock.
+        clock = self.enterContext(mock.patch.object(provider, "time"))
+        clock.time.return_value = provider.GOLDEN_NOW
         model = exec_accounts.Model(self.root, chain=True)
         base = served(self, model)
         for generation, (role, account, user) in renewal.QUOTA_ACCOUNTS.items():

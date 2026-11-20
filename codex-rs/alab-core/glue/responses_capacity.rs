@@ -11,6 +11,26 @@ use codex_http_client::RetryAfter;
 use serde_json::Value;
 use serde_json::json;
 
+pub(super) fn opening_advice(headers: &http::HeaderMap) -> Option<RetryAfter> {
+    if codex_alab_core::active() && headers.contains_key(http::header::RETRY_AFTER) {
+        return RetryAfter::from_headers(headers);
+    }
+    None
+}
+
+/// A successful HTTP handshake can carry a deadline for the next request.
+/// Only a confirmed capacity failure without event-specific advice inherits it.
+pub(super) fn with_opening_advice(mut error: ApiError, opening: Option<RetryAfter>) -> ApiError {
+    if let ApiError::ServerOverloaded { retry_after }
+    | ApiError::PolicyCapacityUnavailable { retry_after } = &mut error
+        && retry_after.is_none()
+        && codex_alab_core::active()
+    {
+        *retry_after = opening;
+    }
+    error
+}
+
 /// Existing terminal event handling has precedence. Exact capacity and request
 /// refusal codes share the response.failed parser and its typed validation.
 /// Request refusals discard retry advice. For capacity, valid nested advice wins;
@@ -18,6 +38,17 @@ use serde_json::json;
 /// A malformed error is never promoted.
 pub(super) fn from_event(error: Option<&Value>, headers: Option<&Value>) -> Option<ApiError> {
     from_event_when_active(codex_alab_core::active(), error, headers)
+}
+
+/// Classify the response first. Only a typed capacity failure can inherit
+/// envelope advice that its own error object did not supply.
+pub(super) fn failed_response(response: Option<Value>, headers: Option<&Value>) -> ApiError {
+    let error = parse_failed_response(response);
+    if codex_alab_core::active() {
+        with_event_advice(error, headers)
+    } else {
+        error
+    }
 }
 
 fn from_event_when_active(
@@ -36,21 +67,26 @@ fn from_event_when_active(
     {
         return None;
     }
-    let mut error = parse_failed_response(Some(json!({ "error": error })));
-    if request_refusal(&error) {
-        return Some(error);
+    let error = parse_failed_response(Some(json!({ "error": error })));
+    match error {
+        ApiError::ServerOverloaded { .. } | ApiError::PolicyCapacityUnavailable { .. } => {
+            Some(with_event_advice(error, headers))
+        }
+        error if request_refusal(&error) => Some(error),
+        _ => None,
     }
-    let (ApiError::ServerOverloaded { retry_after }
-    | ApiError::PolicyCapacityUnavailable { retry_after }) = &mut error
-    else {
-        return None;
-    };
-    if retry_after.is_none() {
+}
+
+fn with_event_advice(mut error: ApiError, headers: Option<&Value>) -> ApiError {
+    if let ApiError::ServerOverloaded { retry_after }
+    | ApiError::PolicyCapacityUnavailable { retry_after } = &mut error
+        && retry_after.is_none()
+    {
         *retry_after = headers
             .and_then(Value::as_object)
             .and_then(|headers| RetryAfter::from_headers(&json_headers_to_http_headers(headers)));
     }
-    Some(error)
+    error
 }
 
 /// Keep already captured advice when ordinary stream failure is selected later.
@@ -174,6 +210,7 @@ mod tests {
             ApiError::ModelNotFound {
                 message: "model gone".into(),
                 status: None,
+                alab_empty_stream: false,
             },
             ApiError::InvalidPrompt {
                 message: "invalid".into(),

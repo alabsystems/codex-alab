@@ -18,7 +18,7 @@ use codex_app_server_protocol::TurnStatus;
 #[tokio::test]
 async fn queued_upgrade_rechecks_a_new_draft_or_turn_and_acks_the_actual_leave()
 -> color_eyre::Result<()> {
-    for changed in ["none", "draft", "turn"] {
+    for changed in ["none", "draft", "turn", "held initial"] {
         let (mut app, mut events, _) = make_test_app_with_channels().await;
         let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
         let started = server.start_thread(&app.config).await?;
@@ -34,6 +34,9 @@ async fn queued_upgrade_rechecks_a_new_draft_or_turn_and_acks_the_actual_leave()
         });
         app.app_event_tx.send(AppEvent::AlabUpgrade(request));
         match changed {
+            "held initial" => {
+                app.chat_widget.initial_user_message = Some("run after replay".into())
+            }
             "draft" => app
                 .chat_widget
                 .apply_external_edit("Keep this unfinished draft".into()),
@@ -63,6 +66,15 @@ async fn queued_upgrade_rechecks_a_new_draft_or_turn_and_acks_the_actual_leave()
         let committed = accepted.await.unwrap_or_else(|err| panic!("{err}"));
         assert_eq!(committed, changed == "none");
         assert_eq!(matches!(control, AppRunControl::Exit(_)), committed);
+        if changed == "held initial" {
+            assert_eq!(
+                app.chat_widget
+                    .initial_user_message
+                    .as_ref()
+                    .map(|message| message.text.as_str()),
+                Some("run after replay")
+            );
+        }
         if changed == "draft" {
             assert_eq!(
                 app.chat_widget.composer_text_with_pending(),

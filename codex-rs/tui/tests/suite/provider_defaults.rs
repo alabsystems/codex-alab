@@ -22,7 +22,7 @@ async fn resume_lists_all_providers_and_fork_keeps_provider_filter() -> Result<(
             (false, true, true),
             (false, false, true),
         ] {
-            let home = tempfile::tempdir_in("/tmp")?;
+            let home = codex_alab_tui::test_paths::short_tempdir()?; // ALAB(test): keep the daemon socket in the protected runner's short scratch directory.
             write_test_config(home.path(), &cwd)?;
             let config_path = home.path().join("config.toml");
             let config = std::fs::read_to_string(&config_path)?;
@@ -230,3 +230,9 @@ requires_openai_auth = true
     );
     Ok(())
 }
+
+#[path = "../../../alab-tui/glue/provider_picker_transports.rs"]
+mod protected_transports; // ALAB(test): exercise provider defaults with actual embedded and explicit WebSocket backends.
+
+#[path = "../../../alab-tui/glue/terminal_model_resume_tests.rs"]
+mod terminal_model_resume; // ALAB(test): check the next real terminal request after a cold resume.

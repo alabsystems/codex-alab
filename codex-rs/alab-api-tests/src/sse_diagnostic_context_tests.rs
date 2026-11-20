@@ -294,31 +294,7 @@ async fn native_websocket_failure_retains_request_dispatch_after_caller_context_
     .await
     .expect("websocket connection deadline")
     .expect("loopback websocket connection");
-    let request = codex_api::ResponsesApiRequest {
-        model: "gpt-context-fixture".into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(serde_json::json!({
-                "type":"message", "role":"user", "content":[{
-                    "type":"input_text", "text":"never-log-websocket-input"
-                }]
-            }))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    };
+    let request = crate::streaming_request("gpt-context-fixture", "never-log-websocket-input");
     let capture = Capture::default();
     let mut stream = {
         let subscriber = tracing_subscriber::registry().with(capture.clone());

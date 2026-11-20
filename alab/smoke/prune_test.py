@@ -157,9 +157,13 @@ def main():
         os.chmod(os.path.join(aterm_dir, "aterm"), 0o755)
         # owed: a dead process's record whose resume line runs p8's codex.
         record = os.path.join(sessions, "999999.json")
+        with open(os.path.join(os.path.dirname(os.path.dirname(HERE)), "codex-rs",
+                               "alab-record-contracts", "fixtures", "session-v1-core.json")) as f:
+            record_core = json.load(f)
         with open(record, "w") as f:
             json.dump(
                 {
+                    **record_core,
                     "v": 1,
                     "pid": 999999,
                     "resumeArgv": [os.path.join(dirs["p8"], "bin", "codex"), "resume", "019a-id"],

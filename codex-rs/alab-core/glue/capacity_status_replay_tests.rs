@@ -64,10 +64,11 @@ fn live() -> (
     (state, guard)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn live_notice_uses_one_reserved_permit_and_only_the_rejoining_connection() {
     let (sender, mut receiver) = channel();
     let (state, _guard) = live();
+    tokio::time::advance(Duration::from_millis(1250)).await;
     assert!(
         sender
             .alab_send_capacity_wait_checked(
@@ -98,6 +99,10 @@ async fn live_notice_uses_one_reserved_permit_and_only_the_rejoining_connection(
     assert_eq!(error.thread_id, "thread");
     assert_eq!(error.turn_id, "turn");
     assert_eq!(error.error.message, CAPACITY_RETRY_NOTICE);
+    assert_eq!(
+        error.error.additional_details.as_deref(),
+        Some("Retry scheduled in 599s.")
+    );
     assert_eq!(
         error.error.codex_error_info,
         Some(CodexErrorInfo::ServerOverloaded)

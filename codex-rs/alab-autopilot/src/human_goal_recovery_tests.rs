@@ -12,6 +12,7 @@ use super::upgrade_handoff_tests::native_test;
 use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
 use codex_alab_core::session::Frame;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_state::ThreadGoalStatus;
 use core_test_support::responses;
 
@@ -21,6 +22,11 @@ const OBJECTIVE: &str = "Finish the original compiler integration and publish it
 async fn harness() -> (Harness, Arc<GoalService>) {
     let goals = Arc::new(GoalService::new());
     let h = Harness::new_with_goals(Some(Arc::clone(&goals))).await;
+    configure(&h).await;
+    (h, goals)
+}
+
+async fn configure(h: &Harness) {
     h.fake.set_policy_key("upgrade", "false");
     h.fake.set_policy_key("autopilot", "cruise");
     h.fake.set_policy_key("limit_wait", "true");
@@ -35,7 +41,6 @@ async fn harness() -> (Harness, Arc<GoalService>) {
     .await;
     h.immediate_point().await;
     h.hold_model_response().await;
-    (h, goals)
 }
 
 async fn goal(h: &Harness) -> codex_state::ThreadGoal {
@@ -175,6 +180,282 @@ async fn finish(h: &Harness) {
 }
 
 #[test]
+fn a_native_goal_turn_establishes_work_before_resume_history_is_available() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            seed_goal(&h, ThreadGoalStatus::UsageLimited, None).await;
+            h.rt.with_state(|state| state.task = false);
+            let db = h.test.codex.state_db().expect("native goal database");
+            goals
+                .set_thread_goal(
+                    &db,
+                    GoalSetRequest {
+                        thread_id: h.rt.id,
+                        objective: GoalObjectiveUpdate::Keep,
+                        status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                        token_budget: GoalTokenBudgetUpdate::Keep,
+                        max_goal_token_budget: None,
+                    },
+                    async { Ok(()) },
+                )
+                .await
+                .expect("resume goal")
+                .apply_runtime_effects(&goals)
+                .await;
+            wait_requests(&h, 1).await;
+            assert!(h.rt.state().task, "a usage reset must have a task to wake");
+            finish(&h).await;
+        })
+        .await
+        .expect("native goal start");
+    });
+}
+
+#[test]
+fn explicit_continue_recovers_the_same_goal_during_the_running_human_turn() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            for (input, expected, assistant_first) in [
+                ("continue", ThreadGoalStatus::Active, false),
+                ("continue", ThreadGoalStatus::Active, true),
+                (
+                    "continue reviewing the new task",
+                    ThreadGoalStatus::UsageLimited,
+                    false,
+                ),
+            ] {
+                #[derive(Default)]
+                struct GoalUpdates(Mutex<Vec<codex_protocol::protocol::ThreadGoalUpdatedEvent>>);
+                impl codex_extension_api::ExtensionEventSink for GoalUpdates {
+                    fn emit(&self, event: codex_protocol::protocol::Event) {
+                        if let EventMsg::ThreadGoalUpdated(goal) = event.msg {
+                            lock(&self.0).push(goal);
+                        }
+                    }
+                    fn emit_warning(&self, _: codex_extension_api::ExtensionWarning) {}
+                }
+                let updates = Arc::new(GoalUpdates::default());
+                let goals = Arc::new(GoalService::new());
+                let h = Harness::new_with_goal_status_sink(goals, updates.clone()).await;
+                configure(&h).await;
+                let original = seed_goal(&h, ThreadGoalStatus::UsageLimited, Some(10000)).await;
+                let before = h.rt.accepted_turns.load(Ordering::SeqCst);
+                let mut first = vec![responses::ev_response_created("manual-progress")];
+                if assistant_first {
+                    first.push(responses::ev_assistant_message(
+                        "first-item",
+                        "I am continuing with the original goal.",
+                    ));
+                }
+                first.extend([
+                    responses::ev_function_call(
+                        "progress",
+                        "exec_command",
+                        r#"{"cmd":"echo manual-progress-observed"}"#,
+                    ),
+                    responses::ev_completed("manual-progress"),
+                ]);
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .respond_with(responses::sse_response(responses::sse(first)))
+                    .with_priority(1)
+                    .up_to_n_times(1)
+                    .mount(&h._server)
+                    .await;
+                h.test
+                    .codex
+                    .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                        text: input.into(),
+                        text_elements: vec![],
+                    }]))
+                    .await
+                    .expect("human input accepted");
+                wait_requests(&h, 2).await;
+                let requests = responses::received_responses_requests(&h._server).await;
+                let (output, _) = requests[1]
+                    .function_call_output_content_and_success("progress")
+                    .expect("native shell result in the running human turn");
+                assert!(output.unwrap_or_default().contains("manual-progress-observed"));
+                let recovered = goal(&h).await;
+                assert_eq!(recovered.goal_id, original.goal_id);
+                assert_eq!(recovered.status, expected);
+                let active_notices = lock(&updates.0)
+                    .iter()
+                    .filter(|event| {
+                        event.thread_id == h.rt.id
+                            && event.turn_id.is_none()
+                            && event.goal.status
+                                == codex_protocol::protocol::ThreadGoalStatus::Active
+                    })
+                    .count();
+                assert_eq!(
+                    active_notices,
+                    usize::from(expected == ThreadGoalStatus::Active)
+                );
+                assert!(h.shared.turn_running_on(h.rt.key()));
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), before + 1);
+                finish(&h).await;
+            }
+        })
+        .await
+        .expect("running human goal recovery");
+    });
+}
+
+#[test]
+fn explicit_continue_yields_to_a_newer_accepted_steer() {
+    #[derive(Default)]
+    struct FirstTool {
+        entered: AtomicBool,
+        before: tokio::sync::Notify,
+        run_autopilot: tokio::sync::Notify,
+        after: tokio::sync::Notify,
+        run_tool: tokio::sync::Notify,
+    }
+    impl TurnLifecycleContributor for FirstTool {}
+    impl ToolLifecycleContributor for FirstTool {
+        fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                if input.tool_name.name != "exec_command" {
+                    return;
+                }
+                if self.entered.swap(true, Ordering::SeqCst) {
+                    self.after.notify_one();
+                    self.run_tool.notified().await;
+                } else {
+                    self.before.notify_one();
+                    self.run_autopilot.notified().await;
+                }
+            })
+        }
+    }
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            const STEER: &str = "Leave the previous goal parked. What is the current status?";
+            for reauthorize in [false, true] {
+                let tool = Arc::new(FirstTool::default());
+                // Hold the original native shell call immediately before and after
+                // Autopilot. Core has already accepted the model's tool call at both points.
+                let h = Harness::new_with_accounted_goals_and_lifecycle_observers(
+                    Arc::new(GoalService::new()),
+                    tool.clone(),
+                    tool.clone(),
+                    tool.clone(),
+                    None,
+                )
+                .await;
+                configure(&h).await;
+                let original = seed_goal(&h, ThreadGoalStatus::UsageLimited, None).await;
+                let eval_hold = h.rt.hold_eval_when_free().await;
+                let first = responses::sse(vec![
+                    responses::ev_response_created("original-request"),
+                    responses::ev_function_call(
+                        "original-tool",
+                        "exec_command",
+                        r#"{"cmd":"echo earlier-response"}"#,
+                    ),
+                    responses::ev_completed("original-request"),
+                ]);
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .respond_with(responses::sse_response(first))
+                    .with_priority(1)
+                    .up_to_n_times(1)
+                    .mount(&h._server)
+                    .await;
+                let answer = responses::sse(vec![
+                    responses::ev_response_created("status"),
+                    responses::ev_assistant_message(
+                        "status-answer",
+                        "The original goal is parked.",
+                    ),
+                    responses::ev_completed("status"),
+                ]);
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .respond_with(responses::sse_response(answer))
+                    .with_priority(2)
+                    .up_to_n_times(1)
+                    .mount(&h._server)
+                    .await;
+                let request = |text: &str| {
+                    TurnInputRequest::user_input(vec![UserInput::Text {
+                        text: text.into(),
+                        text_elements: vec![],
+                    }])
+                };
+                let started = h
+                    .test
+                    .codex
+                    .start_or_steer_turn(request("continue"))
+                    .await
+                    .unwrap();
+                let codex_core::TurnInputSubmission::Started {
+                    turn_id,
+                    root_turn_id,
+                } = started
+                else {
+                    panic!("expected a new native turn");
+                };
+                tool.before.notified().await;
+                let steer = h
+                    .test
+                    .codex
+                    .start_or_steer_turn(request(STEER))
+                    .await
+                    .unwrap();
+                let same_turn = codex_core::TurnInputSubmission::Steered {
+                    turn_id,
+                    root_turn_id,
+                };
+                assert_eq!(steer, same_turn);
+                if reauthorize {
+                    assert_eq!(
+                        h.test
+                            .codex
+                            .start_or_steer_turn(request("continue"))
+                            .await
+                            .unwrap(),
+                        same_turn
+                    );
+                }
+                tool.run_autopilot.notify_one();
+                tool.after.notified().await;
+                let after_older_response = goal(&h).await;
+                tool.run_tool.notify_one();
+                assert_eq!(after_older_response.status, ThreadGoalStatus::UsageLimited);
+                core_test_support::wait_for_event_with_timeout(
+                    &h.test.codex,
+                    |event| matches!(event, EventMsg::TurnComplete(_)),
+                    HANG,
+                )
+                .await;
+                let requests = responses::received_responses_requests(&h._server).await;
+                assert!(!requests[0].body_contains_text(STEER));
+                assert!(
+                    requests[1..]
+                        .iter()
+                        .any(|request| request.body_contains_text(STEER))
+                );
+                let ended = goal(&h).await;
+                assert_eq!(ended.goal_id, original.goal_id);
+                assert_eq!(
+                    ended.status,
+                    if reauthorize {
+                        ThreadGoalStatus::Active
+                    } else {
+                        ThreadGoalStatus::UsageLimited
+                    }
+                );
+                assert!(lock(&h.rt.human_goal_recovery).is_none());
+                drop(eval_hold);
+                finish(&h).await;
+            }
+        })
+        .await
+        .expect("newer native steer");
+    });
+}
+
+#[test]
 fn a_real_human_status_answer_recovers_the_same_cruise_goal_through_native_goal_start() {
     native_test(|| async {
         tokio::time::timeout(HANG, async {
@@ -305,6 +586,7 @@ fn an_aborted_error_or_current_quota_wall_is_not_a_successful_human_recovery() {
                     }
                     "quota" => {
                         end.wall = Some(Wall::Usage {
+                            limit_class: LimitClass::Ordinary,
                             reset_at: Some(clock() + Duration::from_secs(3600)),
                             reset_label: Some("a future usage reset".into()),
                         })

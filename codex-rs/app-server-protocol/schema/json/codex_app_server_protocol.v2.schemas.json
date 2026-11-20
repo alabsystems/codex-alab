@@ -17448,6 +17448,38 @@
         }
       ]
     },
+    "RetainedConfiguredNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "frontier": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/definitions/RetainedFrontierOutcome"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "frontier",
+        "outcome",
+        "runtime",
+        "snapshot",
+        "version"
+      ],
+      "title": "RetainedConfiguredNotification",
+      "type": "object"
+    },
     "RetainedFrontierFailure": {
       "description": "Closed classification only. It identifies no underlying private payload, physical cause, absent child, Native effect settlement or permission.",
       "enum": [
@@ -18330,6 +18362,26 @@
             "params"
           ],
           "title": "Alab/thread/goal/runtimeUpdatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "alab/retainedConfigured"
+              ],
+              "title": "Alab/retainedConfiguredNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/RetainedConfiguredNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Alab/retainedConfiguredNotification",
           "type": "object"
         },
         {

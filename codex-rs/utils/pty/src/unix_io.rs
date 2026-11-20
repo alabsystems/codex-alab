@@ -45,6 +45,7 @@ impl PtyIo {
         stdout_tx: mpsc::Sender<Vec<u8>>,
         mut writer_rx: mpsc::Receiver<Vec<u8>>,
         stdin_close: StdinCloseBehavior,
+        eof: crate::NativeOutputEof, // ALAB(shell-output): positive receipt from this Unix PTY master.
     ) -> (JoinHandle<()>, JoinHandle<()>) {
         let fd = self.fd;
         let reader = Arc::clone(&fd);
@@ -55,14 +56,14 @@ impl PtyIo {
                     .async_io(Interest::READABLE, |mut file| file.read(&mut buf))
                     .await
                 {
-                    Ok(0) => break,
+                    Ok(0) => { eof.finish(3); break; } // ALAB(shell-output): genuine merged-stream EOF.
                     Ok(count) => {
                         // Output caps may close the receiver before the child exits.
                         let _ = stdout_tx.send(buf[..count].to_vec()).await;
                     }
                     Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                     // Unix PTYs may report EIO rather than EOF when the slave closes.
-                    Err(_) => break,
+                    Err(err) => { if crate::NativeOutputEof::pty_hung_up(reader.get_ref().as_raw_fd(), &err) { eof.finish(3); } break; } // ALAB(shell-output): require kernel hangup alongside EIO.
                 }
             }
         });

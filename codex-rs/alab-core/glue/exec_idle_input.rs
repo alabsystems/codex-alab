@@ -155,7 +155,14 @@ impl crate::CodexThread {
             };
         }
         let root = !self.session_source.is_non_root_agent();
-        validate_idle_state(&self.session, root).await?;
+        // The forest already checked and froze this original controller under
+        // its final manager decision. Validate the remaining live local input.
+        let inspect_controller = root
+            && self
+                .thread_extension_data()
+                .get::<super::results::ExecResultCustody>()
+                .is_none();
+        validate_idle_state(&self.session, inspect_controller).await?;
         persist_idle_history(&self.session).await?;
         let controller = if root {
             Some(
@@ -297,6 +304,11 @@ async fn seal_idle(session: &Session, seal: &crate::ExecTreeSeal) -> Result<(), 
 }
 
 pub(super) async fn capture(session: &Session) -> Result<(IdleMetadata, Vec<TurnInput>), String> {
+    session
+        .services
+        .local_agent_runtime
+        .require_confirmed_exec_results()
+        .map_err(|error| error.to_string())?;
     let frozen = session
         .services
         .thread_extension_data
@@ -418,13 +430,15 @@ pub(crate) async fn install(session: &Session, input: PreparedExecIdleInput) -> 
         return Err("idle input requires a fresh idle child".into());
     }
     let owns_controller = input.controller.is_some();
-    if let Some(controller) = input.controller {
-        session
-            .services
-            .local_agent_runtime
-            .restore_exec_mailboxes_quiet(controller)
-            .map_err(|error| error.to_string())?;
-    }
+    session
+        .services
+        .local_agent_runtime
+        .restore_exec_accepted_mail(
+            input.controller.unwrap_or_default(),
+            input.mailbox.iter().map(|(mail, _)| mail),
+            false,
+        )
+        .map_err(|error| error.to_string())?;
     let mut mailbox = session.input_queue.mailbox_pending_mails.lock().await;
     session.input_queue.read_mailbox(&mut mailbox);
     let mut restored = input
@@ -601,6 +615,48 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn idle_session_binds_only_its_admitted_queued_result() {
+        use crate::agent_communication::ExecPublication;
+        use crate::agent_communication::MessageDelivery;
+        use std::sync::atomic::Ordering;
+
+        let (session, _) = crate::session::tests::make_session_and_context().await;
+        let runtime = &session.services.local_agent_runtime;
+        let delivery = MessageDelivery::restore_exec(ExecPublication::QueuedResult {
+            sender: ThreadId::new(),
+            scope_id: uuid::Uuid::now_v7(),
+        });
+        let mail = crate::PendingAgentMessage::new(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                "finished".into(),
+                false,
+            ),
+            Some(delivery),
+        );
+        let input = |thread| PreparedExecIdleInput {
+            thread,
+            controller: None,
+            mailbox: vec![(mail.clone(), Default::default())],
+        };
+        assert!(install(&session, input(ThreadId::new())).await.is_err());
+        assert_eq!(runtime.exec_result_counter().load(Ordering::Acquire), 0);
+        install(&session, input(session.thread_id)).await.unwrap();
+        assert!(install(&session, input(session.thread_id)).await.is_err());
+        assert_eq!(runtime.exec_result_counter().load(Ordering::Acquire), 1);
+        let mut queue = session.input_queue.mailbox_pending_mails.lock().await;
+        let queued = queue.pop_front().unwrap();
+        assert!(queue.is_empty());
+        let receipt = queued.communication.consumed(session.thread_id).unwrap();
+        assert!(mail.consumed(session.thread_id).is_none());
+        assert_eq!(runtime.exec_result_counter().load(Ordering::Acquire), 1);
+        receipt.confirm();
+        assert_eq!(runtime.exec_result_counter().load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]

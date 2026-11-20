@@ -86,12 +86,8 @@ fn cell_content_layout(
             width,
         )
     };
-    if let Some(protocol) = presentation.image_protocol
-        && let Some(path) = cell.image_path()
-    {
-        layout.image =
-            crate::transcript_image::TranscriptImage::load(path.as_path(), width, protocol)
-                .map(Arc::new);
+    if let Some(protocol) = presentation.image_protocol {
+        layout.images = super::image_layout::load(cell, width, protocol); // ALAB(image-history): user prompts and tool results share layout caching.
     }
     layout
 }
@@ -161,7 +157,8 @@ impl TranscriptView {
             detailed: full_content,
             image_protocol: self
                 .image_protocol
-                .filter(|_| mode == HistoryRenderMode::Rich && reveal_image),
+                .filter(|_| mode == HistoryRenderMode::Rich && reveal_image)
+                .filter(|_| super::image_layout::enabled_for(cell)), // ALAB(image-history): the vanilla choice is part of each prompt layout's cache key.
         }
     }
 
@@ -418,11 +415,7 @@ impl LayoutCache {
     fn evict(&mut self) {
         let retained_bytes = |entry: &CachedLayout| {
             entry.layout.text().len()
-                + entry
-                    .layout
-                    .image
-                    .as_ref()
-                    .map_or(0, |image| image.pixels.len())
+                + entry.layout.images.iter().map(|image| image.pixels.len()).sum::<usize>() // ALAB(image-history): count every retained preview against the cache limit.
         };
         let mut bytes = self.entries.iter().map(retained_bytes).sum::<usize>();
         // Retain a single oversized entry rather than repeatedly laying it out while visible.

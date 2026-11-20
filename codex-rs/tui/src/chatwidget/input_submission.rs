@@ -516,6 +516,8 @@ impl ChatWidget {
             /*final_output_json_schema*/ None,
             collaboration_mode,
         );
+        let op = self.alab_bind_observed_steer(op); // ALAB(queue-review): carry the running turn across queued UI events.
+        let op = self.alab_mark_inherited_turn(op); // ALAB(defaults): carry the compose-time source across queue and catalog races.
         let submitted_message = UserMessage {
             text,
             local_images,

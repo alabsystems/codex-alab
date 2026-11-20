@@ -111,71 +111,78 @@ where
     })
 }
 
+#[inline(never)]
+fn boxed_request<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 /// Called by the original request-handle dispatcher. No transport, request ID,
 /// unowned fields, trace or server error is reconstructed by the TUI caller.
-pub(crate) async fn request(
+pub(crate) fn request(
     handle: &AppServerRequestHandle,
     request: ClientRequest,
-) -> IoResult<RequestResult> {
-    let Some(scope) = ORIGINAL_CONFIG.try_with(Arc::clone).ok() else {
-        return crate::retained_frontier::original_policy::request(handle, request).await;
-    };
-    if matches!(
-        request.method_name(),
-        "thread/start" | "thread/fork" | "thread/resume"
-    ) {
-        return Err(unavailable(
-            "configured projection cannot construct a Core inside the config installation scope",
-        ));
-    }
-    if request.method_name() != "config/read" {
-        return crate::retained_frontier::original_policy::request(handle, request).await;
-    }
-    {
-        let mut attempted = scope
-            .attempted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if *attempted {
-            return Err(unavailable("configured original read already attempted"));
+) -> impl std::future::Future<Output = IoResult<RequestResult>> {
+    boxed_request(move || async move {
+        let Some(scope) = ORIGINAL_CONFIG.try_with(Arc::clone).ok() else {
+            return crate::retained_frontier::original_policy::request(handle, request).await;
+        };
+        if matches!(
+            request.method_name(),
+            "thread/start" | "thread/fork" | "thread/resume"
+        ) {
+            return Err(unavailable(
+                "configured projection cannot construct a Core inside the config installation scope",
+            ));
         }
-        *attempted = true;
-    }
-    let AppServerRequestHandle::Remote(actual) = handle else {
-        return Err(unavailable("configured original client changed"));
-    };
-    if !scope.handle.alab_same_channel(actual)
-        || crate::retained_frontier::original_policy_active()
-        || crate::alab_initial_session_client::owns_construction_fallback()
-    {
-        return Err(unavailable(
-            "configured original request changed channel or operation scope",
-        ));
-    }
-    let wire: JSONRPCRequest =
-        serde_json::from_value(serde_json::to_value(request).map_err(IoError::other)?)
-            .map_err(IoError::other)?;
-    let mut value = match send(
-        handle,
-        wire,
-        &metadata::Selection::Project {
-            frontier: scope.frontier.clone(),
-        },
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(TypedRequestError::Server { source, .. }) => return Ok(Err(source)),
-        Err(TypedRequestError::Transport { source, .. }) => return Err(source),
-        Err(TypedRequestError::Deserialize { source, .. }) => {
-            return Err(IoError::new(ErrorKind::InvalidData, source));
+        if request.method_name() != "config/read" {
+            return crate::retained_frontier::original_policy::request(handle, request).await;
         }
-    };
-    let receipt =
-        remove_receipt(&mut value).map_err(|error| IoError::new(ErrorKind::InvalidData, error))?;
-    if receipt.frontier_data() != scope.frontier {
-        return Err(unavailable("configured original frontier disagrees"));
-    }
-    *scope.receipt.lock().unwrap_or_else(PoisonError::into_inner) = Some(receipt);
-    Ok(Ok(value))
+        {
+            let mut attempted = scope
+                .attempted
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *attempted {
+                return Err(unavailable("configured original read already attempted"));
+            }
+            *attempted = true;
+        }
+        let AppServerRequestHandle::Remote(actual) = handle else {
+            return Err(unavailable("configured original client changed"));
+        };
+        if !scope.handle.alab_same_channel(actual)
+            || crate::retained_frontier::original_policy_active()
+            || crate::alab_initial_session_client::owns_construction_fallback()
+        {
+            return Err(unavailable(
+                "configured original request changed channel or operation scope",
+            ));
+        }
+        let wire: JSONRPCRequest =
+            serde_json::from_value(serde_json::to_value(request).map_err(IoError::other)?)
+                .map_err(IoError::other)?;
+        let mut value = match send(
+            handle,
+            wire,
+            &metadata::Selection::Project {
+                frontier: scope.frontier.clone(),
+            },
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(TypedRequestError::Server { source, .. }) => return Ok(Err(source)),
+            Err(TypedRequestError::Transport { source, .. }) => return Err(source),
+            Err(TypedRequestError::Deserialize { source, .. }) => {
+                return Err(IoError::new(ErrorKind::InvalidData, source));
+            }
+        };
+        let receipt = remove_receipt(&mut value)
+            .map_err(|error| IoError::new(ErrorKind::InvalidData, error))?;
+        if receipt.frontier_data() != scope.frontier {
+            return Err(unavailable("configured original frontier disagrees"));
+        }
+        *scope.receipt.lock().unwrap_or_else(PoisonError::into_inner) = Some(receipt);
+        Ok(Ok(value))
+    })
 }

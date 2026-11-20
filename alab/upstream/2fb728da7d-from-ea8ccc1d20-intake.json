@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "base": "ea8ccc1d20ff65398e02490ac34f8c1012848625",
+  "target": "2fb728da7d0b3e4273f19c3b4eb798a13cacb37c",
+  "frontier": "ea8ccc1d20ff65398e02490ac34f8c1012848625",
+  "commits": [
+    {
+      "sha": "2fb728da7d0b3e4273f19c3b4eb798a13cacb37c",
+      "subject": "Retry executor discovery V2 failures with backoff (#62679)",
+      "paths": [
+        "codex-rs/core/src/session/executor_discovery.rs",
+        "codex-rs/core/tests/suite/executor_discovery_v2.rs",
+        "codex-rs/core/tests/suite/scenarios.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__v2_discovery_readiness.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__v2_discovery_readiness_failure.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__executor_discovery_v2__v2_discovery_readiness_permanent_failure.snap",
+        "codex-rs/exec-server/src/capability_discovery_v2_cache.rs",
+        "codex-rs/exec-server/src/capability_discovery_v2_cache_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Coalesce repeated executor discovery failures per context. A lookup after the cooldown can recover inventory when a server is healthy again. Cancellation leaves another caller free to try, and explicit invalidation can request fresh inventory immediately.",
+      "evidence": [
+        "2fb728da7d:codex-rs/exec-server/src/capability_discovery_v2_cache.rs keeps the successful response in a per-context OnceCell. Failed loads retain the error and retry deadline with delays from one to thirty seconds. Reads during cooldown reuse the error without extending the deadline. A cancelled load produces neither a result nor a new failure. Lookups make progress on demand without a background retry task.",
+        "2fb728da7d:codex-rs/exec-server/src/capability_discovery_v2_cache.rs replaces invalidated entries, clears their cooldown, and carries the forced-rescan flag into retries. Existing readers retain their own entry. The source distinguishes execution context in the existing cache key.",
+        "2fb728da7d:codex-rs/core/src/session/executor_discovery.rs uses the actual inventory snapshot change when deciding to refresh the MCP projection. The remote Core tests cover ordinary and forced recovery plus restored MCP availability without another explicit invalidation.",
+        "2fb728da7d:codex-rs/exec-server/src/capability_discovery_v2_cache_tests.rs contains independent controls for backoff across reads, queued callers, cancellation, and isolation across contexts.",
+        "All four exec-server cache tests passed on pristine upstream 2fb728da7d with source-selected Trust 15698 on macOS arm64. They exercised repeated reads during cooldown, queued callers, cancellation, and per-context invalidation. Native libtest log SHA-256 1c4c2b60f382b56d6fcba548e2fc044a4fb081c0b5688009fdbdc7cd7e4a1ad0.",
+        "The three native Core loopback tests also passed on the same pristine checkout and locked graph. Ordinary and forced loads both retried after failure. A recovered inventory refreshed the MCP projection without explicit invalidation. Native libtest log SHA-256 fe7572853edf30d02faf72a5f001b7744871aaa821e5a55840275db7d7ce9af2."
+      ],
+      "revisit": ""
+    }
+  ]
+}

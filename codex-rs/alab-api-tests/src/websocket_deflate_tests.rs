@@ -238,33 +238,6 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-fn request(index: usize) -> codex_api::ResponsesApiRequest {
-    codex_api::ResponsesApiRequest {
-        model: MODEL.into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(json!({
-                "type":"message", "role":"user",
-                "content":[{"type":"input_text", "text":input_text(index)}]
-            }))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    }
-}
-
 fn extension_offered(headers: &http::HeaderMap) -> bool {
     headers
         .get_all("sec-websocket-extensions")
@@ -382,7 +355,7 @@ async fn exchange(compressed: bool) {
     .expect("public Responses Upgrade deadline")
     .expect("real public Responses connection");
     for index in 0..2 {
-        let request = request(index);
+        let request = crate::streaming_request(MODEL, input_text(index));
         let mut create = codex_api::ResponseCreateWsRequest::from(&request);
         if index == 1 {
             create.previous_response_id = Some(response_id(0));

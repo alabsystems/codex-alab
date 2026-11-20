@@ -96,3 +96,15 @@ async fn retained_actual_app_transcript_capture_preserves_queue_tail_and_replay_
     }
     Ok(())
 }
+
+#[path = "retained_provider_work_tests.rs"]
+mod provider_work_controls;
+
+#[path = "retained_managed_worktree_work_tests.rs"]
+mod managed_worktree_work_controls;
+
+#[path = "retained_feature_save_work_tests.rs"]
+mod feature_save_work_controls;
+
+#[path = "retained_feature_fetch_work_tests.rs"]
+mod feature_fetch_work_controls;

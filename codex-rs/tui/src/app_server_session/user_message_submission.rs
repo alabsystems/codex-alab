@@ -131,6 +131,7 @@ impl AppServerSession {
             unreachable!("user-message submission requires a user turn")
         };
         let cloud = self.thread_params_mode() == ThreadParamsMode::Cloud;
+        let mut start_trigger = *turn_trigger; // ALAB(queue-review): only an actual missing observed steer changes the fallback's admission.
         if (!cloud || intent == CloudSubmissionIntent::UseKnownTurn) && active_turn.is_some() {
             if *turn_trigger != "user" {
                 return Err(UserMessageSubmissionFailure::Unhandled(
@@ -138,6 +139,7 @@ impl AppServerSession {
                 ));
             }
             let mut retried = false;
+            let observed = op.alab_observed_steer_for(thread_id, self.thread_params_mode()) == active_turn.as_deref(); // ALAB(queue-review): the initial strict request names this widget's observed turn.
             while let Some(turn_id) = active_turn.clone() {
                 let error = match self
                     .turn_steer(
@@ -158,6 +160,7 @@ impl AppServerSession {
                 }
                 match active_turn_steer_race(&error) {
                     Some(ActiveTurnSteerRace::Missing) => {
+                        if observed { start_trigger = codex_protocol::turn_input::OBSERVED_STEER_FALLBACK_TRIGGER; } // ALAB(queue-review): another writer can publish a finding between these two RPCs.
                         *active_turn = None;
                         break;
                     }
@@ -247,9 +250,10 @@ impl AppServerSession {
             return Ok((admission, take_selection(self)));
         }
         let settings = start_settings();
+        let inherited = crate::chatwidget::alab_turn_model::inherits(op, thread_id, self.thread_settings_update_supported); // ALAB(defaults): preserve explicit and legacy client-owned selections.
         self.turn_start(
             thread_id,
-            turn_trigger,
+            start_trigger, // ALAB(queue-review): retain the pre-finding admission at the server's final decision.
             client_user_message_id.clone(),
             items.clone(),
             cwd.clone(),
@@ -257,11 +261,11 @@ impl AppServerSession {
             settings.approvals_reviewer,
             settings.permissions,
             settings.workspace_roots,
-            model.to_string(),
-            effort.clone(),
+            (!inherited).then(|| model.to_string()), // ALAB(defaults): keep the model the destination holds at admission.
+            effort.as_ref().filter(|_| !inherited).cloned(), // ALAB(defaults): the observed effort belongs to that same selection.
             *summary,
             service_tier.clone(),
-            collaboration_mode.clone(),
+            collaboration_mode.as_ref().filter(|_| !inherited).cloned(), // ALAB(defaults): a full collaboration mode also carries a model slug.
             final_output_json_schema.clone(),
             program.map(Into::into),
             selection.as_ref(),

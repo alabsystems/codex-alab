@@ -48,6 +48,7 @@ pub fn build_startup_models(
         &installation_id,
     );
     let catalog = ThreadModelCatalog::new(
+        config.alab_follows_explicit_api_catalog(), // ALAB(defaults): select catalog behavior by configured provider ID.
         config.model_provider.clone(),
         config.model_catalog.clone(),
         factory,
@@ -66,6 +67,7 @@ pub fn build_startup_models(
 }
 
 pub(super) struct ThreadModelCatalog {
+    alab_registered_api: bool, // ALAB(defaults): equal provider data may come from different registered IDs.
     pub(super) manager: SharedModelsManager,
     provider: ModelProviderInfo,
     catalog: Option<ModelsResponse>,
@@ -85,7 +87,7 @@ pub fn build_models_manager(
             .filter(|_| config.features.enabled(Feature::RuntimeAgentInstances))
             .map(|runtime| (runtime, config.runtime_auth_mode)),
     };
-    ModelCatalogSettings::disk(config.codex_home.to_path_buf()).build(
+    codex_model_provider::alab_openai_api_catalog::build(&ModelCatalogSettings::disk(config.codex_home.to_path_buf()), config.alab_follows_explicit_api_catalog(), // ALAB(defaults): standalone catalog creation retains registry context.
         auth.model_provider(config.model_provider.clone()),
         config.model_catalog.clone(),
         config.features.enabled(Feature::ApiKeyModelDiscovery),
@@ -94,6 +96,7 @@ pub fn build_models_manager(
 
 impl ThreadModelCatalog {
     pub(super) fn new(
+        alab_registered_api: bool, // ALAB(defaults): retain this native catalog's registry context.
         provider: ModelProviderInfo,
         catalog: Option<ModelsResponse>,
         factory: Arc<dyn ModelCatalogFactory>,
@@ -101,12 +104,13 @@ impl ThreadModelCatalog {
         auth: ProviderAuthContext,
     ) -> Self {
         let runtime_mode = auth.runtime_auth.as_ref().map(|(_, mode)| *mode);
-        let manager = factory.build(
+        let manager = codex_model_provider::alab_openai_api_catalog::build(factory.as_ref(), alab_registered_api, // ALAB(defaults): registry context belongs to the constructed catalog.
             auth.model_provider(provider.clone()),
             catalog.clone(),
             api_key_model_discovery_default,
         );
         Self {
+            alab_registered_api, // ALAB(defaults): keep the catalog's identity for reuse.
             manager,
             provider,
             catalog,
@@ -157,6 +161,7 @@ impl ThreadModelCatalog {
         let api_key_model_discovery_default =
             config.features.enabled(Feature::ApiKeyModelDiscovery);
         if same_owner
+            && self.alab_registered_api == config.alab_follows_explicit_api_catalog() // ALAB(defaults): a custom provider cannot reuse the native API catalog.
             && self.runtime_mode == auth.runtime_auth.as_ref().map(|(_, mode)| *mode)
             && self.matches_catalog_provider(&config.model_provider)
             && self.catalog.as_ref() == models
@@ -164,7 +169,7 @@ impl ThreadModelCatalog {
         {
             return Arc::clone(&self.manager);
         }
-        self.factory.build(
+        codex_model_provider::alab_openai_api_catalog::build(self.factory.as_ref(), config.alab_follows_explicit_api_catalog(), // ALAB(defaults): replacement catalogs receive the new provider identity.
             auth.model_provider(config.model_provider.clone()),
             models.cloned(),
             api_key_model_discovery_default,

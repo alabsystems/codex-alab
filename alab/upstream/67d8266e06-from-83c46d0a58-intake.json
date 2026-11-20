@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "base": "83c46d0a58950c63f1ceff9a79ccb31bc612ec07",
+  "target": "67d8266e06e469e5aef78a23881c7e19c37030b0",
+  "frontier": "83c46d0a58950c63f1ceff9a79ccb31bc612ec07",
+  "commits": [
+    {
+      "sha": "06789c7618611ba7059af026ae8efd0b14f7017b",
+      "subject": "Preserve web search provider ownership across thread resumes (#62144)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server/tests/suite/v2/thread_inject_items.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/model_search.rs",
+        "codex-rs/core/src/session/inject_tests.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/tests/suite/scenarios_web_search.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__web_search__model_selected_search_preserves_discovery_and_call_history.snap",
+        "codex-rs/history/src/lib.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery",
+        "execution-continuity",
+        "exec-handoff",
+        "history-pagination"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the search provider that produced references when a thread is resumed or forked. Preserve the explicit Unused checkpoint and conservative handling of older history so hosted search cannot fall back to a different provider after recording references.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 40eeff9f21ed304099a7cc084c6a976bc57656d2ea1f1c5376923cc609b13fcf.",
+        "The new optional checkpoint is read from the borrowed original rollout and compacted history. It takes precedence over legacy search attribution and native-fallback metadata.",
+        "ALab persistent and ephemeral recovery already restore annotated InitialHistory before session startup. Owned metadata literals use defaults and no extra provider authority is required."
+      ],
+      "revisit": "Verify search owner with metadata-free histories, explicit provider choice, and annotated recovery on both ordinary resume and native exec."
+    },
+    {
+      "sha": "67d8266e06e469e5aef78a23881c7e19c37030b0",
+      "subject": "Signal workspace routing readiness in account updates (#62145)",
+      "paths": [
+        "codex-rs/app-server-client/src/lib.rs",
+        "codex-rs/app-server-client/src/remote.rs",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/AccountUpdatedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/AccountUpdateReason.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/AccountUpdatedNotification.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/index.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/account.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/src/account_notifications_tests.rs",
+        "codex-rs/app-server/src/outgoing_message.rs",
+        "codex-rs/app-server/src/request_processors/account_processor.rs",
+        "codex-rs/app-server/src/request_processors/account_processor/workspace_routing.rs",
+        "codex-rs/app-server/tests/suite/v2/account.rs",
+        "codex-rs/app-server/tests/suite/v2/account_enterprise_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/account_workspace_switching.rs",
+        "codex-rs/app-server/tests/suite/v2/workspace_routing.rs",
+        "codex-rs/tui/src/app/agents_overview_usage_tests.rs",
+        "codex-rs/tui/src/app/tests/backend_banner_recovery_tests.rs",
+        "codex-rs/tui/src/app/tests/backend_event_tests.rs",
+        "codex-rs/tui/src/app/tests/new_session_tests.rs",
+        "codex-rs/tui/src/app/tests/security_setup_tests.rs",
+        "codex-rs/tui/src/app/tests/thread_usage.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery",
+        "native-ui",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Carry the optional workspace-routing-ready reason through retained account updates. The event reports the completed discovery of the same account and leaves the live account owner and routing decision with the existing backend.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 d764deb4e3ea04711977cc0efe092baf782421d6504a56644122beb76cd11478.",
+        "One existing connection-targeted notification gets the new reason after workspace routing succeeds and the owner generation still matches. The guarded enqueue retains that established owner check.",
+        "Other account updates carry no reason. Older payloads decode as optional and unknown reason values remain tolerated. The ALab account identity fixture needs an explicit ordinary reason field."
+      ],
+      "revisit": "Exercise startup routing, workspace switch and logout, including a late discovery result from the retired owner, and check optional reason compatibility in the SDK."
+    }
+  ]
+}

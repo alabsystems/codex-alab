@@ -13,6 +13,8 @@ pub use client_construction::scope_original_side_injection;
 pub use metadata::ClientConstructionResult;
 pub use metadata::ClientConstructionSelection;
 pub use metadata::ClientPresentation;
+#[path = "saved_resume_reply_client.rs"]
+mod saved_resume_reply;
 #[path = "retained_side_cleanup_reply.rs"]
 mod side_cleanup_reply;
 #[path = "retained_side_rollback_client.rs"]
@@ -141,6 +143,7 @@ pub(super) async fn request(
     let Some(selection) = selection else {
         return Err(invalid("initial claim scope lost"));
     };
+    let saved_resume = saved_resume_reply::matches(&request);
     // Same exhaustive original serialization; no copied request input mapping.
     let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
     let mut wire: codex_app_server_protocol::JSONRPCRequest =
@@ -153,7 +156,7 @@ pub(super) async fn request(
             if scope
                 .action
                 .as_ref()
-                .is_some_and(|action| !action.matches(&wire.method, &wire.params))
+                .is_some_and(|action| !action.matches(&wire.method, wire.params.as_ref()))
             {
                 return Err(invalid("initial request changed its original UI action"));
             }
@@ -187,8 +190,9 @@ pub(super) async fn request(
         metadata::KEY.into(),
         serde_json::to_value(&selection).map_err(std::io::Error::other)?,
     );
-    let response = remote.request_json_rpc(wire).await?;
-    let mut response = match response {
+    let response = remote.request_json_rpc(wire).await;
+    saved_resume_reply::record_received(saved_resume, &response);
+    let mut response = match response? {
         Ok(response) => response,
         Err(mut error) => {
             if let Some(next) = selection_offer::take_offer(&mut error, &selection.claim)? {
@@ -262,6 +266,8 @@ mod client_construction;
 pub use client_construction::ClientConstructionCheckpoint;
 pub use client_construction::ClientConstructionOperation;
 pub use client_construction::ClientPreparationRetirement;
+pub use client_construction::SavedResumeObservation;
+pub use client_construction::SavedResumeQuery;
 pub use client_construction::observe_client_construction;
 
 pub use metadata::preparation::Offer as ClientConstructionOffer;

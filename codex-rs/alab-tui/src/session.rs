@@ -61,7 +61,20 @@ pub fn active() -> bool {
     codex_alab_core::is_alab_binary()
 }
 
+#[path = "session_manual_selection.rs"]
+mod manual_selection;
+pub use manual_selection::ManualAttempt;
+pub use manual_selection::ManualSelectionState;
+
 static WRITER: OnceLock<&'static Writer> = OnceLock::new();
+
+/// The process writer for this exact in-memory session.
+pub fn selection_writer(current: &Shared) -> Option<&'static Writer> {
+    WRITER
+        .get()
+        .copied()
+        .filter(|writer| std::ptr::eq(writer.shared, current))
+}
 
 /// Register the final binary's session-record initializer before config chooses
 /// Enhanced or Vanilla. Outside aterm, an explicit no-record hook is the durable
@@ -295,6 +308,7 @@ fn same_native_custody(source: &Record, current: &record::Owed) -> bool {
         && !current.landed
         && (!now.accepted || now.turn.is_some())
         && old.openai_scope == now.openai_scope
+        && old.limit == now.limit
         && old.local == now.local
         && old.account == now.account
         && old.user == now.user
@@ -348,6 +362,8 @@ struct WriterState {
     exec_generation: u64,
     /// The status a signal found ([`Writer::hold_status`]): every later record says it.
     held_status: Option<Status>,
+    manual_selection: Option<record::ManualAccountSelection>,
+    manual_sending: bool,
     /// (primary thread, rollout materialized) → the rebuilt argv.
     resume: Option<(ResumeKey, Option<Vec<String>>)>,
     /// The unique newest dead-record source; emitting its fields needs launch proof.
@@ -597,6 +613,9 @@ impl Writer {
             && codex_alab_core::session::ProcessIdentity::from(theirs) == *own
         {
             state.exec_generation = previous.exec_generation;
+            // Only a same-kernel-source exec can inherit this suppression. A new process
+            // resuming the thread has its own record and independently admitted route.
+            state.manual_selection = previous.manual_account_selection.clone();
             // The chain survives the live upgrade's execve: a 0 here would let a later turn
             // nobody asked for start a fresh chain (review of cf084e3b7, finding 4).
             normalize_imported_clocks(&mut previous, self.shared);
@@ -878,6 +897,7 @@ impl Writer {
     fn resume_pending(&self) -> bool {
         let state = self.lock();
         !state.finalized
+            && state.manual_selection.is_none()
             && state.last.as_ref().is_some_and(|last| {
                 last.session_id.is_some() && last.resume_argv.is_none() && self.command.is_some()
             })
@@ -1024,6 +1044,16 @@ impl Writer {
         self.shared.mark_changed();
         match ending {
             Ending::Remove => {
+                if state.manual_selection.is_some() {
+                    // Keep a concrete terminal record through actual exit. Removing it
+                    // first would expose the old host's missing-record recovery path.
+                    let mut terminal = self.build(&mut state, now_ms());
+                    terminal.status = Status::Exited;
+                    terminal.exit = Some(record::HANDOFF_CLEARED.into());
+                    record::write_atomic(&self.dir, &terminal)?;
+                    before_retire()?;
+                    return self.remove_held_sources(&mut state);
+                }
                 if !state.held_sources.is_empty() {
                     // Commit the clearing before retiring either side of custody.
                     // A crash or cleanup error leaves this newer terminal record,
@@ -1306,6 +1336,7 @@ impl Writer {
             launch_argv0: path_string(launch.and_then(Launch::upgrade_path)),
             exec_generation: state.exec_generation,
             resume_argv,
+            manual_account_selection: None,
             env,
             status,
             exit: None,
@@ -1369,6 +1400,17 @@ impl Writer {
             record.background_terminals = None;
             record.draft_empty =
                 record.draft_empty && !shared.queued_input() && !shared.pending_user_turn();
+        }
+        if let Some(selection) = &state.manual_selection {
+            // An image replacing the same kernel source may not yet have a frame. A
+            // generic host may inherit a cached line for such an initializer. Preserve the
+            // known source thread until the process publishes its actual current primary.
+            if record.session_id.is_none() {
+                record.session_id = selection.resume_argv.last().cloned();
+                record.status = Status::Busy;
+            }
+            record.resume_argv = None;
+            record.manual_account_selection = Some(selection.clone());
         }
         record
     }

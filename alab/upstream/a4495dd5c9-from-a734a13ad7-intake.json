@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "base": "a734a13ad77c759c927fc1ff86d4f7d31e53e997",
+  "target": "a4495dd5c9b99c528a73bba1a5d39d4048834db0",
+  "frontier": "a734a13ad77c759c927fc1ff86d4f7d31e53e997",
+  "commits": [
+    {
+      "sha": "a4495dd5c9b99c528a73bba1a5d39d4048834db0",
+      "subject": "Keep sandbox preparation with the command through launch (#62205)",
+      "paths": [
+        "codex-rs/app-server/src/command_exec.rs",
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/shell_snapshot_sandbox.rs",
+        "codex-rs/core/src/tasks/user_shell.rs",
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/sandboxing_tests.rs",
+        "codex-rs/core/src/unified_exec/mod_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/unified_exec/process_manager_tests.rs",
+        "codex-rs/core/tests/windows_sandbox.rs",
+        "codex-rs/exec-server/src/fs_sandbox.rs",
+        "codex-rs/exec-server/src/process_sandbox.rs",
+        "codex-rs/exec/tests/suite/sandbox.rs",
+        "codex-rs/network-proxy/src/certs.rs",
+        "codex-rs/network-proxy/src/lib.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs"
+      ],
+      "classes": [
+        "refactor",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adapt",
+      "reason": "Carry upstream prepared sandbox commands through launch. Move ALab shell capture to the typed request accessors while preserving producing-attempt ownership, exact command and cwd, and output captured before either local or remote pipe drainage.",
+      "evidence": [
+        "Reviewed all 22 paths against a734a13ad77c759c927fc1ff86d4f7d31e53e997. Binary diff SHA-256 fe71bb0c2c99d6aee926b9e508ee90fb0c48db9ace8ff0fec8b6d1ea359022d4.",
+        "Keep separate native Windows restricted-token handling and streaming refusal. Core Launchers use the live managed proxy bundle. Executor operations derive helper paths locally and admit only recognized generated CA paths from managed command environment; ordinary custom files remain covered by explicit policy.",
+        "Existing executor launch test uses the real controller-managed path, shell snapshot, generated CA bytes and unrelated-file refusal. Keep that control and test active executor-local proxy CA selection where different clients receive distinct generated paths. Preserve the current inherited first-valid CA path behavior during this composition.",
+        "Observed dc493 restores late diagnostics after an unpolled exit. Preserve original identity, pre-drain attachment and per-attempt denial capture in unified_exec. Use the current typed request/network plan at local and remote launch without restoring the obsolete remote proxy branch."
+      ],
+      "revisit": "Run remote_process_can_read_its_helper_and_generated_ca_with_restricted_reads, helper_executable_reads_do_not_expand_workspace_or_network_access, typed unified exec, exact late diagnostic and invocation custody controls, and the Windows streaming and non-streaming launcher tests on supported platforms."
+    }
+  ]
+}

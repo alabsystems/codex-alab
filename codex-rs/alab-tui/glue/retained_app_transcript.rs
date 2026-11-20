@@ -744,13 +744,15 @@ impl Admitted {
                 history.backtrack_render_pending,
             ),
         };
-        Displaced {
+        let displaced = Displaced {
             _history: old,
             _view: std::mem::replace(&mut app.transcript_view, view),
             _transcript: transcript.install(&mut app.chat_widget),
             _streaming: streaming.install(&mut app.chat_widget),
             _backtrack: std::mem::replace(&mut app.backtrack, backtrack),
-        }
+        };
+        app.alab_rebind_finding_commands();
+        displaced
     }
 }
 

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "base": "f39fcc1bfbcb04afbe7df8793545bf4a00f5f266",
+  "target": "83c46d0a58950c63f1ceff9a79ccb31bc612ec07",
+  "frontier": "f39fcc1bfbcb04afbe7df8793545bf4a00f5f266",
+  "commits": [
+    {
+      "sha": "2ae806bdf71758a3affac508e06fe0a310ad685c",
+      "subject": "Repair missing or stale Windows sandbox Core registration (#62141)",
+      "paths": [
+        "codex-rs/windows-sandbox-rs/src/identity.rs",
+        "codex-rs/windows-sandbox-rs/src/identity_integration_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the Windows protected Core registration repair through the existing sandbox account setup path. Recheck runtime ownership before returning credentials.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 a4b7ef61812779dcbf692408a38ff351dd3c421e0a748874b10b23ac74d6446d.",
+        "With registered Core requested, a cached identity now triggers full setup when its registration is missing, stale or unreadable. A failed post-setup readiness check returns an error. The upstream fixture adds cases for successful repair and incomplete registration alongside the existing expired-account cases."
+      ],
+      "revisit": "Exercise the registration repair and failure cases on a native Windows host with registered Core enabled."
+    },
+    {
+      "sha": "83c46d0a58950c63f1ceff9a79ccb31bc612ec07",
+      "subject": "Add audio transcription to the backend client (#62142)",
+      "paths": [
+        "codex-rs/backend-client/Cargo.toml",
+        "codex-rs/backend-client/src/client.rs",
+        "codex-rs/backend-client/src/client_request_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "account-isolation",
+        "provider-recovery"
+      ],
+      "decision": "adopt",
+      "reason": "Carry authenticated dictation on the existing backend client and its request factory so the selected source account and outbound policy govern each upload.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 bb59d9ffba14819e386e5ddb9006b88dd783986bf808528e292d7f24962c5d90.",
+        "The client validates its backend destination, authenticates through its configured provider, and submits one named multipart file for WAV, MP3, M4A, WebM or Ogg. It bounds successful response bodies at 64 KiB and requires a text field.",
+        "The upstream loopback test checks authorization, M4A filename, MIME type, multipart boundaries, exact clip bytes and returned transcript. This adds a backend operation without changing the TUI’s recording defaults."
+      ],
+      "revisit": "Verify the original source supplies the request and its retirement prevents a later upload. Recheck callers and supported formats when the dictation endpoint changes."
+    }
+  ]
+}

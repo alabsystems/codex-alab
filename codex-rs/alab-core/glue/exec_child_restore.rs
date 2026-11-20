@@ -557,8 +557,7 @@ impl Plan {
                 stored.history_mode,
             )
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or("restored child has no model context")?;
+            .map_err(|e| e.to_string())?;
             options.initial_history = InitialHistory::Resumed(ResumedHistory {
                 conversation_id: self.node.thread(),
                 history: Arc::new(history.items),

@@ -430,3 +430,157 @@ fn a_goal_resume_the_store_refused_gives_its_try_back() {
             .unwrap_or_else(|err| panic!("shutdown: {err}"));
     });
 }
+
+#[test]
+fn a_goal_started_without_a_user_turn_resumes_itself_after_a_dated_usage_limit() {
+    use super::goal_recovery::ThirdTurnGate;
+    use codex_state::ThreadGoalStatus;
+
+    const RESUMED_ANSWER: &str = "Continuing the goal.";
+
+    big_stack(|| async {
+        let goals = Arc::new(codex_goal_extension::GoalService::new());
+        let gate = Arc::new(ThirdTurnGate::default());
+        let h = harness_login_with_error_hook(
+            Mode::Current,
+            vec![],
+            &[
+                ("human_grace_s", "0"),
+                ("probe_api", "false"),
+                ("resume_limits", "true"),
+                ("limit_wait", "true"),
+                ("continue", "false"),
+            ],
+            &[],
+            Some(0),
+            None,
+            Timing {
+                reset_grace: Duration::ZERO,
+                reset_jitter: Duration::ZERO,
+                ..Timing::default()
+            },
+            |_| {},
+            Some(Arc::clone(&goals)),
+            ErrorHooks {
+                before: Some(Arc::clone(&gate) as _),
+                ..Default::default()
+            },
+        )
+        .await;
+        // The mock dates the reset when the first request arrives. A delayed setup
+        // or a slow decision can neither shorten this window nor fail a valid resume.
+        let reset = std::sync::OnceLock::new();
+        let (send, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let requests = responses::mount_response_handler(&h._server, move |_| {
+            let now = now_ms();
+            if let Some(&deadline) = reset.get() {
+                let _ = send.send((deadline, now));
+                return responses::sse_response(reply("resumed", RESUMED_ANSWER));
+            }
+            let resets_at = now / 1_000 + 3;
+            reset.set(resets_at).expect("first provider request");
+            wiremock::ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": {
+                    "type": "usage_limit_reached",
+                    "plan_type": "pro",
+                    "message": "limit reached",
+                    "resets_at": resets_at
+                }
+            }))
+        })
+        .await;
+        wait_until("proven Autopilot claim", || {
+            h.autopilot.supervisor().acting()
+        })
+        .await;
+        let db = h.test.codex.state_db().expect("goal database");
+        let id = h.test.session_configured.thread_id;
+        let objective = "Finish the original compiler integration";
+        let original = db
+            .thread_goals()
+            .replace_thread_goal(id, objective, ThreadGoalStatus::UsageLimited, None)
+            .await
+            .expect("original goal");
+        goals
+            .set_thread_goal(
+                &db,
+                codex_goal_extension::GoalSetRequest {
+                    thread_id: id,
+                    objective: codex_goal_extension::GoalObjectiveUpdate::Keep,
+                    status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                    token_budget: codex_goal_extension::GoalTokenBudgetUpdate::Keep,
+                    max_goal_token_budget: None,
+                },
+                async { Ok(()) },
+            )
+            .await
+            .expect("start first native goal turn")
+            .apply_runtime_effects(&goals)
+            .await;
+
+        wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| {
+                matches!(event, EventMsg::TurnComplete(done)
+                if done.error.as_ref().and_then(|error| error.codex_error_info.as_ref())
+                    == Some(&codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded))
+            },
+            Duration::from_secs(60),
+        )
+        .await;
+        let EventMsg::TurnStarted(start) = wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| matches!(event, EventMsg::TurnStarted(_)),
+            Duration::from_secs(60),
+        )
+        .await else {
+            unreachable!("matched a turn start")
+        };
+        assert_eq!(
+            start
+                .turn_attribution
+                .as_ref()
+                .and_then(|a| a.turn_trigger.as_deref()),
+            Some("goal"),
+            "the reset must start the goal's native continuation"
+        );
+        let (reset_s, resumed_ms) = tokio::time::timeout(Duration::from_secs(60), received.recv())
+            .await
+            .expect("timed out waiting for the resumed provider request")
+            .expect("second request");
+        assert!(
+            resumed_ms >= reset_s * 1_000,
+            "provider retried before its reset"
+        );
+        let EventMsg::TurnComplete(done) = wait_for_event_with_timeout(
+            &h.test.codex,
+            |event| matches!(event, EventMsg::TurnComplete(done) if done.turn_id == start.turn_id),
+            Duration::from_secs(60),
+        )
+        .await else {
+            unreachable!("matched the resumed turn's completion")
+        };
+        assert!(
+            done.error.is_none(),
+            "resumed turn failed: {:?}",
+            done.error
+        );
+        assert_eq!(done.last_agent_message.as_deref(), Some(RESUMED_ANSWER));
+
+        let resumed = db
+            .thread_goals()
+            .get_thread_goal(id)
+            .await
+            .expect("read goal")
+            .expect("goal");
+        assert_eq!(resumed.goal_id, original.goal_id);
+        assert_eq!(resumed.status, ThreadGoalStatus::Active);
+        let observed = requests.requests();
+        assert_eq!(observed.len(), 2);
+        assert!(observed[1].body_contains_text(objective));
+        // The active goal may already have admitted another turn. Its gate keeps
+        // that turn away from the provider until the second turn's evidence is checked.
+        gate.release.notify_one();
+        h.test.codex.shutdown_and_wait().await.expect("shutdown");
+    });
+}

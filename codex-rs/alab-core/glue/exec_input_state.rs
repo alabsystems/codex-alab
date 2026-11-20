@@ -20,6 +20,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Mutex;
 
+#[path = "exec_result_custody.rs"]
+pub(crate) mod results;
+
 #[path = "exec_idle_input.rs"]
 mod idle;
 pub use idle::PreparedExecIdleInput;
@@ -30,6 +33,13 @@ pub(crate) use idle::install as install_idle;
 mod batch;
 pub use batch::ExecInputBatch;
 pub use batch::PreparedExecInputBatch;
+
+#[cfg(test)]
+impl TurnInputQueue {
+    pub(crate) fn pending_items_for_test(&self) -> &[TurnInput] {
+        &self.items
+    }
+}
 
 struct FrozenTurn {
     thread: ThreadId,
@@ -302,7 +312,7 @@ pub(crate) async fn freeze_local(
         session.input_queue.clear_pending(turn).await;
         return;
     }
-    let (queue, accepts_mail, accounting) = {
+    let (mut queue, accepts_mail, accounting) = {
         let mut state = turn.turn_state.lock().await;
         state.clear_pending_waiters();
         let accepts_mail = state.accepts_mailbox_delivery_for_current_turn();
@@ -318,6 +328,9 @@ pub(crate) async fn freeze_local(
             accounting,
         )
     };
+    if let Some(source) = session.services.local_agent_runtime.exec_result_custody() {
+        source.restore_turn(session.thread_id, turn_id, &mut queue);
+    }
     session.services.thread_extension_data.insert(FrozenTurn {
         thread: session.thread_id,
         turn: turn_id.into(),
@@ -459,10 +472,18 @@ pub(crate) async fn install_after_admission(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| CodexErr::Fatal("accepted input snapshot was already installed".into()))?;
+    let accepted = prepared
+        .turn_input
+        .iter()
+        .filter_map(|input| match input {
+            TurnInput::InterAgentCommunication(mail) => Some(mail),
+            _ => None,
+        })
+        .chain(prepared.mailbox.iter().map(|(mail, _)| mail));
     session
         .services
         .local_agent_runtime
-        .restore_exec_mailboxes(prepared.controller)?;
+        .restore_exec_accepted_mail(prepared.controller, accepted, true)?;
     state.tool_calls = prepared.accounting.tool_calls;
     state.has_memory_citation = prepared.accounting.has_memory_citation;
     let baseline = prepared.accounting.token_usage_at_turn_start;
@@ -567,7 +588,7 @@ mod tests {
         use crate::agent_communication::ExecPublication;
         use crate::agent_communication::MessageDelivery;
         let recipient = ThreadId::new();
-        let delivery = MessageDelivery::publish(ThreadId::new(), &[]);
+        let delivery = MessageDelivery::restore_legacy_pending_for_test(ThreadId::new());
         let mail = crate::PendingAgentMessage::new(
             InterAgentCommunication::new(
                 AgentPath::root(),

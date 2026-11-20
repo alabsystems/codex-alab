@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Original close wire and observed UI result DATA. Owner is retained before
-//! polling; a lost C1 observation replays SAME backend-owned operation on C2.
+//! polling; a successor can read the original result without closing its own view.
 use super::side_cleanup_reply::SavedReply;
 use super::*;
 use std::sync::Arc;
@@ -11,6 +11,38 @@ use std::sync::PoisonError;
 #[path = "retained_side_view_metadata.rs"]
 mod metadata;
 pub use metadata::SideView;
+impl metadata::ReadResult {
+    pub(super) fn into_original(self, view: &SideView, operation: &str) -> IoResult<RequestResult> {
+        if self.schema != 1 || &self.view != view || self.operation != operation {
+            return Err(invalid(
+                "Side close readback changed the selected operation",
+            ));
+        }
+        match self.reply {
+            metadata::ReadReply::Success { status } => Ok(Ok(serde_json::to_value(
+                codex_app_server_protocol::ThreadUnsubscribeResponse { status },
+            )
+            .map_err(std::io::Error::other)?)),
+            metadata::ReadReply::Rejected {
+                code,
+                message,
+                had_data,
+                value,
+            } => {
+                if !had_data && !value.is_null() {
+                    return Err(invalid(
+                        "Side close readback changed the original error data",
+                    ));
+                }
+                Ok(Err(codex_app_server_protocol::JSONRPCErrorError {
+                    code,
+                    message,
+                    data: had_data.then_some(value),
+                }))
+            }
+        }
+    }
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SideViewCloseCheckpoint {
@@ -21,15 +53,30 @@ pub struct SideViewCloseCheckpoint {
     result: Option<SavedReply>,
     observed: bool,
 }
+
+fn valid_close_reply(reply: &SavedReply) -> bool {
+    match reply {
+        SavedReply::Success { value } => serde_json::from_value::<
+            codex_app_server_protocol::ThreadUnsubscribeResponse,
+        >(value.clone())
+        .is_ok(),
+        SavedReply::Error { .. } => reply.valid(),
+    }
+}
+
 #[derive(Clone)]
-pub struct SideViewCloseOperation(Arc<Mutex<SideViewCloseCheckpoint>>);
+pub struct SideViewCloseOperation {
+    checkpoint: Arc<Mutex<SideViewCloseCheckpoint>>,
+    // Checkpoint DATA can recover a result, but cannot originate the first close.
+    original_owner: bool,
+}
 tokio::task_local! {static CLOSE:SideViewCloseOperation;}
 impl SideViewCloseOperation {
     pub fn new(view: SideView) -> IoResult<Self> {
         if !view.valid() {
             return Err(invalid("invalid original Side view data"));
         }
-        Ok(Self(Arc::new(Mutex::new(SideViewCloseCheckpoint {
+        let checkpoint = SideViewCloseCheckpoint {
             schema: 1,
             operation: format!(
                 "{:016x}{:016x}",
@@ -40,13 +87,17 @@ impl SideViewCloseOperation {
             parameters: None,
             result: None,
             observed: false,
-        }))))
+        };
+        Ok(Self {
+            checkpoint: Arc::new(Mutex::new(checkpoint)),
+            original_owner: true,
+        })
     }
     pub fn same_operation(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.checkpoint, &other.checkpoint)
     }
     pub fn original_succeeded(&self) -> bool {
-        self.0
+        self.checkpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .result
@@ -54,10 +105,18 @@ impl SideViewCloseOperation {
             .is_some_and(SavedReply::succeeded)
     }
     pub fn checkpoint(&self) -> SideViewCloseCheckpoint {
-        self.0
+        self.checkpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+    /// The first caller recorded its exact parameters before attempting the wire send.
+    pub fn has_frozen_request(&self) -> bool {
+        self.checkpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .parameters
+            .is_some()
     }
     pub fn restore(checkpoint: SideViewCloseCheckpoint) -> IoResult<Self> {
         let selection = metadata::Selection::Close {
@@ -70,7 +129,7 @@ impl SideViewCloseOperation {
             || checkpoint
                 .result
                 .as_ref()
-                .is_some_and(|reply| !reply.valid())
+                .is_some_and(|reply| !valid_close_reply(reply))
             || (checkpoint.result.is_some() && checkpoint.parameters.is_none())
             || checkpoint.parameters.as_ref().is_some_and(|parameters| {
                 parameters
@@ -81,13 +140,16 @@ impl SideViewCloseOperation {
         {
             return Err(invalid("invalid original Side close checkpoint"));
         }
-        Ok(Self(Arc::new(Mutex::new(checkpoint))))
+        Ok(Self {
+            checkpoint: Arc::new(Mutex::new(checkpoint)),
+            original_owner: false,
+        })
     }
     pub async fn run<T>(&self, original: impl std::future::Future<Output = T>) -> T {
         CLOSE.scope(self.clone(), original).await
     }
     pub fn view_data(&self) -> SideView {
-        self.0
+        self.checkpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .view
@@ -104,7 +166,10 @@ impl SideViewCloseOperation {
             .params
             .clone()
             .ok_or_else(|| invalid("original Side close parameters missing"))?;
-        let mut p = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut p = self
+            .checkpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if parameters
             .get("threadId")
             .and_then(serde_json::Value::as_str)
@@ -113,25 +178,80 @@ impl SideViewCloseOperation {
         {
             return Err(invalid("Side close cannot change full original parameters"));
         }
-        p.parameters = Some(parameters);
-        Ok((
+        let selection = if p.parameters.is_some() {
+            metadata::Selection::ReadResult {
+                view: p.view.clone(),
+                operation: p.operation.clone(),
+                parameters,
+            }
+        } else if self.original_owner {
+            p.parameters = Some(parameters);
             metadata::Selection::Close {
                 view: p.view.clone(),
                 operation: p.operation.clone(),
-            },
-            p.result.as_ref().map(SavedReply::original),
-        ))
+            }
+        } else {
+            return Err(invalid(
+                "restored Side close has no frozen original request",
+            ));
+        };
+        Ok((selection, p.result.as_ref().map(SavedReply::original)))
     }
     fn record(&self, result: RequestResult) -> IoResult<()> {
-        let mut p = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut p = self
+            .checkpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if p.result
             .as_ref()
             .is_some_and(|old| old.original() != result)
         {
             return Err(invalid("Side close replay changed original result"));
         }
-        p.result = Some(SavedReply::capture(&result));
+        // The caller's normal typed decoder still reports an ill-formed success.
+        // Only a real unsubscribe status or an original rejection belongs in the checkpoint.
+        let reply = SavedReply::capture(&result);
+        if valid_close_reply(&reply) {
+            p.result = Some(reply);
+        }
         Ok(())
+    }
+    /// Read the original unsubscribe result using only its frozen identity and wire.
+    pub async fn read_result(
+        &self,
+        handle: &AppServerRequestHandle,
+    ) -> Result<codex_app_server_protocol::ThreadUnsubscribeResponse, crate::TypedRequestError>
+    {
+        let result = self.read_frozen_result(handle).await;
+        crate::decode_typed_response("thread/unsubscribe", result)
+    }
+    async fn read_frozen_result(&self, handle: &AppServerRequestHandle) -> IoResult<RequestResult> {
+        let checkpoint = self.checkpoint();
+        if let Some(cached) = checkpoint.result {
+            return Ok(cached.original());
+        }
+        let selection = metadata::Selection::ReadResult {
+            view: checkpoint.view,
+            operation: checkpoint.operation,
+            parameters: checkpoint
+                .parameters
+                .ok_or_else(|| invalid("Side close result requires its frozen original request"))?,
+        };
+        self.lookup(handle, &selection).await
+    }
+    async fn lookup(
+        &self,
+        handle: &AppServerRequestHandle,
+        selection: &metadata::Selection,
+    ) -> IoResult<RequestResult> {
+        let response = read_control(handle, selection).await?;
+        let envelope =
+            super::side_cleanup_reply::observation_value(response, metadata::READ_RESULT_KEY)?;
+        let receipt: metadata::ReadResult =
+            serde_json::from_value(envelope).map_err(std::io::Error::other)?;
+        let original = receipt.into_original(selection.view(), selection.operation())?;
+        self.record(original.clone())?;
+        Ok(original)
     }
     /// Pure observed-result cleanup, not Native permission or effects proof.
     /// Call after UI application; cached result remains in this owner on error.
@@ -143,21 +263,14 @@ impl SideViewCloseOperation {
         if checkpoint.observed {
             return Ok(());
         }
-        let AppServerRequestHandle::Remote(remote) = handle else {
-            return Err(invalid("Side observation requires actual physical client"));
+        let selection = metadata::Selection::AcknowledgeResult {
+            view: checkpoint.view,
+            operation: checkpoint.operation,
+            parameters: checkpoint.parameters.ok_or_else(|| {
+                invalid("Side close observation requires its frozen original request")
+            })?,
         };
-        let mut wire:codex_app_server_protocol::JSONRPCRequest=serde_json::from_value(serde_json::json!({"id":format!("alab-side-close-observed-{}",checkpoint.operation),"method":"thread/unsubscribe","params":checkpoint.parameters})).map_err(std::io::Error::other)?;
-        decorate(
-            &mut wire,
-            &metadata::Selection::Observe {
-                view: checkpoint.view,
-                operation: checkpoint.operation,
-            },
-        )?;
-        let actual = remote
-            .request_json_rpc(wire)
-            .await?
-            .map_err(|_| invalid("Side close observation not confirmed"))?;
+        let actual = read_control(handle, &selection).await?;
         let observed: metadata::observation::Observation = serde_json::from_value(
             super::side_cleanup_reply::observation_value(actual, metadata::OBSERVATION_KEY)?,
         )
@@ -170,13 +283,40 @@ impl SideViewCloseOperation {
         ) {
             return Err(invalid("Side close observation changed exact operation"));
         }
-        self.0
+        self.checkpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .observed = true;
         Ok(())
     }
 }
+
+// An older peer that ignores ALab metadata sees an ordinary configuration read.
+async fn read_control(
+    handle: &AppServerRequestHandle,
+    selection: &metadata::Selection,
+) -> IoResult<serde_json::Value> {
+    let AppServerRequestHandle::Remote(remote) = handle else {
+        return Err(invalid(
+            "Side close result requires an actual physical client",
+        ));
+    };
+    let mut wire = codex_app_server_protocol::JSONRPCRequest {
+        id: RequestId::String(format!(
+            "alab-side-close-read-{:016x}",
+            codex_alab_core::native_source::connection_request_prefix()
+        )),
+        method: "config/read".into(),
+        params: Some(serde_json::json!({"includeLayers": false})),
+        trace: None,
+    };
+    decorate(&mut wire, selection)?;
+    remote
+        .request_json_rpc(wire)
+        .await?
+        .map_err(|_| invalid("Side close result control was refused"))
+}
+
 fn decorate(
     wire: &mut codex_app_server_protocol::JSONRPCRequest,
     selection: &metadata::Selection,
@@ -238,9 +378,16 @@ pub(super) async fn request(
     if let Some(cached) = cached {
         return Ok(Some(cached));
     }
-    decorate(&mut wire, &selection)?;
-    let result = remote.request_json_rpc(wire).await?;
-    owner.record(result.clone())?;
+    let result = match &selection {
+        metadata::Selection::Close { .. } => {
+            decorate(&mut wire, &selection)?;
+            let result = remote.request_json_rpc(wire).await?;
+            owner.record(result.clone())?;
+            result
+        }
+        metadata::Selection::ReadResult { .. } => owner.lookup(handle, &selection).await?,
+        _ => return Err(invalid("unexpected Side close operation phase")),
+    };
     Ok(Some(result))
 }
 

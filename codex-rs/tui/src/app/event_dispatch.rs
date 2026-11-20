@@ -26,6 +26,9 @@ use codex_app_server_protocol::ThreadStatus;
 #[cfg(target_os = "windows")]
 use codex_app_server_protocol::WindowsSandboxSetupMode;
 
+#[path = "../../../alab-tui/glue/finding_command_history.rs"]
+mod finding_command_history; // ALAB(misalignment-review): repair an observed command result in its original transcript position.
+
 pub(super) const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
@@ -38,6 +41,7 @@ impl App {
         event: AppEvent,
     ) -> Result<AppRunControl> {
         if !matches!(&event, AppEvent::AlabUpgrade(_)) { codex_alab_tui::upgrade::native_event(); } // ALAB(upgrade): mutations after a scan invalidate its queued handoff.
+        if self.alab_recover_switched_steer(&event, app_server.thread_params_mode()).await { return Ok(AppRunControl::Continue); } // ALAB(queue-review): leave an undispatched steer with its source before applying visible-thread settings.
         let from_agents_overview = matches!(event, AppEvent::ForkAgentsOverviewThreadReady { .. });
         let event = if let AppEvent::ForkAgentsOverviewThreadReady { thread_id } = event {
             if self.current_displayed_thread_id() != Some(thread_id)
@@ -67,7 +71,7 @@ impl App {
                 AppEvent::OpenDaemonMenu
                     | AppEvent::OpenWarnings
                     | AppEvent::AlabModeChanged | AppEvent::OpenAlabAutopilotTimer | AppEvent::OpenAlabTasks | AppEvent::AlabTasksBack { .. } | AppEvent::AlabTaskDetails { .. } | AppEvent::AlabTasksRefresh { .. } // ALAB(tasks): disconnected inspection and refresh stay local; agent navigation remains blocked.
-                    | AppEvent::AlabEnrollment { .. } | AppEvent::AlabAccountsRefresh { .. } | AppEvent::AlabAccountsReady { .. } // ALAB(accounts): native inspection remains independent of the model connection.
+                    | AppEvent::AlabEnrollment { .. } | AppEvent::AlabAccountsRefresh { .. } | AppEvent::AlabAccountsReady { .. } | AppEvent::AlabAccountsPicker { .. } // ALAB(accounts): native inspection and selection remain independent of the model connection.
                     | AppEvent::StatusLineSetup { .. }
                     | AppEvent::StatusLineSetupCancelled
                     | AppEvent::TerminalTitleSetup { .. }
@@ -101,6 +105,7 @@ impl App {
                     | AppEvent::SideChatRemovalFinished { .. }
                     | AppEvent::SideChatArchived { .. }
                     | AppEvent::SavedChatPrepared { .. } | AppEvent::SavedChatReleased { .. }
+                    | AppEvent::AlabSavedResumeObserved(_) // ALAB(retained-ui): historical read completion uses the persistent chooser actor.
                     | AppEvent::StartQueuedSavedChat
                     | AppEvent::SavedSideChatsLoaded { .. }
                     | AppEvent::SideReplayFinished(_)
@@ -696,7 +701,7 @@ impl App {
                         );
                     }
                     fork_config.model_provider_id.clone_from(&self.chat_widget.config_ref().model_provider_id);
-                    fork_config.model = Some(self.chat_widget.current_model().to_string());
+                    fork_config.alab_set_fork_source_model(self.chat_widget.current_model()); // ALAB(defaults): the ordinary fork inherits its live parent without adding an exact launch override.
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
                     let selected_profile = self.selected_server_profile(thread_id);
@@ -1158,6 +1163,7 @@ impl App {
                 self.chat_widget.note_stream_consolidation_completed();
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
+            AppEvent::AlabFindingCommandFinished { thread_id, turn_id, call_id, cell, #[cfg(unix)] alab_source } => self.alab_finish_finding_command(tui, thread_id, &turn_id, &call_id, cell, #[cfg(unix)] alab_source)?, // ALAB(misalignment-review): replace only the row still awaiting this result.
             AppEvent::CorrectFlushedAgentMessage {
                 #[cfg(unix)]
                 alab_source,
@@ -3298,12 +3304,16 @@ impl App {
                 }
             }
             AppEvent::OpenAgentsOverview => self.open_agents_overview(app_server),
+            #[cfg(unix)] AppEvent::AlabModelPolicy(delivery) => super::alab_model_policy::apply(self, app_server, delivery).await, // ALAB(fleet-model): dispatch to the owning embedded thread.
             AppEvent::AlabModeChanged => self.alab_reload_mode(tui).await, // ALAB(interface): adopt native defaults without replacing the conversation
             AppEvent::OpenAlabAutopilotTimer => self.chat_widget.alab_open_autopilot_timer(), // ALAB(interface): the deadline editor belongs to Codex.
             AppEvent::OpenAlabTasks => self.alab_open_tasks(), // ALAB(tasks): local work is available with an embedded server
             AppEvent::AlabEnrollment { view, thread_id, event } => self.chat_widget.alab_enrollment_event(view, thread_id, event), // ALAB(accounts): stale enrollment replies cannot replace another view.
             AppEvent::AlabAccountsRefresh { view, thread_id } => self.chat_widget.alab_refresh_accounts(view, thread_id), // ALAB(accounts): stale refreshes cannot replace another view.
+            AppEvent::AlabAccountsPicker { view, thread_id, action } => self.chat_widget.alab_accounts_picker(view, thread_id, action), // ALAB(accounts): apply only a live picker's action.
+            AppEvent::AlabAccountsCheckInput { .. } => {} // ALAB(accounts): only the event loop with all input owners can answer a restart check.
             AppEvent::AlabAccountsReady { view, thread_id, text } => self.chat_widget.alab_accounts_ready(view, thread_id, text), // ALAB(accounts): no account metadata enters conversation history.
+            AppEvent::AlabThreadCredits { request, thread_id, usage } => self.chat_widget.alab_finish_thread_credits(request, thread_id, usage), // ALAB(interface): accept only the active account and conversation's latest read.
             AppEvent::AlabTasksBack { thread_id } => self.alab_tasks_back(thread_id), // ALAB(tasks): queued Back cannot open Tasks over a replacement thread.
             AppEvent::AlabTasksRefresh { view, thread_id, selected_key, selected_index, query } => self.alab_refresh_tasks(view, thread_id, selected_key, selected_index, query), // ALAB(tasks): stale refreshes never replace another view
             AppEvent::AlabTaskDetails { thread_id, key } => self.alab_task_details(thread_id, &key), // ALAB(tasks): read current details without changing the work
@@ -3512,7 +3522,7 @@ impl App {
             } => {
                 Box::pin(self.finish_side_creation(tui, app_server, parent, request, result)).await;
             }
-            AppEvent::SideChatRemovalFinished { backend_id, target, request, action, result } => {
+            AppEvent::SideChatRemovalFinished { backend_id, target, request, action, result, close_ack } => { // ALAB(side-boundary): keep the exact reply until its UI callback applies.
                 if backend_id == app_server.backend_id()
                     && let Some(side) = self.side_threads.get_mut(&target)
                     && side.close_request == Some(request)
@@ -3537,7 +3547,7 @@ impl App {
                             self.add_agents_overview_error(message);
                         }
                     }
-                    if action==sidebar_close::Action::CloseTab && let Err(error)=app_server.alab_observe_side_close(target).await {tracing::warn!(%error,"Side close result observation retained");} // ALAB(side-boundary): observer ACK follows actual original matching callback application.
+                    crate::app_server_session::SideCloseAck::after_application(close_ack).await; // ALAB(side-boundary): never acknowledge a different close now installed for this thread.
                     tui.frame_requester().schedule_frame();
                 }
             }
@@ -3549,7 +3559,9 @@ impl App {
             AppEvent::SavedChatPrepared { target, request, result } => {
                 Box::pin(self.finish_saved_chat(tui, app_server, target, request, *result)).await?;
             }
-            AppEvent::SavedChatReleased { target, request } => {
+            AppEvent::AlabSavedResumeObserved(observation) => self.alab_finish_saved_history(app_server, observation), // ALAB(retained-ui): a historical reply never installs or closes its observer's pane.
+            AppEvent::SavedChatReleased { target, request, receipt } => { // ALAB(retained-ui): every terminal outcome frees only this chooser flight.
+                self.alab_finish_historical_release(target, request, &receipt).await; // ALAB(retained-ui): join the original receipt producer and wake a chooser waiting for its slot.
                 self.finish_saved_release(target, request);
             }
             AppEvent::StartQueuedSavedChat => {

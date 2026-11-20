@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "base": "5387162ef03157b27111c82ba5807078a66aa726",
+  "target": "1b80bd94127640438a78bd348e0f985fdb272766",
+  "frontier": "5387162ef03157b27111c82ba5807078a66aa726",
+  "commits": [
+    {
+      "sha": "1b80bd94127640438a78bd348e0f985fdb272766",
+      "subject": "Allow per-tool approval reviewers for Codex apps (#62360)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ConfigReadResponse.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/AppToolsConfig.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/config.rs",
+        "codex-rs/app-server/tests/suite/v2/config_rpc.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_server_elicitation.rs",
+        "codex-rs/config/src/types.rs",
+        "codex-rs/connectors/src/app_tool_policy.rs",
+        "codex-rs/connectors/src/app_tool_policy_tests.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/connectors.rs",
+        "codex-rs/core/src/connectors_tests.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/src/mcp_tool_call_tests.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/tests/suite/mcp_turn_metadata.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "security"
+      ],
+      "features": [
+        "product-policy",
+        "security-notices",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Allow a different approval reviewer for an individual app tool while keeping managed requirements authoritative and preserving the fork’s existing protocol fields.",
+      "evidence": [
+        "The resolver considers a verified tool by raw name before its title, then the connected account, the app, app defaults and the session. Model-specific managed review requirements and the reviewer constraint still apply. The upstream tests cover both tool-call prompts and verified MCP elicitation.",
+        "On development binary d9cbdf2e4, an isolated config/read preserved the app and link reviewer and the tool approval mode, but omitted the new per-tool reviewer. The control was a second tool without a reviewer setting.",
+        "On integrated source 9fbc78e53c, the repository-generated Python type round-tripped the two reviewer values and the two omission controls. The protected SDK contract generation and public API tests also passed. Stable and experimental protocol archives require native regeneration because each side carries different public fields."
+      ],
+      "revisit": ""
+    }
+  ]
+}

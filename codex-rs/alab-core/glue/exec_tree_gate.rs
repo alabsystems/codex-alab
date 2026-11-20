@@ -6,6 +6,7 @@
 mod child_restore;
 use super::LocalAgentRuntime;
 use crate::CodexThread;
+use crate::session::input_queue::exec_input_state::results::ExecResultCustody;
 pub use child_restore::ExecIdleRestore;
 pub use child_restore::ExecPreparedChildRestore;
 pub use child_restore::ExecRestoredChild;
@@ -22,6 +23,7 @@ use tokio::sync::RwLock;
 #[derive(Default)]
 pub(crate) struct ExecTreeGate {
     sealed: AtomicBool,
+    results: std::sync::Mutex<std::sync::Weak<ExecResultCustody>>,
     starts: Arc<RwLock<()>>,
     quota_events: Arc<crate::session::alab_exec_recovery_options::quota_observation::Events>,
 }
@@ -126,6 +128,22 @@ impl ExecTreeGate {
 }
 
 impl LocalAgentRuntime {
+    pub(crate) fn set_exec_result_custody(&self, source: &Arc<ExecResultCustody>) {
+        *self
+            .exec_start_gate
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(source);
+    }
+
+    pub(crate) fn exec_result_custody(&self) -> Option<Arc<ExecResultCustody>> {
+        self.exec_start_gate
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upgrade()
+    }
+
     pub(crate) async fn prepare_exec_review(
         &self,
         parent: Arc<crate::session::session::Session>,
@@ -363,10 +381,26 @@ impl crate::session::session::Session {
         if !self.input_queue.has_pending_mailbox_items().await {
             return None;
         }
-        self.services
+        let startup = self
+            .services
+            .thread_extension_data
+            .get::<codex_alab_core::upgrade_startup_hold::Fence>();
+        // Keep original mail in place. Forest publication wakes this queue
+        // after model following and native admission are both installed.
+        if startup.as_ref().is_some_and(|fence| fence.pending()) {
+            return None;
+        }
+        let admission = self
+            .services
             .local_agent_runtime
             .admit_exec_tree_start()
-            .ok()
+            .ok()?;
+        if startup.is_some() {
+            // This restored runtime can itself become a handoff source. Keep
+            // its ordinary start admission while applying the serving catalog.
+            self.alab_finish_handoff_model_refresh().await;
+        }
+        Some(admission)
     }
 }
 

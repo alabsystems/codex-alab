@@ -24,6 +24,7 @@ pub(super) enum JournalModePolicy {
 pub(super) async fn connect_once(
     options: &SqliteConnectOptions,
     journal_mode_policy: JournalModePolicy,
+    diagnostics: bool, // ALAB(diagnostic-storage): the reset limit is per diagnostic writer.
 ) -> Result<SqlitePool, Error> {
     // SQLx retries after_connect errors, eventually replacing them with PoolTimedOut.
     // Return the first initialization error directly while opening this pool.
@@ -46,6 +47,7 @@ pub(super) async fn connect_once(
                                 "NFS database requires DELETE journaling, found {journal}"
                             )));
                         }
+                        super::alab_diagnostic_wal::configure(connection, diagnostics, &journal).await?; // ALAB(diagnostic-storage): configure later pooled WAL writers too.
                         if journal == "delete" {
                             // If the filesystem honors sync requests, EXTRA syncs the directory
                             // after SQLite deletes a rollback journal.
@@ -103,6 +105,7 @@ pub(super) async fn connect_once(
             .fetch_one(&mut *connection)
             .await?;
         if journal == "wal" {
+            super::alab_diagnostic_wal::configure(&mut connection, diagnostics, &journal).await?; // ALAB(diagnostic-storage): a new database can enter WAL after initial connection setup.
             sqlx::query("PRAGMA synchronous = NORMAL")
                 .execute(&mut *connection)
                 .await?;

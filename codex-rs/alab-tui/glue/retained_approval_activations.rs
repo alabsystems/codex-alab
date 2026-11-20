@@ -92,13 +92,13 @@ struct Actual {
     done: bool,
 }
 impl Actual {
-    fn from_native(item: Arc<Item>, view: ApprovalOverlay) -> Self {
+    fn from_native(item: Arc<Item>, view: ApprovalOverlay) -> io::Result<Self> {
         let request = RequestData::capture(
             view.current_request
                 .as_ref()
-                .expect("original constructor installs actual current row"),
+                .ok_or_else(|| invalid("original constructor lacks actual current row"))?,
         );
-        Self {
+        Ok(Self {
             item,
             request,
             list: view.list,
@@ -108,7 +108,7 @@ impl Actual {
             editing: view.alab_editing,
             complete: view.current_complete,
             done: view.done,
-        }
+        })
     }
     fn swap_into(&mut self, view: &mut ApprovalOverlay) {
         std::mem::swap(&mut self.list, &mut view.list);
@@ -344,12 +344,11 @@ impl ApprovalOverlay {
             .actual
             .iter()
             .find(|entry| Arc::ptr_eq(&entry.item, new_item))
+            && !entry.request.matches_native(request)?
         {
-            if !entry.request.matches_native(request)? {
-                return Err(invalid(
-                    "actual queued activation changed request before switch",
-                ));
-            }
+            return Err(invalid(
+                "actual queued activation changed request before switch",
+            ));
         }
         Ok(())
     }
@@ -367,15 +366,14 @@ impl ApprovalOverlay {
             .actual
             .iter()
             .position(|entry| Arc::ptr_eq(&entry.item, &new_item));
-        if let Some(index) = existing {
-            if !self.alab_activations.actual[index]
+        if let Some(index) = existing
+            && !self.alab_activations.actual[index]
                 .request
                 .matches_native(&request)?
-            {
-                return Err(invalid(
-                    "actual queued activation changed request before switch",
-                ));
-            }
+        {
+            return Err(invalid(
+                "actual queued activation changed request before switch",
+            ));
         }
         let mut next = match existing {
             Some(index) => self.alab_activations.actual.remove(index),
@@ -391,7 +389,7 @@ impl ApprovalOverlay {
                         self.list_keymap.clone(),
                     )
                 });
-                Actual::from_native(new_item.clone(), native)
+                Actual::from_native(new_item, native)?
             }
         };
         next.swap_into(self);

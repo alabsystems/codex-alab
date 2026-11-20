@@ -6,6 +6,7 @@
 //! 2 h, 4 h, 8 h and then 24 h after each unanswered round, the host's sleep counted, a held
 //! clock at a wall, and only the agent's latest reply saying ready lets the re-exec go.
 
+use codex_alab_core::wall_kind::LimitClass;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -54,7 +55,7 @@ fn a_notice_counts_only_with_the_reference_offered() {
     let t0 = Instant::now();
     let mut round = aimed();
     let marker = round.offer("thread-1");
-    round.noticed("Continue.", t0);
+    assert!(!round.noticed("Continue.", t0));
     assert_eq!(round.asks(), 0, "a text without the reference is no notice");
     assert_eq!(round.step(t0, false), AskStep::Notice);
     let marker_again = round.offer("thread-1");
@@ -62,7 +63,14 @@ fn a_notice_counts_only_with_the_reference_offered() {
         marker, marker_again,
         "the same notice is offered the same reference"
     );
-    round.noticed(&crate::words::upgrade_notice(TARGET, "0.1.0", &marker), t0);
+    let old_text = crate::words::upgrade_notice(TARGET, "0.1.0", &marker);
+    round.aim("/another-build");
+    let next = round.offer("thread-1");
+    assert!(!round.noticed(&old_text, t0));
+    assert!(round.noticed(
+        &crate::words::upgrade_notice("/another-build", "0.1.0", &next),
+        t0
+    ));
     assert_eq!(round.asks(), 1);
     assert!(
         marker.starts_with("ATERM-UPGRADE-READY-") && marker.len() == 28,
@@ -386,6 +394,7 @@ fn only_a_login_wall_or_a_usage_limit_withholds_the_notice() {
     for wall in [
         Wall::Login,
         Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: None,
             reset_label: None,
         },

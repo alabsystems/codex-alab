@@ -205,6 +205,8 @@ pub struct TuiGlobalKeymap {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiChatKeymap {
+    /// Open the Autopilot picker to choose Cruise, Land or Off.
+    pub open_autopilot: Option<KeybindingsSpec>, // ALAB(interface): configurable native picker shortcut.
     /// Open saved prompts and slash commands.
     pub open_presets: Option<KeybindingsSpec>,
     /// Start or stop a voice conversation.

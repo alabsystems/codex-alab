@@ -72,6 +72,12 @@ impl<'de> serde::Deserialize<'de> for TextArea {
     }
 }
 impl TextArea {
+    pub(in crate::bottom_pane) fn alab_clear_upgrade_layout(&self) {
+        self.rendered_area.set(Rect::default());
+        if let Some(query) = self.vim_query() {
+            query.editor.alab_clear_upgrade_layout();
+        }
+    }
     pub(in crate::bottom_pane) fn alab_upgrade_has_layout(&self) -> bool {
         let area = self.rendered_area.get();
         area.width > 0

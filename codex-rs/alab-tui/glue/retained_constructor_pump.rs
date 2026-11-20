@@ -24,7 +24,10 @@ impl StartupDraftPump {
             ));
         }
         self.alab_constructor = Some(actual.clone());
-        actual.install_early_no_primary(self)?;
+        if let Err(error) = actual.install_early_no_primary(self) {
+            self.alab_constructor = None;
+            return Err(error);
+        }
         Ok(())
     }
     /// Normal lower callers may build a pump directly. They retain the exact

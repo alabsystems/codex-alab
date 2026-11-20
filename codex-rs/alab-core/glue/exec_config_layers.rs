@@ -142,8 +142,7 @@ impl ConfigLayerStack {
     /// Capture configuration data, never the authority to apply it.
     pub fn capture_exec_layers(&self) -> std::io::Result<JsonValue> {
         let layers = self
-            .layers
-            .iter()
+            .all_layers_low_to_high()
             .filter(|layer| !managed(&layer.name))
             .map(|layer| Layer {
                 source: Source::from(&layer.name),
@@ -180,7 +179,9 @@ impl ConfigLayerStack {
                     "snapshot cannot supply managed configuration",
                 ));
             }
-            let live = current.layers.iter().find(|layer| layer.name == name);
+            let live = current
+                .all_layers_low_to_high()
+                .find(|layer| layer.name == name);
             if matches!(name, ConfigLayerSource::Project { .. }) && live.is_none() {
                 return Err(std::io::Error::other(
                     "original project configuration is no longer admitted",
@@ -202,8 +203,7 @@ impl ConfigLayerStack {
         }
         layers.extend(
             current
-                .layers
-                .iter()
+                .all_layers_low_to_high()
                 .filter(|layer| managed(&layer.name))
                 .cloned(),
         );
@@ -266,7 +266,10 @@ mod tests {
             &changed,
         )
         .unwrap();
-        assert_eq!(restored.layers, vec![entry]);
+        assert_eq!(
+            restored.all_layers_low_to_high().collect::<Vec<_>>(),
+            [&entry]
+        );
     }
 
     #[test]

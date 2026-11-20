@@ -96,6 +96,7 @@ pub(crate) struct FooterKeyHints {
     pub(crate) agents: Option<ShortcutHint>,
     pub(crate) toggle_shortcuts: Option<ShortcutHint>,
     pub(crate) queue: Option<ShortcutHint>,
+    pub(crate) open_autopilot: Option<ShortcutHint>, // ALAB(interface): the reference displays a single key or a chord.
     pub(crate) insert_newline: Option<ShortcutHint>,
     pub(crate) external_editor: Option<ShortcutHint>,
     pub(crate) edit_previous: Option<ShortcutHint>,
@@ -115,6 +116,7 @@ impl FooterKeyHints {
             agents: None,
             toggle_shortcuts: Some(key_hint::plain(KeyCode::Char('?')).into()),
             queue: Some(key_hint::plain(KeyCode::Tab).into()),
+            open_autopilot: None, // ALAB(interface): the default keymap leaves the picker unbound.
             insert_newline: Some(key_hint::ctrl(KeyCode::Char('j')).into()),
             external_editor: Some(key_hint::ctrl(KeyCode::Char('g')).into()),
             edit_previous: Some(key_hint::plain(KeyCode::Esc).into()),

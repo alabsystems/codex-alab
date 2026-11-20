@@ -96,17 +96,8 @@ fn completed_tools_keep_compact_and_detailed_presentations() {
     insta::assert_snapshot!("completed_tool_presentations", rendered);
 }
 
-#[test]
-fn failed_commands_keep_failure_when_exit_code_is_missing_or_zero() {
-    for exit in [None, Some(0)] {
-        let mut item = command_item(CommandExecutionStatus::Failed);
-        if let ThreadItemPayload::CommandExecution { exit_code, .. } = &mut item {
-            *exit_code = exit;
-        }
-        let command = CommandHistory::from_item(item).unwrap();
-        assert_eq!((command.exit_code, command.duration), (1, Duration::ZERO));
-    }
-}
+// ALAB(shell-output): check the native replay styles and measured durations.
+include!("../../../alab-tui/glue/command_replay_outcome_tests.rs");
 
 #[test]
 fn incomplete_tool_payloads_preserve_last_known_status_and_output() {

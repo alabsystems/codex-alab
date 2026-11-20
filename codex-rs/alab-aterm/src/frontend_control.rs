@@ -39,6 +39,32 @@ struct Allocation {
     member: String,
 }
 
+/// The startup policy reported for this controller's current foreground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupMode {
+    Embedded,
+    Retained,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartupModeReply {
+    schema: u32,
+    request: String,
+    operation: String,
+    session: crate::accounts::Session,
+    member: String,
+    mode: String,
+}
+
+fn request_operation() -> String {
+    format!(
+        "{:016x}{:016x}",
+        codex_alab_core::native_source::connection_request_prefix(),
+        codex_alab_core::native_source::connection_request_prefix()
+    )
+}
+
 /// An actual native-issued controller. It is neither a Source nor permission
 /// to attach to a backend. Dropping it closes only its independent connection.
 pub struct Controller {
@@ -94,26 +120,49 @@ impl Controller {
         backend::stop(self).await
     }
 
+    /// Read native construction policy. Service start and attachment perform
+    /// their own admission checks on this connection.
+    pub async fn startup_mode(&self) -> io::Result<StartupMode> {
+        let operation = request_operation();
+        let body = self
+            .bound_request("controller-startup-mode", &operation)
+            .await?;
+        let reply: StartupModeReply = serde_json::from_str(&body).map_err(|_| unavailable())?;
+        if reply.schema != 1
+            || !valid_hex(&reply.request, 32)
+            || reply.operation != operation
+            || reply.member != self.member
+            || reply.session != self.session
+        {
+            return Err(unavailable());
+        }
+        match reply.mode.as_str() {
+            "embedded" => Ok(StartupMode::Embedded),
+            "retained" => Ok(StartupMode::Retained),
+            _ => Err(unavailable()),
+        }
+    }
+
     /// An explicit native withdrawal receipt, not an acknowledgment that any
     /// backend root or tool has stopped. Transport loss is returned as uncertain.
     pub async fn close(&self) -> io::Result<()> {
-        let operation = format!(
-            "{:016x}{:016x}",
-            codex_alab_core::native_source::connection_request_prefix(),
-            codex_alab_core::native_source::connection_request_prefix()
-        );
+        self.bound_request("controller-close", &request_operation())
+            .await?;
+        Ok(())
+    }
+
+    async fn bound_request(&self, action: &str, operation: &str) -> io::Result<String> {
         self.transport
             .call(
-                "controller-close",
-                &operation,
+                action,
+                operation,
                 &format!(
                     " member={} controller_operation={}",
                     self.member, self.operation
                 ),
                 Some(&self.member),
             )
-            .await?;
-        Ok(())
+            .await
     }
 }
 

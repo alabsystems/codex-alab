@@ -106,6 +106,37 @@ fn swap_system_skills_dir(path: &Path, from: &str, to: &str) -> PathBuf {
 /// per-originator caches take their names from this one (`models_cache.alab.<originator>.json`).
 pub const MODELS_CACHE_FILE: &str = "models_cache.alab.json";
 
+/// Detect replacement or rewriting of a shared catalog without parsing unchanged contents.
+#[derive(Default)]
+pub struct ModelCacheRevision {
+    stamp: Option<(std::time::SystemTime, u64)>,
+    retry_at: Option<tokio::time::Instant>,
+}
+
+impl ModelCacheRevision {
+    pub async fn changed(&mut self, cache_file: &Path) -> bool {
+        let current = tokio::fs::metadata(cache_file)
+            .await
+            .ok()
+            .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
+        let previous = std::mem::replace(&mut self.stamp, current);
+        let due = self
+            .retry_at
+            .is_some_and(|at| tokio::time::Instant::now() >= at);
+        if previous == current && !due {
+            return false;
+        }
+        self.retry_at = None;
+        current.is_some()
+    }
+
+    /// The serving catalog did not answer. Recheck this hint even if no peer
+    /// rewrites it. A genuinely newer file is eligible immediately.
+    pub fn retry_after(&mut self, delay: std::time::Duration) {
+        self.retry_at = Some(tokio::time::Instant::now() + delay);
+    }
+}
+
 /// The model catalog cache's file name: [`MODELS_CACHE_FILE`] for codex, `upstream` otherwise.
 pub fn models_cache_file(upstream: &'static str) -> &'static str {
     own(upstream, MODELS_CACHE_FILE)

@@ -142,6 +142,7 @@ enum Kind {
 
 pub(super) struct Transport {
     conn: Conn,
+    auth_identity: conn::AuthIdentity,
     server_pid: Option<u32>,
     sid: String,
     birth: String,
@@ -167,8 +168,8 @@ impl Transport {
         self.original_server_pid()
     }
 
-    /// Historical kernel-peer DATA survives EOF solely to retain late received
-    /// rights as unresolved custody. It grants no current admission or IO use.
+    /// The original kernel peer remains available for identity comparisons after EOF.
+    /// It grants no current admission or IO use.
     pub(super) fn original_server_pid(&self) -> io::Result<u32> {
         self.server_pid.ok_or_else(unavailable)
     }
@@ -1484,6 +1485,7 @@ async fn connect_transport(endpoint: &Endpoint, birth: &str) -> io::Result<Trans
         .map_err(transport_error)?;
     let server_pid = opened.server_pid;
     let transport = Transport {
+        auth_identity: opened.auth_identity.clone(),
         conn: Conn::spawn(opened, CALL_TIMEOUT),
         server_pid,
         sid: endpoint.sid.clone(),

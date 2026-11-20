@@ -24,6 +24,8 @@ pub(crate) enum CommandSessionStatus {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct CommandSession {
     pub(crate) session_id: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) invocation_id: Option<uuid::Uuid>, // ALAB(shell-invocation): a current command can be polled after compaction.
     pub(crate) status: CommandSessionStatus,
     pub(crate) in_use: bool,
 }
@@ -137,7 +139,8 @@ impl ContextualUserFragment for CommandSessionsState {
                 CommandSessionStatus::Exited => "exited; poll to collect",
             };
             let in_use = if session.in_use { "; in use" } else { "" };
-            text.push_str(&format!("{id}: {status}{in_use}\n"));
+            let binding = session.invocation_id.map(|token| format!("; invocation_id={token}")).unwrap_or_default(); // ALAB(shell-invocation): retain the native rendering when absent.
+            text.push_str(&format!("{id}: {status}{in_use}{binding}\n"));
         }
         if self.omitted > 0 {
             let omitted = self.omitted;

@@ -59,21 +59,128 @@ fn real_provisional_editor_confirmation_and_paste_state_restore_before_events() 
 }
 
 #[test]
-fn real_new_human_draft_survives_refused_late_install() {
-    let source = crate::startup_draft::tests::quiet_startup_test_pump();
-    let raw = serde_json::value::to_raw_value(&capture_ui(&source, None, BYTES).unwrap()).unwrap();
+fn real_new_human_draft_survives_refused_late_install() -> io::Result<()> {
+    let mut source = crate::startup_draft::tests::quiet_startup_test_pump();
+    source
+        .bottom_pane
+        .record_composer_activity_at(std::time::Instant::now());
+    let raw = serde_json::value::to_raw_value(&capture_ui(&source, None, BYTES)?)?;
+    let clock = source.bottom_pane.alab_capture_delayed_approvals(BYTES)?;
     let mut destination = crate::startup_draft::tests::quiet_startup_test_pump();
     destination.bottom_pane.set_composer_text(
         "new real human input".into(),
         Vec::new(),
         Vec::new(),
     );
-    let prepared = Prepared::decode(&raw, BYTES, GENERATIONS).unwrap();
-    assert!(prepared.install(&mut destination).is_err());
+    let clock =
+        crate::bottom_pane::alab_retained_delayed_approval::PreparedDelayed::decode(&clock, BYTES)?;
+    assert!(
+        Prepared::decode(&raw, BYTES, GENERATIONS)?
+            .install_with_clock(&mut destination, clock)
+            .is_err()
+    );
     assert_eq!(
         destination.bottom_pane.composer_text(),
         "new real human input"
     );
+    assert_eq!(
+        destination
+            .bottom_pane
+            .composer_draft_snapshot()
+            .last_composer_activity_at,
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn buffered_key_survives_refused_startup_restore_without_publishing_the_stash() -> io::Result<()> {
+    // The real prompt stash belongs to the process. Isolate its capture and publication.
+    const CHILD: &str = "ALAB_BUFFERED_STARTUP_RESTORE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let module = module_path!().split_once("::").expect("crate module").1;
+        let test = format!(
+            "{module}::buffered_key_survives_refused_startup_restore_without_publishing_the_stash"
+        );
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", &test, "--show-output", "--color", "never"])
+            .env(CHILD, "1")
+            .output()?;
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && stdout.lines().any(|line| line.trim() == test),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return Ok(());
+    }
+
+    use codex_alab_tui::interface;
+    let _interface = interface::scoped(Box::leak(Box::new(interface::State::new())));
+    interface::configure(true);
+    let mut stash_owner = crate::startup_draft::tests::quiet_startup_test_pump().bottom_pane;
+    stash_owner.set_history_metadata(codex_protocol::ThreadId::new(), 0, 0);
+    stash_owner.set_composer_text("original stash".into(), Vec::new(), Vec::new());
+    assert!(stash_owner.alab_stash_prompt());
+
+    let mut source = crate::startup_draft::tests::quiet_startup_test_pump();
+    source
+        .bottom_pane
+        .set_composer_text("original draft".into(), Vec::new(), Vec::new());
+    source.initial_screen = StartupDraftInitialScreen::SessionPicker;
+    source.session_action = StartupDraftSessionAction::Fork;
+    source.submission_pending = true;
+    let raw = serde_json::value::to_raw_value(&capture_ui(&source, None, BYTES)?)?;
+    let clock = source.bottom_pane.alab_capture_delayed_approvals(BYTES)?;
+    assert!(stash_owner.alab_stash_prompt());
+    assert_eq!(stash_owner.composer_text(), "original stash");
+    stash_owner.set_composer_text(String::new(), Vec::new(), Vec::new());
+
+    for prime_first in [false, true] {
+        let mut destination = crate::startup_draft::tests::quiet_startup_test_pump();
+        let clock = crate::bottom_pane::alab_retained_delayed_approval::PreparedDelayed::decode(
+            &clock, BYTES,
+        )?;
+        if prime_first {
+            clock.prime_before_original_replay(&mut destination.bottom_pane)?;
+        }
+        destination
+            .bottom_pane
+            .handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(destination.bottom_pane.is_in_paste_burst());
+        assert!(destination.bottom_pane.composer_text().is_empty());
+        let activity = destination
+            .bottom_pane
+            .composer_draft_snapshot()
+            .last_composer_activity_at
+            .expect("the buffered key records real activity");
+
+        assert!(
+            Prepared::decode(&raw, BYTES, GENERATIONS)?
+                .install_with_clock(&mut destination, clock)
+                .is_err()
+        );
+        assert_eq!(
+            destination.initial_screen,
+            StartupDraftInitialScreen::Composer
+        );
+        assert_eq!(destination.session_action, StartupDraftSessionAction::New);
+        assert!(!destination.submission_pending);
+        assert_eq!(
+            destination
+                .bottom_pane
+                .composer_draft_snapshot()
+                .last_composer_activity_at,
+            Some(activity)
+        );
+        destination.bottom_pane.flush_composer_paste_burst();
+        assert_eq!(destination.bottom_pane.composer_text(), "x");
+        assert!(
+            !stash_owner.alab_stash_prompt(),
+            "the checkpoint stash was published"
+        );
+    }
+    Ok(())
 }
 
 #[test]

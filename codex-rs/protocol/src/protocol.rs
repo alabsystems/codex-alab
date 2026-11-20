@@ -4056,11 +4056,19 @@ pub struct ExecCommandEndEvent {
     /// Captured aggregated output
     #[serde(default)]
     pub aggregated_output: String,
-    /// The command's exit code.
+    /// Numeric compatibility field. Use `observed_exit_code` for a process result.
     pub exit_code: i32,
+    /// The canonical completion carried no process exit code. Older events only stored the integer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub exit_code_unavailable: bool, // ALAB(shell-output): carry absence alongside the legacy integer.
     /// The duration of the command execution.
     #[ts(type = "string")]
     pub duration: Duration,
+    /// The canonical completion had no measured duration. Older events retain their stored value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub duration_unavailable: bool, // ALAB(shell-output): distinguish a missing duration from a measured zero.
     /// Completion status for this command execution.
     pub status: ExecCommandStatus,
 }
@@ -6953,3 +6961,6 @@ mod tests {
 #[path = "../../alab-core/glue/goal_runtime_wire.rs"]
 mod alab_goal_runtime_wire; // ALAB(storage-status): typed passive runtime metadata, separate from durable goals.
 pub use alab_goal_runtime_wire::{AlabGoalPersistencePhase, AlabGoalRuntimeUpdatedNotification, AlabGoalRuntimeSnapshot, AlabGoalRuntimeDelivery}; // ALAB(storage-status)
+
+#[path = "../../alab-core/glue/command_exit_wire.rs"]
+mod alab_command_exit_wire; // ALAB(shell-output): keep legacy lifecycle events truthful about missing process exits.

@@ -201,6 +201,7 @@ impl ChatWidget {
         if session.reasoning_effort == Some(ReasoningEffortConfig::Ultra) {
             self.set_plan_mode_reasoning_effort(Some(ReasoningEffortConfig::Ultra));
         }
+        self.alab_observed_thread_mode = session.collaboration_mode.as_deref().cloned(); // ALAB(defaults): a new attachment replaces the previous confirmation.
         match session.collaboration_mode.as_deref() {
             Some(collaboration_mode) => {
                 self.set_effective_collaboration_mode(collaboration_mode.clone());
@@ -253,6 +254,8 @@ impl ChatWidget {
                 startup_tooltip_override,
                 self.plan_type,
             );
+            self.session_header.banner = session_info_cell.live_banner_model(); // ALAB(banner): bind the launch card to this widget.
+            self.alab_refresh_banner_model();
             self.apply_session_info_cell(session_info_cell);
         } else if self
             .transcript

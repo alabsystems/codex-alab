@@ -1,3 +1,5 @@
+#[path = "../../../alab-core/glue/native_output_eof.rs"] mod native_output_eof; // ALAB(shell-output): EOF evidence from original raw readers.
+pub use native_output_eof::NativeOutputEof; // ALAB(shell-output): per-process native read receipt.
 mod child;
 pub use child::Child;
 mod child_command;

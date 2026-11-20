@@ -389,6 +389,7 @@ impl ChatWidget {
                 format!("Preparing images: {}", pending.message.text),
             );
         }
+        self.bottom_pane.alab_set_recovered_preview(self.input_queue.recovered_queue, has_queued, self.pending_image_submission.is_some()); // ALAB(queue-review): show the same hold that prevents automatic dispatch.
         self.bottom_pane.set_pending_input_preview(
             preview.queued_messages,
             preview.pending_steers,

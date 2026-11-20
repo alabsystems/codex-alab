@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "base": "f7dece07d08b1452aaac13053a72de0631fa934f",
+  "target": "e1b755849216aacd40574b5ccf9ee18d18b1a867",
+  "frontier": "f7dece07d08b1452aaac13053a72de0631fa934f",
+  "commits": [
+    {
+      "sha": "e1b755849216aacd40574b5ccf9ee18d18b1a867",
+      "subject": "Prepare managed proxy settings once per sandbox command (#62386)",
+      "paths": [
+        "codex-rs/Cargo.lock",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/tasks/user_shell.rs",
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs",
+        "codex-rs/core/src/unified_exec/mod_tests.rs",
+        "codex-rs/sandboxing/Cargo.toml",
+        "codex-rs/sandboxing/src/linux.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt.rs",
+        "codex-rs/sandboxing/src/seatbelt_daemon_socket_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt_fcntl_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt_network_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt_tests.rs",
+        "codex-rs/sandboxing/src/seatbelt_tls_tests.rs",
+        "codex-rs/sandboxing/src/windows_mxc.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Keep a command’s proxy environment, shell-specific credential handling and sandbox network policy tied to the same preparation. A later proxy configuration change should apply to newly prepared commands.",
+      "evidence": [
+        "SandboxManager prepares the environment and route together when the caller has not supplied a route. With a prepared route it keeps the caller’s environment. The prepared command carries the environment identity and retains its live proxy handle. A preparation error reports the requested environment.",
+        "On macOS, Seatbelt derives proxy ports, local binding and socket permissions from the prepared context. The Linux helper receives the managed route on enforced launches. Windows MXC uses the prepared route and rejects enforced networking when one is missing. The sandboxing crate drops its unused URL dependency.",
+        "The combined source applies the official 17-file patch unchanged. Both callers of the shortened raw ExecRequest constructor already use its new signature. ALab’s shell reader and retained native-child branch still observe the same launched child and keep their existing cancellation ownership.",
+        "Upstream adds native controls for a mismatched environment, a proxy reload between preparation and real shell capture, shell-specific credential preservation, and enforcement of the selected macOS socket and loopback permissions."
+      ],
+      "revisit": "Exercise the launch and capture controls against the combined source. Check macOS Seatbelt using real permitted and unrelated local endpoints on a host that can launch the sandbox."
+    }
+  ]
+}

@@ -175,6 +175,7 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
             token_usage,
             usage_metadata,
             reasoning_removals: _,
+            interrupted: false, // ALAB(shell-invocation): this fixture received a genuine completion.
             end_turn,
         } => {
             assert_eq!(response_id, "resp1");

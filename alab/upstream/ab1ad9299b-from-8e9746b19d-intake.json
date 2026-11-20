@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "base": "8e9746b19d20539ab3fbce5d69a4e0cd09b27305",
+  "target": "ab1ad9299b53642517c77e1f617f63d5f9273e43",
+  "frontier": "8e9746b19d20539ab3fbce5d69a4e0cd09b27305",
+  "commits": [
+    {
+      "sha": "ab1ad9299b53642517c77e1f617f63d5f9273e43",
+      "subject": "Skip the sandbox denial wait when unified exec output closes (#62382)",
+      "paths": [
+        "codex-rs/core/src/unified_exec/process.rs",
+        "codex-rs/core/src/unified_exec/process_tests.rs",
+        "codex-rs/core/tests/suite/unified_exec_process_events.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream's closed-stream wakeup when classifying a command failure. This removes an unnecessary 20 ms wait for completed output and preserves ALab's original shell transcript and exit observation.",
+      "evidence": [
+        "The upstream reader registers for the closure notification, rechecks the atomic flag, then waits for output or closure subject to the existing timeout. The classifier and its transcript snapshot are unchanged.",
+        "ALab's shell observation and retired-reader hooks already use the same output closure flag and notification. The local capture and remote stream can retain their separate ownership and completion rules.",
+        "Upstream adds three paused-clock controls for an already closed stream, closure during the wait and an open stream. Its pushed-event integration adds a direct denial with a process/closed event alongside the original open case."
+      ],
+      "revisit": "Run all three timing controls and both pushed-event denial variants against the combined fork, including the original shell observation path."
+    }
+  ]
+}

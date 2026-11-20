@@ -724,6 +724,11 @@ fn an_upgrade_notice_stays_pending_while_the_original_model_blocked_goal_recover
             })
             .await;
             let policy = h.autopilot.sup.policy().expect("fresh upgrade policy");
+            h.autopilot
+                .refresh_notice_capability(&policy)
+                .await
+                .expect("current update target and host claim")
+                .expect("executable host");
             {
                 let (round, step, _) = h
                     .autopilot

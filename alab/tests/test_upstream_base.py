@@ -236,7 +236,7 @@ class ReleaseLineTests(unittest.TestCase):
     def layer(self):
         """ALab's tooling and VERSION, committed on the clone's current branch."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py"):
+        for name in ("package.sh", "lib.sh", "upstream_intake.py", "command_guard.py", "github.py", "cli_status.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
         (self.alab / "VERSION").write_text("0.164.0\n")
         self.git(self.alab, "add", "alab", "VERSION")
@@ -246,6 +246,28 @@ class ReleaseLineTests(unittest.TestCase):
         return subprocess.run(["/bin/bash", str(self.alab / "alab" / "package.sh"),
                                "--upstream-base", *args], env=self.env, capture_output=True,
                               text=True, timeout=60)
+
+    def test_marked_leaf_metadata_names_the_annotated_release_and_counts_from_it(self):
+        tag = 'rust-v0.163.0'
+        release = self.git(self.upstream, 'rev-parse', tag + '^{commit}')
+        self.git(self.upstream, 'tag', '-f', '-a', tag, '-m', 'official tag', release)
+        annotation = self.git(self.upstream, 'rev-parse', tag)
+        # A second stable from the same branch point advances the legacy version floor.
+        self.git(self.upstream, 'checkout', '-q', '--detach', self.u2)
+        self.commit(self.upstream, 'later stable', '2026-10-21T13:00:00+0000')
+        self.git(self.upstream, 'tag', 'rust-v0.164.0')
+        self.git(self.alab, 'checkout', '-q', '--detach', release)
+        self.layer()
+        (self.alab / 'alab/upstream-release').write_text(f'{tag} {annotation} {release}\n')
+        self.git(self.alab, 'add', 'alab/upstream-release')
+        self.commit(self.alab, 'pin release', '2026-10-21T14:00:00+0000')
+        result = self.base()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f'Based on upstream openai/codex {tag} + 0 commits ({release[:12]}, 2026-10-21)\n')
+        self.git(self.upstream, 'tag', '-f', '-a', tag, '-m', 'reissued tag', release)
+        result = self.base()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('official release tag missing or changed', result.stderr)
 
     def test_names_the_newest_merged_stable_and_the_commits_past_it(self):
         self.git(self.alab, "checkout", "-q", "-b", "main-on-u3", self.u3)

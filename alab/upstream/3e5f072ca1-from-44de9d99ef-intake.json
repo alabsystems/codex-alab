@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "base": "44de9d99ef5a9ea3a04c00e09bec8ebd67707868",
+  "target": "3e5f072ca1e3e75e3151656d411d094489e3faa2",
+  "frontier": "44de9d99ef5a9ea3a04c00e09bec8ebd67707868",
+  "commits": [
+    {
+      "sha": "3e5f072ca1e3e75e3151656d411d094489e3faa2",
+      "subject": "Use the state database first for TUI analytics thread lists (#62138)",
+      "paths": [
+        "codex-rs/tui/src/analytics/chats.rs",
+        "codex-rs/tui/src/analytics/chats_tests.rs",
+        "codex-rs/tui/src/analytics/tasks_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "history-pagination",
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use the database for root analytics listings to avoid filesystem scans and metadata repair during normal pagination. A typed internal server error restarts once in the repairing mode and discards all database results and cursors. Descendant listing, cutoff filtering, backend ownership, and analytics opt-in behavior stay in their existing paths.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 615e78f4c0ef7184056813b856993c6ab7d140a4cacdf3cd4bbcc123bb596cf4.",
+        "The source tests cover an indexed second-page error, exclusion of discarded rows, separate usage-estimate timing, and database-only routing for root requests while archived descendants use the existing path."
+      ],
+      "revisit": "Verify root analytics on the composed backend with a complete database, a second-page internal error, failure in repairing mode, and archived descendants. Check that fallback does not switch the selected app-server handle."
+    }
+  ]
+}

@@ -7,8 +7,8 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_features::Feature;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::SandboxPolicy;
 use pretty_assertions::assert_eq;
 
 /// The config a fresh codex-alab install gets: the switch on (as the codex binary's main
@@ -184,8 +184,8 @@ async fn aterm_defaults_reach_the_config() {
         AskForApproval::Never
     );
     assert_eq!(
-        config.legacy_sandbox_policy(),
-        SandboxPolicy::DangerFullAccess
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::Disabled
     );
 }
 
@@ -219,10 +219,10 @@ async fn aterm_permission_defaults_preserve_explicit_cli_choices() {
         config.permissions.approval_policy.value(),
         AskForApproval::OnRequest
     );
-    assert!(matches!(
-        config.legacy_sandbox_policy(),
-        SandboxPolicy::ReadOnly { .. }
-    ));
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::read_only()
+    );
 }
 
 #[tokio::test]
@@ -345,10 +345,10 @@ async fn the_users_config_overrides_them() {
         config.permissions.approval_policy.value(),
         AskForApproval::OnRequest
     );
-    assert!(matches!(
-        config.legacy_sandbox_policy(),
-        SandboxPolicy::ReadOnly { .. }
-    ));
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::read_only()
+    );
 }
 
 #[test]

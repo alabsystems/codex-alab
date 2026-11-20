@@ -22,6 +22,8 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 const FOCUS_INPUT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 const FOCUS_PROBE_INPUT: &str = "focus-palette-24527";
 
+#[path = "../../../alab-tui/glue/active_file_logging_pty_tests.rs"]
+mod active_file_logging; // ALAB(quiet-logs): exercise a shared log through ordinary TUI startup.
 #[path = "external_editor_tests.rs"]
 mod external_editor;
 #[path = "gov_cloud_guidance_tests.rs"]
@@ -384,6 +386,7 @@ impl PtyCodex {
             .env_remove("TMUX_PANE")
             .env_remove("STY")
             .env("TERM_PROGRAM", "kitty")
+            .env_remove(codex_alab_core::session::ATERM_SESSION_ENV) // ALAB(test): this PTY owns its session and cannot inherit the hosting tab.
             .env_remove("TERM_PROGRAM_VERSION")
             // Exercise the fixture's login state even on hosts configured with workload identity.
             .env_remove(codex_protocol::shell_environment::OPENAI_FEDERATION_RULE_ID_ENV_VAR)
@@ -566,6 +569,24 @@ impl Drop for PtyCodex {
 
 fn contains_bytes(buffer: &[u8], needle: &[u8]) -> bool {
     buffer.windows(needle.len()).any(|window| window == needle)
+}
+
+pub(super) fn write_test_config_with_bundled_models(
+    codex_home: &Path,
+    repo_root: &Path,
+) -> Result<()> {
+    write_test_config(codex_home, repo_root)?;
+    // Model fetches must not delay the startup screens this PTY is waiting for.
+    let catalog = codex_home.join("models.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&codex_models_manager::bundled_models_response()?)?,
+    )?;
+    let catalog = serde_json::to_string(&catalog)?;
+    let path = codex_home.join("config.toml");
+    let config = std::fs::read_to_string(&path)?;
+    std::fs::write(path, format!("model_catalog_json = {catalog}\n{config}"))?;
+    Ok(())
 }
 
 pub(super) fn write_test_config(codex_home: &Path, repo_root: &Path) -> Result<()> {

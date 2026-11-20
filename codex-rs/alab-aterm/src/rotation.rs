@@ -12,6 +12,7 @@
 use crate::Client;
 use crate::Error;
 use crate::renewal::Identity;
+use codex_alab_core::wall_kind::valid_limit_id;
 use std::collections::BTreeMap;
 
 /// Which move the host is asked for: the verb, and the prefix every reply to it carries.
@@ -311,23 +312,36 @@ impl Client {
         Ok(reply.status)
     }
 
-    async fn prepare_move(&self, protocol: Protocol, origin: &Origin) -> Result<Outcome, Error> {
+    pub(crate) async fn prepare_move(
+        &self,
+        protocol: Protocol,
+        origin: &Origin,
+        limit: Option<&str>,
+    ) -> Result<Outcome, Error> {
         if !origin.valid() {
             return Err(Error::BadRequest("invalid rotation origin".into()));
         }
-        let outcome = self
-            .rotation_call(
-                protocol,
-                &format!(
-                    "{} prepare thread={} turn={} source_account={} source_user={}",
-                    protocol.verb(),
-                    origin.thread,
-                    origin.turn,
-                    origin.identity.account,
-                    origin.identity.user,
-                ),
-            )
-            .await?;
+        let mut request = format!(
+            "{} prepare thread={} turn={} source_account={} source_user={}",
+            protocol.verb(),
+            origin.thread,
+            origin.turn,
+            origin.identity.account,
+            origin.identity.user,
+        );
+        if let Some(limit) = limit {
+            if protocol != Protocol::Quota
+                || !valid_limit_id(limit)
+                || !self
+                    .policy()
+                    .is_some_and(|policy| crate::account_recovery::leaves_limits(&policy))
+            {
+                return Err(Error::BadRequest("unsupported rotation limit".into()));
+            }
+            request.push_str(" limit=");
+            request.push_str(limit);
+        }
+        let outcome = self.rotation_call(protocol, &request).await?;
         if outcome
             .receipt()
             .is_some_and(|receipt| receipt.origin != *origin)
@@ -338,7 +352,7 @@ impl Client {
     }
 
     pub async fn rotation_prepare(&self, origin: &Origin) -> Result<Outcome, Error> {
-        self.prepare_move(Protocol::Quota, origin).await
+        self.prepare_move(Protocol::Quota, origin, None).await
     }
 
     pub async fn rotation_status(&self, id: &str) -> Result<Outcome, Error> {
@@ -378,7 +392,7 @@ impl Client {
     /// `codex-login-rotation prepare`: ask the host to move this session off its lost login
     /// to another account already signed in on this Mac.
     pub async fn login_rotation_prepare(&self, origin: &Origin) -> Result<Outcome, Error> {
-        self.prepare_move(Protocol::Login, origin).await
+        self.prepare_move(Protocol::Login, origin, None).await
     }
 
     pub async fn login_rotation_status(&self, id: &str) -> Result<Outcome, Error> {

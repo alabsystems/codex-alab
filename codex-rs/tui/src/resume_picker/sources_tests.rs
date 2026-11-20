@@ -27,6 +27,7 @@ fn source() -> (
 }
 fn request(token: usize, cursor: Option<PageCursor>) -> PickerLoadRequest {
     PickerLoadRequest::Page(PageLoadRequest {
+        login_scope: super::alab_resume_logins::LoginScope::Unavailable, // ALAB(accounts): existing fixtures keep ordinary account discovery.
         request_token: token,
         listing_token: token,
         cursor,

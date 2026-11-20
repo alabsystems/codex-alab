@@ -20,12 +20,14 @@ workspace = true
 test-support = []
 
 [dependencies]
+base64 = "=0.22.1"
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 codex-alab-aterm = { path = "../alab-aterm" }
 codex-alab-core = { path = "../alab-core" }
 codex-alab-input = { path = "../alab-input" }
 codex-terminal-detection = { workspace = true }
+codex-thread-store = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 libc = { workspace = true }
 ratatui = { workspace = true }
@@ -38,6 +40,9 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync",
 toml = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
+
+[build-dependencies]
+png = "=0.18.0"
 
 [dev-dependencies]
 codex-alab-aterm = { path = "../alab-aterm", features = ["test-support"] }
@@ -52,5 +57,8 @@ codex-state = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 insta = { workspace = true }
+png = "=0.18.0"
 pretty_assertions = { workspace = true }
+supports-color = "=3.0.2"
+terminal_size = "=0.4.3"
 tokio = { workspace = true, features = ["test-util"] }

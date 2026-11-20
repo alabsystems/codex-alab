@@ -36,6 +36,8 @@ use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
+#[path = "../../../alab-core/glue/shell_launch_number_tests.rs"] mod shell_launch_number_tests; // ALAB(shell-invocation): exercise overlapping launches through the real process store.
+
 async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
     let (session, turn) = make_session_and_context().await;
     (Arc::new(session), Arc::new(turn))
@@ -303,6 +305,7 @@ async fn blocking_terminate_unified_process(
                 sandbox_type: Some(codex_sandboxing::SandboxType::None),
             },
             OutputDrainPolicy::WaitForOutputClosure,
+            /*shell_log*/ None,
         )
         .await?,
     ))

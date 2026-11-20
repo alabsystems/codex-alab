@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "base": "9d8ca1df71dd95e0bb77b22207236f29a83bdc5f",
+  "target": "60fcb1649f0c3213d9d44c7c0caaca6459fb7c6c",
+  "frontier": "9d8ca1df71dd95e0bb77b22207236f29a83bdc5f",
+  "commits": [
+    {
+      "sha": "60fcb1649f0c3213d9d44c7c0caaca6459fb7c6c",
+      "subject": "Support piped I/O when starting Seatbelt sandbox commands (#62350)",
+      "paths": [
+        "codex-rs/cli/src/debug_sandbox.rs"
+      ],
+      "classes": [
+        "refactor",
+        "feature"
+      ],
+      "features": [
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Keep upstream's macOS child owner so a future caller can use pipes while the sandbox keeps its network proxy alive. Preserve inherited streams and child exit status for the existing CLI.",
+      "evidence": [
+        "The single changed source file at integration 34dc5bf533 matches upstream byte for byte. The existing Seatbelt entry point passes piped=false, awaits the same child and finishes denial logging. Linux and Windows retain the inherited-stream wrapper. The returned child owns the started proxy and keeps the existing kill-on-drop behavior.",
+        "On macOS, the preceding 0.12 development executable b8a4b5899 ran a real sandboxed command with a piped parent. Its stdin text reached stdout, its separate diagnostic reached stderr, and exit status 23 survived. Empty stdin delivered EOF to a second child which exited 0. This establishes the public inherited-stream behavior to preserve.",
+        "At official commit 60fcb1649f the only call of start_command_under_seatbelt selects inherited streams. The internal piped mode has no product caller at that commit. Verify the child handles and proxy lifetime through its first real caller when integrated."
+      ],
+      "revisit": ""
+    }
+  ]
+}

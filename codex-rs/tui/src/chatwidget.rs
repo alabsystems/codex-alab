@@ -300,11 +300,17 @@ mod keymap_picker;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod misalignment_policy;
+#[path = "../../alab-tui/glue/finding_commands.rs"] mod alab_finding_commands; // ALAB(misalignment-review): retain the identity of commands that outlive a finding.
+pub(crate) use alab_finding_commands::AlabPendingCommand; // ALAB(misalignment-review): correct only the original pending history row.
+#[path = "../../alab-tui/glue/finding_input_recovery.rs"] mod alab_finding_input_recovery; // ALAB(misalignment-review): recover queued local input across terminal findings.
 pub(crate) use misalignment_policy::MisalignmentReview;
 pub(crate) use misalignment_policy::MisalignmentTurnSource;
 mod pets;
 pub(crate) use self::pets::ConfiguredPetLoadGeneration;
 mod session_flow;
+#[path = "../../alab-tui/glue/turn_model_inheritance.rs"] pub(crate) mod alab_turn_model; // ALAB(defaults): inherit confirmed model settings across catalog updates.
+#[path = "../../alab-tui/glue/observed_steer.rs"]
+mod alab_observed_steer; // ALAB(queue-review): keep a submitted steer's identity through local dispatch.
 mod session_header;
 use self::session_header::SessionHeader;
 mod clipboard;
@@ -553,6 +559,7 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    alab_observed_thread_mode: Option<CollaborationMode>, // ALAB(defaults): the destination-confirmed mode can be inherited on subsequent user turns.
     has_chatgpt_account: bool,
     pub(crate) requires_openai_auth: bool,
     has_codex_backend_auth: bool,
@@ -588,6 +595,7 @@ pub(crate) struct ChatWidget {
     // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     alab_goal_runtime: alab_goal_runtime::State, // ALAB(storage-status): exact-backend passive runtime observation.
+    alab_controls: alab_interface::Controls, // ALAB(interface): this widget owns its Autopilot picker and presented control presses.
     alab_allowance: alab_allowance::State, // ALAB(interface): widget-local account usage history and reset-credit details.
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -631,6 +639,7 @@ pub(crate) struct ChatWidget {
     suppress_image_paste_until: Instant,
     copy_last_response_binding: Vec<KeyBinding>,
     running_commands: HashMap<String, RunningCommand>,
+    alab_finding_commands: alab_finding_commands::Commands, // ALAB(misalignment-review): command outcomes belong to their original thread and turn.
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
@@ -1223,6 +1232,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
+        self.alab_refresh_autopilot_menu(); // ALAB(interface): update an open picker before drawing the next supervisor observation.
         self.alab_refresh_quota_freshness(); // ALAB(interface): expire cached quota locally when a disconnected server cannot refresh it.
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
@@ -1418,6 +1428,7 @@ impl ChatWidget {
             }),
         };
         if let Some(pending) = matching.and_then(|index| steers.remove(index)) {
+            self.alab_reconcile_recovered_queue(); // ALAB(misalignment-review): a committed final steer leaves no recovered work to hold.
             self.refresh_pending_input_preview();
             if !already_rendered {
                 if !pending.optimistically_rendered {
@@ -2207,6 +2218,7 @@ pub(crate) fn extract_first_bold(s: &str) -> Option<String> {
 pub(crate) mod tests;
 #[path = "../../alab-tui/glue/chat_hand.rs"] mod alab_hand; // ALAB(session): the input ChatWidget still holds, for codex-rs/alab-tui
 #[path = "../../alab-tui/glue/interface_controls.rs"] mod alab_interface; // ALAB(interface): presentation controls live in ALab's layer
+#[path = "../../alab-tui/glue/snapshot_input_replay.rs"] mod alab_snapshot_input; // ALAB(retained-ui): preserve input during replay and release it on the writable widget.
 #[path = "../../alab-tui/glue/pet_layout.rs"] mod alab_pet_layout; // ALAB(interface): the pet has a reserved dock beside the whole bottom pane
 #[path = "../../alab-tui/glue/task_terminals.rs"] mod alab_tasks; // ALAB(tasks): expose current terminal summaries without duplicating runtime state
 #[path = "../../alab-tui/glue/allowance.rs"] mod alab_allowance; // ALAB(interface): retain accepted native quota and reset-credit observations.

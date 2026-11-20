@@ -1,10 +1,174 @@
 <!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
 # Moving a session to another account
 
-Status: codex-alab sends and reads the wire below (branch `alab/account-move`,
-2026-11-12). The aterm side is on aterm branch `s51fb4f/codex-account-move`;
-neither aterm main nor the installed aterm answers it yet, and codex-alab then
-refuses as described under "Older aterm". No lab run of a move is recorded here.
+On 2026-11-18, signed Codex 0.11.0 and aterm 0.207.0 on m159 resumed a
+conversation on another enrolled subscription and completed a provider turn
+under the new identity. The trial also covered an exhausted destination.
+[Interactive switch on m159](../PARALLEL-LOGINS.md#interactive-switch-on-m159-2026-11-18)
+
+The Accounts pane keeps Enter for refresh. The development client shows a
+keyboard picker when aterm supplies a verified reference for an eligible
+subscription. On confirmation, Codex refreshes the roster and checks the
+revision, slot and reference before requesting the switch. The explicit
+`/accounts use <label>` command resolves the label supplied by the user.
+It also works with hosts that only support named switches.
+
+Refreshing the pane withdraws the picker destinations, the per-row switch
+commands and the automatic-choice command together. The account labels and
+last observed usage stay visible if the read fails. A later successful read
+restores the commands offered by that roster revision. A typed command resolves
+the label at the time it is entered, so a command from an older roster could
+select a reassigned label.
+
+On m159, a terminal replay with a synthetic host first offered a selectable
+account, then refused the next roster read. The previous CLI kept the old
+switch command beside the stale-data warning. At `61a4fcf0f4`, the warning
+and account row stayed visible and the switch command disappeared. Neither
+terminal requested a restart.
+
+The roster uses eligible rows for the typed-switch hint. The picker also
+requires a subscription reference for each destination. A host can support
+named switches while the only other login is at its weekly limit. The pane
+shows that row's recorded limit and
+keeps the host's automatic-choice capability independent. If multiple
+addresses share the same mask, the enhanced pane can show the connected
+server's full email above the roster. The selected local server's ChatGPT
+identity supplies that line. The host supplies the launch slot and masked
+roster rows independently. Reading the email at render time removes it on a
+disconnect or identity change, including while a cached roster is still on
+screen. The roster records whether two rows share a mask. For those rows the
+pane suggests `/status` for account details when the server is connected and the
+pane has no email to show. During a disconnect it shows the transport state.
+The picker displays the host's labels and masks. The full email appears only
+in the local view.
+
+Both paths ask the application to check for unsent input before opening
+the native connection and again after writing the session record. A blank
+composer can coexist with an unsent draft on another thread or backend.
+Only the application owns those parked drafts.
+
+An earlier terminal test on m159 ran the label-only development CLI against
+a simulated aterm and a loopback provider. After opening the picker, Esc returned to the roster.
+Reopening it and pressing Enter sent exactly one restart for the selected
+label. In a second run the destination reached its usage limit while the
+picker was open. Enter displayed the limit and sent zero restart requests.
+The provider received only the setup turn in each run. The signed-client
+trial above verified the host relaunch and the conversation ID separately.
+
+### Show both identities in the local account picker
+
+Two subscriptions can have the same masked address and different remaining
+allowances. On m159 the two signed Codex tabs each showed their own full
+connected email. The signed `/accounts` roster could distinguish the slots
+by label; it could not identify both full addresses in one view. The local
+shell lookup joins the slot label and expected provider email. Enrollment
+can also show the configured sign-in address when those addresses differ.
+
+The development Codex client offers **Show account addresses** in the account
+list when masks collide. The user's left navigation key asks the native host
+to draw a temporary, read-only address list over the requesting session. Opening it
+from Codex does not require an Account chip in the aterm window. Escape
+closes the overlay and preserves the Codex selection. The underlying pane
+continues to identify the launch slot and the connected server account.
+If the host reports that the displayed roster changed, Codex closes its switch
+picker and keeps the observed accounts and quota visible. Refresh makes the
+current roster's address and switch actions available again.
+
+The host candidate accepts a session-scoped `codex-accounts-display show`
+request with a request ID and the displayed pool revision. Showing content
+on the person's screen requires write authority and a foreground Codex
+process. The host reads the local roster, checks its revision and draws each
+label beside the configured sign-in address. It shows a distinct expected
+provider address separately. A missing address stays unknown. Only an
+acknowledgement with the request ID and revision goes back to Codex. The
+candidate withdraws the view on loss of focus or authority, a changed roster,
+or expiry. It has no action that changes a pool preference or restarts a
+conversation.
+
+Signed aterm 0.209.0 lacks this control. The development client gives the
+local lookup command on that host. New enrollment still requires the
+Registry binding described in the [browser design](accounts-browser-enrollment.md).
+
+### Preserve the confirmed picker destination through restart
+
+On November 19, the signed CLI sent a synthetic host one named restart for
+`work`. The request carried the pid and label. The host returned a quota
+refusal and the original process stayed alive. The earlier keyboard-picker
+trial sent the same label-only request. Native aterm derives the visible row
+ID from the label, stores the label in its restart record and resolves the
+label again at relaunch. If `work` changes subscriptions after the picker's
+final roster read, a newly eligible account can inherit that name. The trials
+measured the wire and the refusal. A relaunch on the wrong subscription has
+not been observed.
+[Codex move request](../../codex-rs/alab-aterm/src/account_move.rs) ·
+[Native row ID](https://github.com/alabsystems/aterm/blob/376345c209b66b4eb11d3696620e59e308e2f606/crates/aterm-agent/src/harness/codex_enrollment.rs#L78) ·
+[Native restart record](https://github.com/alabsystems/aterm/blob/376345c209b66b4eb11d3696620e59e308e2f606/crates/aterm-agent/src/harness/restart_stamp.rs#L42)
+
+For a confirmed picker move, the host should advertise that it can honor the
+specific selection. Codex should send the selected row and its snapshot
+revision together with an opaque reference to the provider identity the
+host verified when it built the displayed row. The existing pool revision
+covers roster and binding metadata. Replacing credentials in the same
+directory can leave those inputs unchanged. Aterm can use the account and
+user identity it already checks for automatic quota moves. For a
+Registry-managed row, the Registry supplies the assigned account key and
+login address.
+[Pool revision inputs](https://github.com/alabsystems/aterm/blob/2976ace03a322e7ea083e703a8b96cf77c306dc9/crates/aterm-agent/src/harness/accounts.rs#L1323) ·
+[Native provider identity](https://github.com/alabsystems/aterm/blob/2976ace03a322e7ea083e703a8b96cf77c306dc9/crates/aterm-agent/src/harness/codex_renewal.rs#L14)
+
+At restart admission the host must validate the revision, resolve the
+reference and match the current login to the displayed identity. It must
+carry that identity in the restart record and verify the prepared login
+against it again before resuming the thread. An ordinary credential renewal
+for the same subscription can pass this check. A changed binding detected
+before restart leaves the original process running. If detected after
+shutdown, recover the original
+thread under its verified source account when possible and report the
+refusal. A host offering only named moves can still serve explicit
+`/accounts use <label>` and `/accounts auto`.
+
+The bound selection must survive a host replacement during restart. The
+current restart reader keeps a recognized process record even when it cannot
+decode the destination. Keep the confirmed selection in a versioned record
+that a successor can validate before starting a conversation under another
+login. If the successor cannot read it, recover the verified source or leave
+the conversation pending. Test replacement with an older host after admission
+and before relaunch, including a newly reassigned destination label.
+
+Run `python3.13 alab/smoke/account_switch_legacy.py --codex /path/to/codex --output /new/result-directory`
+to check the client against a simulated label-only host. Signed Codex
+2026111701 kept typed switching available and presented no keyboard picker.
+The development picker executable (SHA-256 starting `9b0319b6f397`) sent a
+label-only restart after the fixture reassigned its selected label. The host
+refused every restart and each terminal exited normally.
+
+Qualify both boundaries with two eligible, identically masked fixture
+subscriptions. First reassign the label after Codex confirms the picker and
+before native admission. Then keep it stable through admission and reassign
+it before native relaunch. In each case verify that the replacement receives
+no conversation request. With stable bindings, verify that the chosen
+subscription receives the next turn on the original thread. Repeat with an
+in-place credential replacement that keeps the label, directory, roster
+revision and visible email fixed. Changing only the provider workspace or
+only the provider user must refuse the move. Refreshing credentials for
+the same workspace and user must preserve it. These are release qualification
+criteria for the client and host together.
+
+The development protocol adds `capabilities.select_bound` and a nullable
+`selection_ref` per row in schema 4. A confirmed switch sends
+`restart pid=<pid> account=<label> selection=<revision>:<reference> request=<nonce>`.
+The nonce identifies one confirmation. Before sending, Codex withholds its
+ordinary resume command and retains the original conversation for this request.
+If the reply is lost, reopening the Accounts pane can ask aterm to cancel
+that exact request. A pending outcome keeps the conversation reserved.
+The signed 0.209.0 host supports explicit named switches.
+
+During a confirmed picker resume, Codex defers an in-place binary upgrade
+and keeps the conversation on the selected subscription. The upgrade
+protocol requires credentials supplied by a new native backend. The picker
+verified a file-backed login, and the upgrade protocol cannot carry that
+identity check into the new backend. A pending picker request also holds an
+upgrade until the switch or its cancellation settles.
 
 ## Decision
 
@@ -98,8 +262,9 @@ deletion commit called them "still called"; only their own tests call them.)
   session it supervises and relaunches only where a shell would type the line.
 - **Proven again at relaunch.** The ask is judged on record, without a provider
   read. At relaunch the destination must answer a usage read, or hold a sample
-  read within 300 s, and still serve. Otherwise the session comes back on the
-  account it ran on, and aterm says so once.
+  read within 300 s, and still serve. When the requested account cannot serve,
+  aterm tries the previous account and can select another pool account. It posts
+  a notice when the fallback lands. After resume, `/status` shows the active login.
 - **Under a pin.** A session moved off the row the pool is pinned to does not
   rotate at its usage limit while the pin holds; it waits at its wall until the
   pin ends or someone moves it again.
@@ -122,8 +287,14 @@ Schema 2 is schema 1 plus:
   `capabilities.auto`: `select` holds and the pool's choice is another row.
   `add` is always false.
 
-`account_id` and `choice_id` always name a listed row. codex-alab reads each
-schema with its own strict reader and rejects a reply of the other schema, any
+`account_id` and `choice_id` always name a listed row when present. The
+development Accounts pane first requests schema 4. Schema 3 adds a required nullable
+`signed_out_reason` field to each schema 2 row. Aterm may supply a settled
+refresh refusal for a signed-out login. The reader accepts only the host's
+enumerated codes, including the explicit `unknown` value. A null field
+means the host has no recorded reason to show.
+
+The client checks the requested schema and rejects a reply of another schema, any
 `add: true`, an `auto: true` without `select` or without a choice other than the
 session's own row, and unknown fields.
 
@@ -192,12 +363,12 @@ relaunch, has not come yet), so it is not at rest. …"). `idle_point` reads tha
 initializer from the writer without its lock, which a write holds through its
 sync. The command's own Enter is not read as a draft.
 
-Otherwise it posts the pending sentence ("Restarting this
-session on <label>… The conversation resumes there if that account still serves;
-otherwise on the current one.", with the pin sentence when the pool is pinned to
-another row), writes the session record, and only then sends the one `restart`
-line. If the record cannot be written, nothing is sent. The pool read can take up
-to 30 s, and a turn, an act, queued input, a background terminal, a box or a draft
+The pane shows the requested label or the pool's current choice while the client
+checks whether it can switch. A pin on another row is shown here. The client
+writes the session record and then sends the `restart` request. Only aterm's
+acceptance changes the message to “Restarting this conversation.” Both messages
+point to `/status` on resume because destination eligibility can change at relaunch.
+If the record cannot be written, nothing is sent. The pool read can take up to 30 s, and a turn, an act, queued input, a background terminal, a box or a draft
 (a key since the last frame counts) may begin meanwhile, so the same check runs
 again, draft included, both before the record's write and after it. Before, so
 the record aterm reads is written at the idle point: leaving rest is written
@@ -260,12 +431,16 @@ or mail's. An older
 codex-alab reads `account-busy` as a refusal word it does not know ("aterm refused
 to restart this session now. The session is unchanged."), which is safe.
 
-The `/accounts` view asks schema 2 too. For schema 2 it names the session's row,
-the pool's choice and whether it is pinned, and lists the commands when `select`
-is true; a schema 1 snapshot renders as before.
+The `/accounts` view uses the row and pool information from schemas 2
+through 4 to show which switches are available. It renders the recorded sign-out
+reason in the local account pane. Restart preflight and automatic handoff
+continue to ask for schema 2 because their decisions use eligibility.
 
 ## Older aterm
 
+An aterm without schema 4 or 3 answers an unsupported snapshot request with exactly
+`ERR codex-accounts invalid request`. Only this reply triggers an older
+schema request. A denial or malformed snapshot ends the read.
 An aterm without the move answers schema 2 with exactly
 `ERR codex-accounts invalid request`. codex-alab then asks schema 1 once, finds
 every capability false, and answers "Account changes are unavailable on this

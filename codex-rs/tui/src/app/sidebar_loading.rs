@@ -24,6 +24,7 @@ struct Flight {
 
 pub(super) struct Openings {
     active: HashMap<(BackendId, ThreadId), Flight>,
+    saved_history: saved_history::History, // ALAB(retained-ui): historical observations outlive the failed flight independently of the live channel.
     // The app event channel rotates on reconnect. This pair has the lifetime of the flights.
     tx: AppEventSender,
     completions: mpsc::UnboundedReceiver<AppEvent>,
@@ -34,6 +35,7 @@ impl Default for Openings {
         let (tx, completions) = mpsc::unbounded_channel();
         Self {
             active: HashMap::new(),
+            saved_history: Default::default(), // ALAB(retained-ui): no missing original results at startup.
             tx: AppEventSender::new(tx),
             completions,
         }
@@ -93,6 +95,7 @@ impl Openings {
             ServerNotification::TurnStarted(_) | ServerNotification::TurnCompleted(_) => {
                 updates.turn_changed = true
             }
+            ServerNotification::Error(n) if !n.will_retry && n.error.codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) => updates.turn_changed = true, // ALAB(misalignment-review): a sparse live refusal also outranks the saved read in flight.
             ServerNotification::ThreadClosed(_) => {
                 updates.close = CloseState::Reported;
                 return true;
@@ -130,13 +133,14 @@ impl App {
             return Ok(());
         }
         let child = target.child;
+        self.saved_openings.alab_retry_saved_history(server, Some(child)); // ALAB(retained-ui): renewed interest may observe an earlier pending reply without replaying its operation.
         let flight = self.saved_openings.active.get(&target.key());
         let state = if let Some(flight) = flight
             && flight.incoming.is_some()
             && !flight.retired
         {
             OpenState::Loading(flight.started)
-        } else if flight.is_some() || self.saved_openings.active.len() >= 2 {
+        } else if flight.is_some() || self.saved_openings.active.len() >= 2 || self.saved_openings.alab_saved_history_full() { // ALAB(retained-ui): reserve space for this original without evicting unresolved history.
             OpenState::Waiting
         } else {
             let side = side::SideThreadState {
@@ -154,7 +158,7 @@ impl App {
             }
             let request = Uuid::new_v4();
             let started = Instant::now();
-            let incoming = Incoming::begin(self, server, target).await;
+            let incoming = Incoming::begin(self, server, target, request).await; // ALAB(retained-ui): correlate provisional release with this original opening.
             self.saved_openings.active.insert(
                 target.key(),
                 Flight {
@@ -164,11 +168,11 @@ impl App {
                     incoming: Some(incoming),
                 },
             );
-            let view = server.attachment_view(child);
+            let view = server.alab_saved_attachment_view(child, request); // ALAB(retained-ui): bind this chooser UUID before its original construction starts.
             let config = self.config.clone();
             let settings = self.local_settings.clone();
             let tx = self.saved_openings.tx.clone();
-            tokio::spawn(async move {
+            server.alab_spawn_original_work(async move { // ALAB(retained-ui): account for the original resume until its completion reaches the chooser.
                 let prepared =
                     thread_attachment::prepare_saved(view, &settings, &config, child).await;
                 tx.send(AppEvent::SavedChatPrepared {
@@ -220,7 +224,7 @@ impl App {
             flight.incoming = Some(incoming);
             let mut view = server.request_view();
             let tx = self.saved_openings.tx.clone();
-            tokio::spawn(async move {
+            server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the original close check through publication.
                 prepared.close_check = match view.thread_read(child, /*include_turns*/ false).await
                 {
                     Ok(thread) => {
@@ -258,7 +262,7 @@ impl App {
                 .await;
         }
         let release = incoming
-            .discard(self, target, prepared.metadata.subscribed)
+            .discard(self, target, prepared.metadata.subscribed || prepared.unreadable_resume || prepared.missing_resume.is_some()) // ALAB(retained-ui): reserve claim-aware C1 cleanup for received or still-unresolved originals.
             .await;
         if let Some(pane) = self.sidebars.get_mut(&Some(target.parent))
             && pane
@@ -275,14 +279,9 @@ impl App {
                 None
             };
         }
+        let release = self.saved_openings.alab_remember_saved_resume(target, request, prepared.missing_resume, release, server, self.reconnect.offline); // ALAB(retained-ui): historical reads keep their C1 candidate until its original outcome is known.
         if let Some(release) = release {
-            let tx = self.saved_openings.tx.clone();
-            tokio::spawn(async move {
-                if let Err(error) = release.await {
-                    tracing::warn!(%child, %error, "failed to release saved chat subscription");
-                }
-                tx.send(AppEvent::SavedChatReleased { target, request });
-            });
+            release.publish(self.saved_openings.tx.clone()); // ALAB(retained-ui): the reserved unsubscribe carries its original target, operation and physical session.
         } else {
             self.finish_saved_release(target, request);
         }
@@ -305,6 +304,16 @@ impl App {
     }
 }
 
+#[path = "../../../alab-tui/glue/saved_resume_history.rs"]
+pub(crate) mod saved_history; // ALAB(retained-ui): exact original outcome lookup across a physical reconnect.
+
 #[cfg(unix)]
 #[path = "../../../alab-tui/glue/owned_local_side_history_capture.rs"]
 mod alab_retained_side_capture; // ALAB(retained-ui): reuse actual Incoming/Openings observer custody for S2.
+
+#[path = "../../../alab-tui/glue/lifecycle_actor_events.rs"]
+mod alab_lifecycle; // ALAB(life): process control belongs to the actor's persistent receiver.
+
+#[cfg(test)]
+#[path = "../../../alab-tui/glue/saved_chat_work_checks.rs"]
+pub(in crate::app) mod alab_saved_chat_work_checks; // ALAB(retained-ui): observe the original saved-chat worker and its completion queue in the existing integration scenarios.

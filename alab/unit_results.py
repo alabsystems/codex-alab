@@ -274,8 +274,62 @@ def prepare(args):
 def result_text(path):
     # A terminal redraw can end directly before libtest's next record. Cursor
     # controls separate those outputs; SGR styling inside a test name does not.
-    return ANSI.sub(lambda code: "" if code.group().endswith("m") else " ",
+    return ANSI.sub(lambda code: "" if code.group().endswith("m") else "\n",
                     Path(path).read_text(errors="replace"))
+
+
+class ResultOutput:
+    """Read explicit libtest outcomes; split output requires a serial caller.
+
+    sequential=True is a caller contract, not a native receipt/argv assertion.
+    Default mode preserves inline-only failure attribution; it does not claim
+    complete passing rows. A serial caller may explicitly enable split output.
+    Only a pending named header may consume one exact standalone outcome.
+    """
+
+    def __init__(self, *, sequential=False):
+        self.sequential = sequential
+        self.results = []
+        self.pending = None
+        self.seen = set()
+
+    def finish(self):
+        require(self.pending is None, "unit-test header has no explicit outcome")
+
+    def _record(self, name, outcome):
+        require(name not in self.seen, "one unit-test copy reported duplicate outcomes")
+        self.seen.add(name)
+        self.results.append((name, outcome))
+
+    def observe(self, line):
+        if not self.sequential:
+            self.results.extend(RESULT.findall(line))
+            return
+        if (SUMMARY.search(line) or line.strip() == "failures:"
+                or re.search(r"ALAB_UNIT(?:_ROUND)? ", line)):
+            self.finish()
+            return
+        headers = re.findall(r"\btest (\S+) \.\.\.(?:[ \t]|$)", line)
+        if headers:
+            self.finish()
+            require(len(headers) == 1, "ambiguous unit-test result headers")
+            matches = RESULT.findall(line)
+            if matches:
+                require(len(matches) == 1 and matches[0][0] == headers[0],
+                        "ambiguous inline unit-test outcome")
+                self._record(*matches[0])
+                return
+            header = re.fullmatch(r"[ \t]*test (\S+) \.\.\.(?:[ \t].*)?", line)
+            require(header is not None, "ambiguous incomplete unit-test header")
+            require(self.sequential,
+                    "split unit-test output requires the sequential-output caller contract")
+            self.pending = header.group(1)
+            return
+        outcome = re.fullmatch(r"(ok|FAILED|ignored)", line.strip())
+        if outcome:
+            require(self.pending is not None, "unit-test outcome has no pending header")
+            self._record(self.pending, outcome.group(1))
+            self.pending = None
 
 
 def collect(args):
@@ -328,7 +382,8 @@ def collect(args):
                             "an unselected unit-test round claimed a diagnostics directory")
                 receipts[(library["key"], round_number)] = receipt
     executions = state["libraries"] if state["mode"] == "record" else state["copies"]
-    observations = {entry["key"]: {"results": [], "summaries": [], "details": False} for entry in executions}
+    observations = {entry["key"]: {"output": ResultOutput(sequential=args.sequential_output),
+                                    "summaries": [], "details": False} for entry in executions}
     execution_round = {entry["key"]: entry.get("round", 0) for entry in executions}
     cargo_failed = {number: set() for number in range(state["rounds"])}
     seen_rounds = set()
@@ -337,6 +392,8 @@ def collect(args):
     for line in text.splitlines():
         round_marker = re.search(r"ALAB_UNIT_ROUND (\d+)\s*$", line)
         if round_marker:
+            if current is not None:
+                observations[current]["output"].finish()
             current_round = int(round_marker.group(1))
             require(current_round in cargo_failed and current_round not in seen_rounds,
                     "unexpected or repeated Cargo comparison round")
@@ -350,6 +407,8 @@ def collect(args):
             raise Refusal("Cargo did not qualify the failing library package")
         marker = re.search(re.escape(MARKER) + r"([0-9a-f]{64})\s*$", line)
         if marker:
+            if current is not None:
+                observations[current]["output"].finish()
             current = marker.group(1)
             require(current in observations and execution_round[current] == current_round,
                     "unit-test output named an unknown Cargo artifact or round")
@@ -357,16 +416,19 @@ def collect(args):
             continue
         observed = observations[current]
         if line.strip() == "failures:":
+            observed["output"].finish()
             observed["details"] = True
         if not observed["details"]:
-            observed["results"].extend(RESULT.findall(line))
+            observed["output"].observe(line)
         observed["summaries"].extend(SUMMARY.findall(line))
+    for observed in observations.values():
+        observed["output"].finish()
     failed, passed = [], []
     expected_failed = {number: set() for number in range(state["rounds"])}
     if state["mode"] == "record":
         for library in state["libraries"]:
             observed = observations[library["key"]]
-            matches = observed["results"]
+            matches = observed["output"].results
             failures = [name for name, outcome in matches if outcome == "FAILED"]
             require(observed["summaries"], f"unit-test harness did not report results: {library['package']}")
             require(int(observed["summaries"][-1][1]) == len(failures),
@@ -390,7 +452,7 @@ def collect(args):
                     and receipt["copy_key"] == copy["key"],
                     "isolated unit-test selector or package directory changed")
             observed = observations[copy["key"]]
-            matches, summaries = observed["results"], observed["summaries"]
+            matches, summaries = observed["output"].results, observed["summaries"]
             if not matches and summaries and tuple(map(int, summaries[-1])) == (0, 0, 0):
                 raise Refusal(
                     f"expected unit-test copy matched zero tests in {state['repo']}: "
@@ -434,6 +496,8 @@ def main():
     for name in ("state", "log", "out"):
         results.add_argument("--" + name, required=True)
     results.add_argument("--status", required=True, type=int)
+    results.add_argument("--sequential-output", action="store_true",
+                         help="caller asserts this saved harness ran sequentially; admit explicit split result lines")
     args = parser.parse_args()
     try:
         if args.command == "prepare":

@@ -3,8 +3,12 @@
 
 //! Consistent speed labels for service tiers the current model supports.
 
-use ratatui::style::Stylize;
+use crate::model_layout::model_breaks;
+use crate::model_layout::painted_width;
+use ratatui::style::Style;
 use ratatui::text::Line;
+use ratatui::text::Span;
+use std::ops::Range;
 
 /// Normalize known speed labels after the caller has matched the effective tier
 /// to its model catalog. Unknown tiers retain the provider's display name.
@@ -33,15 +37,42 @@ pub fn model_name(model: &str, tier: Option<&str>) -> String {
 
 /// The enhanced startup and cleared-screen header expose the same model label
 /// as the status card, with the header's matching reasoning effort.
-pub fn header_model(model: &str, reasoning: Option<&str>) -> Option<Line<'static>> {
+pub fn header_model(
+    model: &str,
+    reasoning: Option<&str>,
+    width: usize,
+    effort_style: Style,
+) -> Vec<Line<'static>> {
     if !crate::interface::active() {
-        return None;
+        return Vec::new();
     }
-    let mut spans = vec!["     ".into(), model.to_owned().into()];
+    let mut label = model.to_owned();
     if let Some(reasoning) = reasoning {
-        spans.push(format!(" ({reasoning})").dim());
+        label.push_str(" (");
+        label.push_str(reasoning);
+        label.push(')');
     }
-    Some(Line::from(spans))
+    let cells = painted_width(&label);
+    let split = model_breaks(&label, cells, width);
+    let longest = split.as_ref().map_or(cells, |split| split.longest);
+    // Give every row the same indent, restoring the usual five spaces as room permits.
+    let margin = "     ";
+    let indent = &margin[..width.saturating_sub(longest).min(margin.len())];
+    let row = |Range { start, end }| {
+        let boundary = model.len().clamp(start, end);
+        let mut spans = vec![Span::raw(indent)];
+        if start == 0 || start < boundary {
+            spans.push(Span::raw(label[start..boundary].to_owned()));
+        }
+        if boundary < end {
+            spans.push(Span::styled(label[boundary..end].to_owned(), effort_style));
+        }
+        Line::from(spans)
+    };
+    match split {
+        Some(split) => split.rows(label.len()).map(row).collect(),
+        None => vec![row(0..label.len())],
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +104,6 @@ mod tests {
         assert_eq!(display_name("ultrafast", "ultrafast"), "ultrafast");
         assert_eq!(model_name("Model", Some("Fast")), "Model");
         assert_eq!(model_name("Model", Some("Ultrafast")), "Model");
-        assert!(header_model("Model", Some("high")).is_none());
+        assert!(header_model("Model", Some("high"), 20, Style::default()).is_empty());
     }
 }

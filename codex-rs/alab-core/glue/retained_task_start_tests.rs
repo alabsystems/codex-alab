@@ -297,7 +297,10 @@ async fn real_ephemeral_start_installs_listener_without_frontend_queue_progress(
             Some(&started.response.model_provider) == expected_provider.as_ref(),
             "selected provider changed"
         );
-        ensure!(started.response.cwd == expected_cwd, "selected cwd changed");
+        ensure!(
+            started.response.cwd.as_path() == expected_cwd.as_path(),
+            "selected cwd changed"
+        );
         let id = ThreadId::from_string(&started.response.thread.id)?;
         let actual = h.parent.thread_manager.get_thread(id).await?;
         ensure!(

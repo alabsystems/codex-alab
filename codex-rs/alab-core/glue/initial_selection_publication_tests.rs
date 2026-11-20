@@ -132,6 +132,7 @@ pub(in crate::request_processors::thread_processor::alab_initial_session) fn pub
             accepted: None,
             next_claim: None,
             clients: HashMap::new(),
+            retired_saved_resumes: saved_resume_receipts::Receipts::default(),
             preparations: HashMap::new(),
         }),
     });

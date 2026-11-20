@@ -63,6 +63,102 @@ async fn set_goal(
         .expect("real GoalService mutation")
 }
 
+#[test]
+fn goal_attention_rechecks_a_goal_changed_while_the_wait_clears() {
+    native_test(|| async {
+        const CLEAR: &str = "meta unset attention owner=codex-alab-wait";
+        const WAIT: &str = "The older automatic wait";
+        for change in ["unchanged", "cleared", "unreadable"] {
+            tokio::time::timeout(HANG, async {
+                let goals = Arc::new(GoalService::new());
+                let h = Harness::new_with_control_timeout(
+                    Some(Arc::clone(&goals)),
+                    None,
+                    Duration::from_secs(30),
+                )
+                .await;
+                h.immediate_point().await;
+                h.hold_model_response().await;
+                let evaluation = h.rt.hold_eval_when_free().await;
+                set_goal(&h, &goals, codex_protocol::protocol::ThreadGoalStatus::Blocked)
+                    .await
+                    .apply_runtime_effects(&goals)
+                    .await;
+                let db = h.test.codex.state_db().expect("real goal database");
+                let original = db.thread_goals().get_thread_goal(h.rt.id).await.unwrap().unwrap();
+                assert_eq!(original.status, codex_state::ThreadGoalStatus::Blocked);
+                let authority = DecisionAuthority {
+                    quota: None,
+                    quota_identity: None,
+                    policy: h.autopilot.sup.policy().expect("live policy"),
+                    offs: h.autopilot.sup.offs(),
+                    point: h.rt.state().point_at(),
+                    accepted_turns: h.rt.accepted_turns.load(Ordering::SeqCst),
+                    native_origin: h.rt.state().native_origin,
+                };
+                let deadline = clock() + Duration::from_secs(3600);
+                h.autopilot.schedule(&h.rt, deadline);
+                assert!(h.autopilot.sup.want_wait_for(h.rt.key(), Some((deadline, WAIT.into()))));
+                h.autopilot.sup.show_waits().await;
+                assert_eq!(h.fake.attention().get("codex-alab-wait").map(String::as_str), Some(WAIT));
+                h.fake.gate(CLEAR);
+                let pilot = Arc::clone(&h.autopilot);
+                let runtime = Arc::clone(&h.rt);
+                let thread = Arc::clone(&h.test.codex);
+                let point = authority.point;
+                let accepted = authority.accepted_turns;
+                let mut holding = tokio::spawn(async move {
+                    pilot.goal_owns_pace(&runtime, &thread, &authority).await
+                });
+                tokio::select! {
+                    () = wait_for_supervisor(|| h.fake.gated_requests().iter().any(|line| line.ends_with(CLEAR))) => {}
+                    result = &mut holding => panic!("goal admission ended before the wait clear: {result:?}"),
+                }
+                assert!(!h.autopilot.sup.attention_stands(h.rt.key(), "goal"));
+                assert!(!h.rt.timer_pending());
+                match change {
+                    "cleared" => {
+                        let cleared = goals
+                            .clear_thread_goal(&db, h.rt.id, async { Ok(()) })
+                            .await
+                            .expect("clear the actual goal while wait transport is held");
+                        cleared.apply_runtime_effects(&goals).await;
+                        assert_eq!(db.thread_goals().get_thread_goal(h.rt.id).await.unwrap(), None);
+                    }
+                    "unreadable" => {
+                        super::description_goal_read_tests::saved_status(&db, h.rt.id, "unreadable").await;
+                        assert!(db.thread_goals().get_thread_goal(h.rt.id).await.is_err());
+                    }
+                    _ => {}
+                }
+                assert_eq!(h.rt.state().point_at(), point);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+                assert!(!holding.is_finished(), "the wait clear still holds the old read");
+                let timer_before = h.rt.timer_seq.load(Ordering::SeqCst);
+                let evaluations = h.rt.evaluations();
+                let earliest_delayed = clock() + RECHECK;
+                h.fake.open_gate(CLEAR);
+                assert!(holding.await.expect("complete the old admission"));
+                assert_eq!(h.rt.timer_seq.load(Ordering::SeqCst), timer_before + u64::from(change != "unchanged"));
+                assert_eq!(h.autopilot.sup.attention_stands(h.rt.key(), "goal"), change == "unchanged");
+                assert_eq!(h.fake.attention().get("codex-alab").is_some_and(|text| text.contains("the goal is blocked")), change == "unchanged");
+                if change == "cleared" {
+                    wait_for_supervisor(|| h.rt.evaluations() > evaluations).await;
+                } else if change == "unreadable" {
+                    assert!(lock(&h.rt.timer).as_ref().is_some_and(|timer| timer.at >= earliest_delayed));
+                    super::description_goal_read_tests::saved_status(&db, h.rt.id, original.status.as_str()).await;
+                }
+                assert_eq!(h.rt.state().point_at(), point);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+                assert!(responses::received_responses_requests(&h._server).await.is_empty());
+                Autopilot::cancel_timer(&h.rt).await;
+                h.test.codex.shutdown_and_wait().await.expect("native shutdown");
+                drop(evaluation);
+            }).await.unwrap_or_else(|error| panic!("{change}: goal attention recheck hang detector: {error}"));
+        }
+    });
+}
+
 async fn set_mode(h: &Harness, mode: ModeKind) {
     core_test_support::submit_thread_settings(
         &h.test.codex,

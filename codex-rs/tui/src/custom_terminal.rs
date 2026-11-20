@@ -50,6 +50,7 @@ use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 
 mod cursor;
+#[path = "../../alab-tui/glue/banner_upload.rs"] mod alab_banner_upload; // ALAB(banner): inspect the real frame or its diffs, including restored content.
 
 #[cfg(test)]
 #[path = "custom_terminal_test_support.rs"]
@@ -139,6 +140,7 @@ where
 {
     /// The backend used to interface with the terminal
     backend: B,
+    alab_banner_art: codex_alab_tui::banner::artwork::Upload, // ALAB(banner): load the opening artwork into this terminal.
     pub(crate) tmux_kitty_image_base: Option<u32>,
     /// Holds the results of the current and previous draw calls. The two are compared at the end
     /// of each draw pass to output the necessary updates to the terminal
@@ -226,6 +228,7 @@ where
     ) -> Self {
         Self {
             backend,
+            alab_banner_art: Default::default(), // ALAB(banner): a new terminal starts with an empty image store.
             tmux_kitty_image_base: None,
             buffers: [Buffer::empty(Rect::ZERO), Buffer::empty(Rect::ZERO)],
             current: 0,
@@ -306,6 +309,7 @@ where
     }
 
     fn flush_updates(&mut self, updates: Vec<DrawCommand>) -> io::Result<()> {
+        alab_banner_upload::prepare(self, &updates)?; // ALAB(banner): register the pixels before writing their cells.
         let last_put_command = updates.iter().rfind(|command| command.is_put());
         if let Some(&DrawCommand::Put { x, y, .. }) = last_put_command {
             self.last_known_cursor_pos = Position { x, y };

@@ -57,6 +57,9 @@ class PromotionTests(unittest.TestCase):
         self.calls = []
 
     def git(self, *args):
+        # Fixture repositories need only the hooks and metadata each test creates.
+        if args[0] in ("init", "clone"):
+            args = (args[0], "--template=", *args[1:])
         done = subprocess.run(["git", "-C", str(self.repo), *args], capture_output=True,
                               text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -543,7 +546,7 @@ class PromotionTests(unittest.TestCase):
     def test_successful_publication_selects_after_the_final_rename(self):
         tooling = self.repo / "alab"
         tooling.mkdir()
-        for name in ("package.sh", "lib.sh", "command_guard.py", "promote.py", "cli_status.py", "publish_directory.py"):
+        for name in ("package.sh", "lib.sh", "upstream_intake.py", "command_guard.py", "promote.py", "cli_status.py", "publish_directory.py"):
             shutil.copyfile(ROOT / "alab" / name, tooling / name)
         stage = self.home / ".staged"
         self.new.rename(stage)

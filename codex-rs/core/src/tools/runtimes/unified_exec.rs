@@ -100,6 +100,7 @@ pub struct UnifiedExecApprovalKey {
 /// unified-exec side while delegating process startup to the manager.
 pub struct UnifiedExecRuntime<'a> {
     manager: &'a UnifiedExecProcessManager,
+    pub(crate) denied_shell_log: Option<crate::unified_exec::shell_output::ShellLog>, // ALAB(shell-output): last sandbox attempt.
 }
 
 pub(crate) struct UnifiedExecAttempt {
@@ -124,7 +125,10 @@ fn unified_exec_options(
 impl<'a> UnifiedExecRuntime<'a> {
     /// Creates a runtime bound to the shared unified-exec process manager.
     pub fn new(manager: &'a UnifiedExecProcessManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            denied_shell_log: None, // ALAB(shell-output): one holder per invocation.
+        }
     }
 }
 
@@ -224,6 +228,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<UnifiedExecAttempt, ToolError> {
+        self.denied_shell_log = None; // ALAB(shell-output): retries own separate captures.
         let prepared = req.prepared;
         let base_command = &prepared.resolved.command;
         let requested_shell = &prepared.resolved.shell.shell;
@@ -653,6 +658,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 windows_sandbox_proxy_settings_mode,
                 prepared.tty,
                 prepared.turn_environment.environment().as_ref(),
+                &mut self.denied_shell_log, // ALAB(shell-output): survive the policy error conversion.
             )
             .await;
         let mut process = with_launch_failure_events(process, prepared, ctx).await?;

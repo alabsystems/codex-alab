@@ -66,10 +66,16 @@ pub struct ResponseItemEnvelope {
 mod alab_retained_side_marker; // ALAB(retained-side): occurrence correlation travels with the original queued envelope, never model text or permission.
 pub use alab_retained_side_marker::RetainedSideMarker;
 
+#[path = "../../alab-core/glue/input_review.rs"]
+mod alab_input_review; // ALAB(queue-review): host input decisions do not enter provider traffic.
+pub use alab_input_review::InputReview;
+
 /// Metadata owned by the Codex harness and persisted with a response item.
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alab_input_review_v1: Option<InputReview>, // ALAB(queue-review): actual post-hook disposition of this input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alab_side_boundary: Option<RetainedSideMarker>, // ALAB(retained-side): DATA alone has no local receipt/Native authority.
     /// Thread-local append sequence. Compaction keeps the identities of retained inputs.

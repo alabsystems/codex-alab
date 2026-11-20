@@ -5361,6 +5361,7 @@
               "increase_reasoning_effort": null,
               "interrupt_turn": null,
               "next_permission_mode": null,
+              "open_autopilot": null,
               "open_presets": null,
               "previous_permission_mode": null,
               "prompt_stack_back": null,
@@ -5930,6 +5931,14 @@
             }
           ],
           "description": "Switch to the next available permission mode."
+        },
+        "open_autopilot": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Open the Autopilot picker to choose Cruise, Land or Off."
         },
         "open_presets": {
           "allOf": [
@@ -6534,6 +6543,7 @@
             "increase_reasoning_effort": null,
             "interrupt_turn": null,
             "next_permission_mode": null,
+            "open_autopilot": null,
             "open_presets": null,
             "previous_permission_mode": null,
             "prompt_stack_back": null,

@@ -44,5 +44,4 @@ impl Selection {
 }
 
 pub(crate) const OBSERVATION_KEY: &str = "alab.sideRollbackObservation";
-#[path = "retained_side_cleanup_observation.rs"]
-pub(crate) mod observation;
+pub(crate) use codex_alab_core::retained_side_cleanup as observation;

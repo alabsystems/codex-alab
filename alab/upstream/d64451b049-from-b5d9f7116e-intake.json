@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "base": "b5d9f7116e256e59f4a036c1c3e18979994598c4",
+  "target": "d64451b049d6f8b75b747e339a7034d23ddc9466",
+  "frontier": "b5d9f7116e256e59f4a036c1c3e18979994598c4",
+  "commits": [
+    {
+      "sha": "d64451b049d6f8b75b747e339a7034d23ddc9466",
+      "subject": "Support tool-specific JavaScript preloads in Code Mode (#62430)",
+      "paths": [
+        "codex-rs/cli/src/mcp_cmd_tests.rs",
+        "codex-rs/cli/tests/worktree.rs",
+        "codex-rs/code-mode-host/src/grpc/mod.rs",
+        "codex-rs/code-mode-host/src/grpc/session.rs",
+        "codex-rs/code-mode-host/src/host_tests.rs",
+        "codex-rs/code-mode-host/src/lib.rs",
+        "codex-rs/code-mode-host/src/transport.rs",
+        "codex-rs/code-mode-runtime/src/cell_actor/tests.rs",
+        "codex-rs/code-mode-runtime/src/lib.rs",
+        "codex-rs/code-mode-runtime/src/runtime/callbacks_tests.rs",
+        "codex-rs/code-mode-runtime/src/runtime/globals.rs",
+        "codex-rs/code-mode-runtime/src/runtime/mod.rs",
+        "codex-rs/code-mode-runtime/src/service.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/tests.rs",
+        "codex-rs/code-mode-runtime/src/session_runtime/types.rs",
+        "codex-rs/code-mode-runtime/tests/tool_preloads.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_remote.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_test_support.rs"
+      ],
+      "classes": [
+        "feature"
+      ],
+      "features": [
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Adopt the upstream Code Mode embedding API. Keep the standard CLI and ALab packaged defaults on the empty preload list.",
+      "evidence": [
+        "Host code supplies a static list of JavaScript helpers when constructing an in-process session or its stdio or gRPC host. No request, configuration or environment field accepts helper source. Existing constructors and the standard CLI supply an empty list.",
+        "Each cell selects against its current enabled tool catalog. The global binding must be unique, and the dispatched name and optional namespace must match exactly. Built-in helpers and matching preloads execute in order in that cell’s V8 context before its module. The cell reports bounded errors on ambiguity, compilation or execution. Its error label uses at most 96 binding characters, and V8 exceptions do not write onto the stdio protocol stream.",
+        "The host’s session admission, per-session limits and dispatch callbacks retain their production paths. The incoming runtime and stdio tests exercise session separation, changed catalogs, exact dispatch identity, bounded errors and a working second session after the first fails. Four unrelated CLI and MCP test timeout edits give existing assertions more time on loaded machines."
+      ],
+      "revisit": "Run the three tool_preloads integration tests and preload_errors_preserve_other_sessions_on_the_connection on pristine and integrated builds. Exercise stdio and gRPC session admission and ordinary tool dispatch alongside the new opt-in API. Review any future request to configure nonempty packaged preloads separately."
+    }
+  ]
+}

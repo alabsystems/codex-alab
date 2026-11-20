@@ -63,6 +63,7 @@ const FOCUSED_SIDE_PANE: u32 = 1 << 26;
 const SIDEBAR_CHOOSER: u32 = 1 << 27;
 const SIDEBAR_RESIZE: u32 = 1 << 28;
 const FOCUSED_SIDEBAR: u32 = 1 << 29;
+const AUTOPILOT_PICKER: u32 = 1 << 30; // ALAB(interface): only an enhanced composer can open the local picker.
 
 const TRANSCRIPT_BROWSING: u32 = 1 << 14;
 
@@ -80,6 +81,11 @@ impl KeymapContextSet {
     /// Offer backend cycling only while the new conversation control is visible.
     pub(crate) const fn with_backend_cycling(self) -> Self {
         Self(self.0 | BACKEND_CYCLING)
+    }
+
+    // ALAB(interface): keep Autopilot bindings out of other input owners and their chord hints.
+    pub(crate) const fn with_autopilot(self, available: bool) -> Self {
+        if available { Self(self.0 | AUTOPILOT_PICKER) } else { self }
     }
 
     /// Add only the detail-close action to an owned composer path.
@@ -224,6 +230,9 @@ impl KeymapContextSet {
             };
             return self.0 & required != 0;
         }
+        if action.context == KeymapContext::Chat && action.action == "open_autopilot" {
+            return self.0 & AUTOPILOT_PICKER != 0; // ALAB(interface): use the same ownership rule as direct keys.
+        }
         if action.context == KeymapContext::Chat && action.action == "open_presets" {
             return self.contains(KeymapContext::Chat)
                 && self.contains(KeymapContext::Global)
@@ -318,6 +327,7 @@ impl RuntimeChordBinding {
                     KeymapContextSet::browsing(),
                     KeymapContextSet::new(KeymapContext::Global)
                         .with(KeymapContext::Chat)
+                        .with_autopilot(true) // ALAB(interface): the picker shares this composer with detail-close.
                         .with_transcript_close(),
                 ]
                 .iter()

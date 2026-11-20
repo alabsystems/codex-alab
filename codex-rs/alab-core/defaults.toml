@@ -6,8 +6,7 @@
 # still overrides each one. An owner-only build, installed and updated by atpkg, run inside
 # aterm: nothing goes to OpenAI but the model, login and usage traffic the product needs.
 
-# Start new sessions on Sol 6.2 with ultra reasoning unless an explicit selection overrides it.
-model = "gpt-6.2-sol"
+# Unpinned OpenAI sessions select the newest released Sol that supports this effort.
 model_reasoning_effort = "ultra"
 
 # atpkg updates codex-alab; the update check polls GitHub and Homebrew every 20 h.
@@ -44,8 +43,9 @@ tool_suggest = false
 # Never pause a turn to install a skill's MCP dependencies or retry a dead network forever.
 skill_mcp_dependency_install = false
 unbounded_connection_retries = false
-# Show server-supplied findings and rewrite suggestions in history without pausing work.
-misalignment_review = false
+# A stopped thread needs the server-provided review before it can accept ordinary input.
+misalignment_review = true
+# Keep other rewrite suggestions in history.
 safety_recourse = false
 
 [tui]

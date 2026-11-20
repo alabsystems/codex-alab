@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "base": "5a6fb36a4d92473a9a792ba4a5952c7183506304",
+  "target": "081f205f423eb2a4db54318e7ded3b074aeb5532",
+  "frontier": "5a6fb36a4d92473a9a792ba4a5952c7183506304",
+  "commits": [
+    {
+      "sha": "665b147afd5e2e6828daa3acf683222264a24437",
+      "subject": "Extract Guardian verdict execution and pending-action context (#62308)",
+      "paths": [
+        "codex-rs/core/src/guardian/feedback.rs",
+        "codex-rs/core/src/guardian/mod.rs",
+        "codex-rs/core/src/guardian/review.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/core/src/guardian/review_session_tests.rs",
+        "codex-rs/guardian-context/src/composition.rs",
+        "codex-rs/guardian-context/src/composition_tests.rs",
+        "codex-rs/guardian-context/src/permissions.rs",
+        "codex-rs/guardian-context/src/preparation/mod.rs"
+      ],
+      "classes": [
+        "refactor",
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Share verdict execution and preserve the exact action and current permission restrictions when a reviewer already holds the evidence.",
+      "evidence": [
+        "Guardian review_session starts the verdict turn and releases the attempt\u2019s evidence routing and pending context on completion. The pending-action builder carries the proposed action and sender restrictions. Its encrypted-call fixture compares the unchanged encrypted call and its matching evidence-only output.",
+        "The integrated review_session_setup retains the actual parent account-task lease and inherited ephemeral-history owner during private reviewer startup. The source extraction introduces no new persisted reviewer preference or approval receipt.",
+        "On integrated source a461ed3c2c28beb5cefc1d53f5fb0b129207653e, both native Guardian context cases passed. The encrypted pending call preserved its matching evidence output, and sender restrictions survived budget trimming on both reviewer paths."
+      ],
+      "revisit": "Repeat the encrypted pending-action and sender-restriction checks when review context composition changes."
+    },
+    {
+      "sha": "924a48835da19191db20c16177231364565a267e",
+      "subject": "Use attached Guardian reviewers for synchronous approvals (#62309)",
+      "paths": [
+        "codex-rs/core/src/guardian/attached_review.rs",
+        "codex-rs/core/src/guardian/decision.rs",
+        "codex-rs/core/src/guardian/review.rs",
+        "codex-rs/core/src/guardian/review_request.rs",
+        "codex-rs/core/src/guardian/review_session.rs",
+        "codex-rs/core/src/guardian/review_session_setup.rs",
+        "codex-rs/core/src/guardian/review_session_tests.rs",
+        "codex-rs/core/src/guardian/runtime.rs",
+        "codex-rs/core/src/guardian_review.rs",
+        "codex-rs/ext/guardian-reviewer/src/review_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Bind an attached reviewer to the pending action and its original authorization before a synchronous review waits for evidence.",
+      "evidence": [
+        "AttachedApproval keeps the pre-capture authorization with the first reservation. It checks validity before and after verdict execution. A retry takes another reservation under the same deadline. Cancellation, history reset, evidence preparation and verdict errors retain distinct outcomes. Optional review falls back to the ordinary user flow only for identified local input exhaustion.",
+        "The fork restores a saved reviewer request under the currently published host policy revision. The active verdict reservation and its cancellation token live in the original process. Restoring a reviewer setting supplies no verdict for a pending action.",
+        "On a461ed3c2c28beb5cefc1d53f5fb0b129207653e the four native optional-review outcomes passed, as did revalidation of current, cancelled and invalidated actions. The fork test restored the saved reviewer under the currently published Guardian policy revision."
+      ],
+      "revisit": "Exercise expiry, source-history invalidation, policy changes and required versus optional error handling when the native review or runtime handoff owners change."
+    },
+    {
+      "sha": "081f205f423eb2a4db54318e7ded3b074aeb5532",
+      "subject": "Use Guardian V3 board evidence for synchronous approvals (#62310)",
+      "paths": [
+        "codex-rs/app-server/tests/suite/v2/guardian_sync_session_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_v2.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_v3_sync_tests.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_tool.rs",
+        "codex-rs/ext/guardian-v2/src/sync_reviewer/mod.rs",
+        "codex-rs/ext/guardian-v3/src/actor.rs",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper_sampler.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Use the board-backed reviewer, but require a completed evidence cutoff matching each attempt\u2019s captured authorization before its verdict. Preserve the original action, actor, source history and native lifetime owners. Fresh authorization alone leaves a previously routed inbox at its original cutoff.",
+      "evidence": [
+        "ActorReviewer starts root-evidence catch-up when the action binds, then reserves the actor conversation and checks that its inbox is the exact routed inbox. V2 avoids installing a competing synchronous reviewer when an attached reviewer exists. Server policy still selects the path; ephemeral and native fallback retain their normal behavior.",
+        "The housekeeper requests strict structured routing, rejects duplicate description updates and empty routes, and writes each original once per distinct destination. Channel descriptions support discovery. Subscribed original messages and the exact proposed tool action feed review.",
+        "The upstream app-server scenarios cover subscribed revocation and renewed approval in separate completed actions, failed routing, native review without V3, and the ephemeral fallback despite a conflicting thread-level preference. They do not cover a stale-authorization retry of the same pending action while its new evidence routing is held.",
+        "Exact upstream 081f205f423eb2a4db54318e7ded3b074aeb5532 is the child of 924a48835da19191db20c16177231364565a267e after 665b147afd5e2e6828daa3acf683222264a24437. It changes eleven paths; binary parent-to-child diff SHA-256 44eacf2df8f250c23031867f51d5a700c6a12aba3a830e5940fb19168c80bc55. Agh authenticated this source and committed review faf746f8d9efc4f45ff204cfa6dd3907829e70e8. The amendment base dc5e7de9fe624da969da49fb44b5aa10f99495ae is an authenticated descendant with identical original intake bytes.",
+        "Source gap: guardian/decision.rs binds AttachedReviewer before asynchronous review preparation. ActorReviewer::bind requests catch-up once per action and BoundActorReview retains that ready inbox. Core captures the first ReviewAuthorization later in ReviewHost::prepare, and captures fresh authorization on each attempt. The inbox pointer check establishes identity, not coverage of that later authorization snapshot.",
+        "Same-action retry witness: guardian-reviewer reuses the same PreparedApproval and retries StaleAuthorization after yielding once. AttachedApproval consumes its first authorization/reservation, then takes another reservation with fresh authorization but the same BoundReviewer. ActorReviewer::reserve drains currently routed posts without requesting a new cutoff. A worker can retain a pending action while a new root revocation is durably accepted; hold that revocation\u2019s routing, finish the first verdict, and allow the stale retry to run. The retry can observe current authorization but old board evidence, with no subsequent change to invalidate its verdict. This is an interleaving permitted by the source and awaiting a runtime test.",
+        "ALab prerequisite: every reservation, including the first and each retry, must wait for a completed RootEvidence catch-up captured after the host\u2019s authorization snapshot, or independently validate an exact typed cutoff-to-authorization binding. Keep the original action, actor/root/source lifetime and exact inbox. The existing early action-bound catch-up may remain a lower bound. A newer authorization needs a matching cutoff. A single original total review deadline and cancellation/reset/owner-loss checks must cover catch-up, slot reservation and verdict. Unavailable or failed routing must not become approval or an unrelated fallback.",
+        "Preserve retained Guardian provenance independently of the live Board owner. The fork\u2019s exec_model_context retains accepted source order and review history, renews process-local guardian_review_context_revision, and reapplies stricter destination inherited-message policy. Saved settings or rendered board text cannot restore a live reservation, cutoff, verdict or authorization revision. Keep actual assignment-parent lease and inherited ephemeral-history ownership in reviewer startup; original actor/worker shutdown must cancel review and drain accepted board appends under their existing owners.",
+        "Existing real source selectors include codex-app-server --test all suite::v2::guardian_v2::v3_sync::pending_mcp_action_uses_the_configured_reviewer::{v3_follows_subscribed_revocation_and_reapproval,v3_denies_when_pending_routing_fails,native_without_v3,ephemeral_uses_native_with_v3}, plus suite::v2::guardian_v2::sync_sessions::unavailable_guardian_board_reports_why_review_preparation_failed. Existing worker/root authorization-change controls establish the independent root update route. The V3 retry and cutoff ordering still needs its own regression. App-server fixtures can self-skip without network. All runtime and native qualification for this amendment are UNRUN.",
+        "The earlier review cited private merge a461ed3c2c28beb5cefc1d53f5fb0b129207653e. That object is absent from this clone and Agh\u2019s exact origin lookup returned not_found while the repository probe succeeded. This citation does not establish an available integrated source or qualification. The committed intake already covers all three source commits. This amendment changes only the #62310 row.",
+        "Trust 15698 on a461ed3c2c28beb5cefc1d53f5fb0b129207653e passed eight native app-server cases covering an actual MCP action, revocation and reapproval across completed reviews, routing failure, native and ephemeral fallback, and managed reviewer reuse, fork, resume and cancellation. Four board tests passed for exactly-once routing per destination, transient failure, and rejection of empty routes and duplicate descriptions. These cases precede the separate per-attempt cutoff adaptation."
+      ],
+      "revisit": "Add a real V3 pending-worker MCP-action regression: complete its initial catch-up, hold its first verdict, durably accept a root revocation, and hold the new route/append. Finish the first verdict to force StaleAuthorization, retain the same action/review identity, and prove its retry cannot dispatch or approve against the old inbox while the new cutoff is incomplete. Release routing and require the retry to receive the original revocation and deny. Cover cancellation, history reset, owner loss, routing failure and the original total deadline while the second cutoff waits; preserve original cleanup with no action side effect. Also gate initial asynchronous binding before authorization capture to prove the first reservation cannot use an older cutoff. Re-run existing revocation/reapproval, native/ephemeral fallback, strict-routing and accepted-append shutdown controls on the exact composed source and prove coverage from the routed evidence itself."
+    }
+  ]
+}

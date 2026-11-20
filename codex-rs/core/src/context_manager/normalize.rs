@@ -59,6 +59,7 @@ pub(crate) fn ensure_call_outputs_present(
     // Store the insertion position (index of call) alongside the item so
     // we can insert in reverse order and avoid index shifting.
     let mut missing_outputs_to_insert: Vec<(usize, ResponseItemEnvelope)> = Vec::new();
+    let missing_tool_result = codex_alab_core::execution::missing_tool_result_text("aborted"); // ALAB(tool-result-recovery): choose one description for this prompt projection.
 
     for (idx, envelope) in items.iter().enumerate() {
         match &envelope.item {
@@ -73,7 +74,7 @@ pub(crate) fn ensure_call_outputs_present(
                         call_id: Some(call_id.clone()),
                         name: None,
                         namespace: None,
-                        output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                        output: FunctionCallOutputPayload::from_text(missing_tool_result.to_string()), // ALAB(tool-result-recovery): a missing function result has unknown outcome.
                         internal_chat_message_metadata_passthrough: None,
                     }),
                 ));
@@ -110,7 +111,7 @@ pub(crate) fn ensure_call_outputs_present(
                         id: synthetic_output_id("ctco", id.as_deref()),
                         call_id: call_id.clone(),
                         name: None,
-                        output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                        output: FunctionCallOutputPayload::from_text(missing_tool_result.to_string()), // ALAB(tool-result-recovery): a missing custom result has unknown outcome.
                         internal_chat_message_metadata_passthrough: None,
                     }),
                 ));
@@ -133,7 +134,7 @@ pub(crate) fn ensure_call_outputs_present(
                         call_id: Some(call_id.clone()),
                         name: None,
                         namespace: None,
-                        output: FunctionCallOutputPayload::from_text("aborted".to_string()),
+                        output: FunctionCallOutputPayload::from_text(missing_tool_result.to_string()), // ALAB(tool-result-recovery): a missing shell result has unknown outcome.
                         internal_chat_message_metadata_passthrough: None,
                     }),
                 ));

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "0a82fdf49d98feb33638cd38f79451ac966da572",
+  "target": "58ad62ce09dd7da5531cecb15fd69a21aa465332",
+  "frontier": "0a82fdf49d98feb33638cd38f79451ac966da572",
+  "commits": [
+    {
+      "sha": "58ad62ce09dd7da5531cecb15fd69a21aa465332",
+      "subject": "Let users open the command center from provider error screens (#62335)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/input.rs",
+        "codex-rs/tui/src/app/tests/agents_navigation_tests.rs",
+        "codex-rs/tui/src/chatwidget/provider_error.rs",
+        "codex-rs/tui/src/chatwidget/read_only.rs",
+        "codex-rs/tui/src/chatwidget/rendering.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__rendering__tests__provider_errors.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Let users open Command Center from a provider error without losing their draft, including when the server is disconnected.",
+      "evidence": [
+        "The renderer and input dispatcher share the shortcut-availability test. A plain Left Arrow press opens Command Center when the notice offers it. Repeated key events, overlays and popups keep their existing input ownership. Escape on a provider notice still opens the chat picker.",
+        "The complete seven-file change merges unchanged onto the combined 0.12 source at 440a428be2bd454339ab6b486dfde07df7ec1734. The fork still records the provider error and composer in its thread input snapshot. Navigation reuses the existing Command Center view and its offline state."
+      ],
+      "revisit": "Run the native online and offline navigation test and the narrow provider notice snapshots. Retain the draft, rejected-submission and Escape-to-picker controls when the fork next changes input ownership."
+    }
+  ]
+}

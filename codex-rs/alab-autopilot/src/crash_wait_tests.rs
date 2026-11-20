@@ -25,6 +25,7 @@ use codex_alab_core::session::Predecessor;
 use codex_alab_core::session::ProgramState;
 use codex_alab_core::session::Shared;
 use codex_alab_core::session::now_ms;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_alab_tui::record;
 use codex_alab_tui::session::Ending;
 use codex_alab_tui::session::Writer;
@@ -486,6 +487,7 @@ async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its
             }),
             renewal: Some(AccountHandoff {
                 purpose: Purpose::WeeklyQuota,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: "a".repeat(64),
@@ -513,6 +515,7 @@ async fn a_relaunch_of_a_session_killed_while_asking_for_a_handoff_stands_at_its
             by_autopilot: false,
             by_person: true,
             wall: RecoveryWall::Usage {
+                limit_class: LimitClass::Ordinary,
                 reset_at_ms: Some(asked_at + HOUR_MS),
                 reset_label: Some("the wall's reset".into()),
                 quota: None,
@@ -736,6 +739,7 @@ async fn a_relaunch_of_a_session_killed_while_asking_to_move_its_lost_login_stan
         }),
         renewal: Some(AccountHandoff {
             purpose: Purpose::LoginRotation,
+            limit: None,
             openai_scope: true,
             local: false,
             account: "a".repeat(64),
@@ -881,6 +885,7 @@ async fn after_recorded_wait(
             retry_at: Some(provider_deadline),
         },
         WaitKind::Usage => Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: Some(provider_deadline),
             reset_label: Some("the original reset".into()),
         },

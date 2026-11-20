@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "base": "18d82cf7eb77d4047d79909e1ecae0b5ee22f0af",
+  "target": "44de9d99ef5a9ea3a04c00e09bec8ebd67707868",
+  "frontier": "18d82cf7eb77d4047d79909e1ecae0b5ee22f0af",
+  "commits": [
+    {
+      "sha": "5916098d02247b6c9a91a0c89af5259b0ddc4112",
+      "subject": "Use live evidence retrieval and subscriber inboxes in Guardian (#62135)",
+      "paths": [
+        "codex-rs/ext/guardian-v3/src/cutoff.rs",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/host.rs",
+        "codex-rs/ext/guardian-v3/src/housekeeper.rs",
+        "codex-rs/ext/guardian-v3/src/inbox.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/src/retrieval_tools.rs",
+        "codex-rs/ext/guardian-v3/src/sampling.rs",
+        "codex-rs/ext/guardian-v3/src/selection.rs",
+        "codex-rs/ext/guardian-v3/src/subscription_tools.rs",
+        "codex-rs/ext/guardian-v3/tests/common/board_host.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/selection.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/subscriptions.rs",
+        "codex-rs/message-board/src/api.rs",
+        "codex-rs/message-board/src/local.rs",
+        "codex-rs/message-board/src/local/queries.rs",
+        "codex-rs/message-board/tests/local_board.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Give an isolated Guardian v3 reviewer access to current evidence on its own root board. Keep Guardian v3 behind its existing feature flag and preserve the catch-up requirement for evidence already accepted when a review begins.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 60c568a591672a4b4be1307f61965f4064c34291996496eb38e82233b3f5786d.",
+        "The housekeeper checks the board, parent, and delivery queue against its source root. After the append supplies the subscribers from that commit, it queues one post per original and recipient in source order. Catch-up acknowledges only after the sole writer routes through the requested history position.",
+        "Live tools are bound to the isolated acting reviewer, accept only the Guardian namespace, and change only that caller’s subscription. The catch-up acknowledgment is a lower bound. The source tests exercise later evidence, subscription changes, deduplication, and ordering."
+      ],
+      "revisit": "Exercise the actual enabled review path with concurrent appends, a stopped worker, a replaced original account owner, and a foreign board or caller. Check that live reads and subscriber notices preserve the original root and that a failed route cannot acknowledge its cutoff."
+    },
+    {
+      "sha": "9e3681977bee58e7b423def05bfcdb38db0c25e1",
+      "subject": "Deliver subscribed evidence to idle Guardian reviewers (#62136)",
+      "paths": [
+        "codex-rs/ext/guardian-v3/src/actor.rs",
+        "codex-rs/ext/guardian-v3/src/conversation.rs",
+        "codex-rs/ext/guardian-v3/src/cutoff_tests.rs",
+        "codex-rs/ext/guardian-v3/src/delivery.rs",
+        "codex-rs/ext/guardian-v3/src/evidence.rs",
+        "codex-rs/ext/guardian-v3/src/inbox.rs",
+        "codex-rs/ext/guardian-v3/src/lib.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/delivery.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/evidence_board.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/guidance.rs",
+        "codex-rs/ext/guardian-v3/tests/retrieval/planning.rs",
+        "codex-rs/ext/guardian-v3/tests/snapshots/housekeeping__guardian_reviewer_routed_original.snap",
+        "codex-rs/message-board/src/api.rs",
+        "codex-rs/message-board/src/local/queries.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation",
+        "qualification-fixtures"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Deliver bounded batches of original evidence to the correct idle Guardian reviewer and preserve its cursor across verdicts. Keep the existing opt-in and original reviewer admission.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 eddb74d1d9dc1cf2d972df7ebc8003abda9474b1f8d9b272f51f5f3d74a2d450.",
+        "An actor slot serializes idle delivery and verdict reservation. Each delivery verifies actor, root board identity, and Guardian namespace. Ordered board-body reads are limited to one page and batch admission advances the conversation cursor only after acknowledged history injection.",
+        "The same conversation retains its cursor. A replacement starts at zero, and the original actor inbox remains. Tests cover arrival during a verdict, delivery after idle, unsubscribe, and replacement replay."
+      ],
+      "revisit": "Qualify the original and replacement reviewer under cancellation during append, board and actor mismatch, budget failures, account retirement, and concurrent verdict reservation. Preserve whole originals and check that injection does not start an unrelated turn."
+    },
+    {
+      "sha": "44de9d99ef5a9ea3a04c00e09bec8ebd67707868",
+      "subject": "Remove fixed message-board views and bulk subscriptions (#62137)",
+      "paths": [
+        "codex-rs/ext/guardian-v3/src/evidence.rs",
+        "codex-rs/ext/guardian-v3/tests/housekeeping.rs",
+        "codex-rs/message-board/src/api.rs",
+        "codex-rs/message-board/src/lib.rs",
+        "codex-rs/message-board/src/local.rs",
+        "codex-rs/message-board/src/local/catalog.rs",
+        "codex-rs/message-board/src/local/connection.rs",
+        "codex-rs/message-board/src/local/json_search.rs",
+        "codex-rs/message-board/src/local/paging.rs",
+        "codex-rs/message-board/src/local/queries.rs",
+        "codex-rs/message-board/src/local/subscriptions.rs",
+        "codex-rs/message-board/src/read_view.rs",
+        "codex-rs/message-board/src/tools.rs",
+        "codex-rs/message-board/tests/local_board.rs",
+        "codex-rs/message-board/tests/local_board/read_view_tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Remove fixed-view and bulk subscription APIs after migrating Guardian to the live root board. Keep the single-caller subscription path and the new evidence bounds.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit binary patch, SHA256 7c9e021cc749989ee39821e7358a7410a834cacaad390eb8be0111098caaf8c0.",
+        "Checked the final upstream Rust tree and current ALab-owned Rust sources for BoardReadView and set_subscriptions callers. No removed API callers remain. The dispatch uses the live board and still applies caller and request budgets.",
+        "The live Guardian path remains under its default-disabled feature in the exact target. The housekeeping fixture now reads channel descriptions through the current list API."
+      ],
+      "revisit": "Integrate the migrations in ancestry order and run message-board pagination, subscription, caller isolation, and Guardian housekeeping tests on the composed tree."
+    }
+  ]
+}

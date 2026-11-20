@@ -786,6 +786,14 @@ impl Client {
         self.request(&line).await
     }
 
+    /// One status frame addressed to this session, capped while it is read.
+    pub(crate) async fn on_self_bounded(&self, rest: &str, maximum: usize) -> Result<Reply, Error> {
+        let line = format!("@{} {rest}", self.endpoint.sid);
+        self.conn
+            .request_status_bounded_within(&line, maximum, self.options.timeout)
+            .await
+    }
+
     /// [`Self::on_self`] waiting at most `deadline` instead of [`CALL_TIMEOUT`], for an ask
     /// aterm may legitimately hold longer before it answers.
     pub(crate) async fn on_self_within(

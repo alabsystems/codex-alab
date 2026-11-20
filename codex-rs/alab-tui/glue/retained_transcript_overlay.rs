@@ -440,7 +440,7 @@ mod controls {
     #[test]
     fn retained_overlay_decoder_requires_every_nullable_native_chrome_field() -> io::Result<()> {
         let keymap = RuntimeKeymap::defaults();
-        let actual = TranscriptOverlay::new(Vec::new(), keymap.pager.clone());
+        let actual = TranscriptOverlay::new(Vec::new(), keymap.pager);
         let (sender, _events, census) = guards::channel();
         let sender = AppEventSender::new(sender);
         let mut guards = guards::Capture::for_app(&census, &sender)?;

@@ -455,12 +455,10 @@ where
 
             if matches!(
                 input.error,
-                CodexErrorInfo::CyberPolicy
-                    | CodexErrorInfo::BioPolicy
-                    | CodexErrorInfo::MisalignmentPolicyViolation
+                CodexErrorInfo::CyberPolicy | CodexErrorInfo::BioPolicy
             ) && codex_alab_core::active()
             {
-                // ALAB(policy-recovery): a refused turn never blocks the goal's ordinary continuation.
+                // ALAB(policy-recovery): only domain-specific refusals leave the goal active.
                 if let Err(err) = runtime
                     .account_active_goal_progress(
                         input.turn_id,
@@ -471,7 +469,7 @@ where
                     .await
                 {
                     tracing::warn!(
-                        "failed to account active goal progress after Daybreak refusal: {err}"
+                        "failed to account active goal progress after policy refusal: {err}"
                     );
                     return; // ALAB(storage): preserve refused-turn usage until its failed write is accounted.
                 }

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "base": "ba8ab2d0501f13f70d109d090a1951d1699cd297",
+  "target": "bcff988bd12917283be7040768bfe928f63b5ff0",
+  "frontier": "ba8ab2d0501f13f70d109d090a1951d1699cd297",
+  "commits": [
+    {
+      "sha": "bcff988bd12917283be7040768bfe928f63b5ff0",
+      "subject": "Resolve Linux sandbox mode once before launching the helper (#62215)",
+      "paths": [
+        "codex-rs/arg0/src/lib.rs",
+        "codex-rs/cli/src/debug_sandbox.rs",
+        "codex-rs/cli/src/lib.rs",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/codex-mcp/src/mcp/mod.rs",
+        "codex-rs/core/README.md",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/tests/suite/apply_patch_cli.rs",
+        "codex-rs/core/tests/suite/mod.rs",
+        "codex-rs/exec-server/src/process_sandbox_tests.rs",
+        "codex-rs/exec-server/tests/common/mod.rs",
+        "codex-rs/exec/src/main.rs",
+        "codex-rs/exec/tests/suite/sandbox.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/linux-sandbox/README.md",
+        "codex-rs/linux-sandbox/src/linux_run_main.rs",
+        "codex-rs/linux-sandbox/src/tcp_net_setup.rs",
+        "codex-rs/protocol/src/environment.rs",
+        "codex-rs/protocol/src/error.rs",
+        "codex-rs/sandboxing/src/landlock.rs",
+        "codex-rs/sandboxing/src/landlock_tests.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/linux.rs",
+        "codex-rs/sandboxing/src/linux_tests.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/sandboxing/src/manager_tests.rs"
+      ],
+      "classes": ["fix", "refactor"],
+      "features": ["execution-continuity", "native-session"],
+      "decision": "adapt",
+      "reason": "Use upstream's single Linux sandbox mode decision for helper launch and WSL1 compatibility. Update the fork's Autopilot test to exercise the renamed missing-helper error and retain its fatal classification.",
+      "evidence": [
+        "Reviewed the 26 changed paths against ba8ab2d050. Binary diff SHA-256 9f42d8e13349d83ab382ebe178d9041784d244e59812ad39a000b5f76256c714.",
+        "The prepared command carries a managed network context in bubblewrap mode. Legacy Landlock applies only to a request without such a context. The WSL1 check consumes the same resolved mode as the argument builder. Helper basename and released analytics category remain stable.",
+        "One ALab-owned Autopilot fixture constructs the old Rust error variant. Its assertion requires a fatal outcome for a missing helper. The refactor leaves the existing error category available to analytics clients."
+      ],
+      "revisit": "Run the production argument-builder controls for managed network precedence, ordinary legacy mode and the permission profile, plus the Autopilot missing-helper classification. Qualify the two WSL1 compatibility checks on Linux."
+    }
+  ]
+}

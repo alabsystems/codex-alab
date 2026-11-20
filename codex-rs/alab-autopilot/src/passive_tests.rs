@@ -20,6 +20,7 @@
 //! - a description a standby or a release withdrew is written back when acting resumes
 //!   (finding 8).
 
+use codex_alab_core::wall_kind::LimitClass;
 #[path = "crash_wait_tests.rs"]
 mod crash_wait_tests;
 
@@ -462,6 +463,7 @@ async fn a_point_left_to_a_person_is_raised_again_when_acting_resumes() {
             ended(
                 None,
                 Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: None,
                     reset_label: None,
                 }),
@@ -3734,6 +3736,7 @@ async fn a_due_usage_resume_waits_for_the_api_and_for_the_host_to_settle() {
         )
     }));
     let usage = || Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(Instant::now() - Duration::from_secs(600)),
         reset_label: Some("12:00".to_string()),
     };
@@ -3905,6 +3908,7 @@ async fn aterms_probe_api_off_measures_nothing_and_the_walls_keep_the_ladder() {
     let net = h.autopilot.net();
     assert_eq!((net.watched(), net.probes()), (0, 0), "no task, no probe");
     let usage = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(Instant::now() - Duration::from_secs(600)),
         reset_label: Some("12:00".to_string()),
     };

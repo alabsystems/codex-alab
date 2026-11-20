@@ -5,6 +5,7 @@
 //! them and rewrapping does not turn a reading position into an unrelated screen row.
 //! Recap tail spacing is reserved by layout and never enters selectable cell content.
 
+#[path = "../../alab-tui/glue/transcript_image_layout.rs"] mod image_layout; // ALAB(image-history): stack prompt and tool preview rows in the rich transcript.
 mod activity;
 mod bookmark;
 mod composer_gap;
@@ -331,26 +332,8 @@ impl TranscriptView {
             let entry_y = y;
             y += rows.len() as u16;
             let visible = &rows[0];
-            let Some(image) = visible.layout.visible_image() else {
-                continue;
-            };
-            let image_start = visible.layout.text_row_count();
-            let skip = image_start.saturating_sub(visible.row);
-            if skip >= rows.len() {
-                continue;
-            }
-            let area = Rect::new(
-                self.area.x + self.area.width.saturating_sub(image.columns) / 2,
-                entry_y + skip as u16,
-                image.columns,
-                (rows.len() - skip) as u16,
-            );
-            placements.push(crate::transcript_image::ImagePlacement {
-                image: Arc::clone(image),
-                area,
-                first_row: visible.row.saturating_sub(image_start),
-                file: None,
-            });
+            let area = Rect::new(self.area.x, entry_y, self.area.width, rows.len() as u16);
+            image_layout::append_placements(&mut placements, &visible.layout, visible.row, area); // ALAB(image-history): clip each attachment independently.
         }
         placements
     }

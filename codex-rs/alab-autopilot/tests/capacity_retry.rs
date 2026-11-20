@@ -691,19 +691,30 @@ fn interrupt_cancels_a_capacity_wait_with_long_server_retry_advice() {
     });
 }
 
-async fn assert_terminal(response: ResponseTemplate, expected: CodexErrorInfo) {
+/// Every response before the final refusal must cause exactly one capacity wait.
+async fn assert_terminal(sequence: Vec<ResponseTemplate>, expected: CodexErrorInfo) {
+    let request_count = sequence.len();
     let server = responses::start_mock_server().await;
-    let mock = responses::mount_response_once(&server, response).await;
+    let mock = responses::mount_response_sequence(&server, sequence).await;
     let test = build_test(&server).await;
     start_turn(&test).await;
 
     let mut turns = Vec::new();
     let mut errors = 0;
+    let mut waits = 0;
     loop {
         match next_event(&test).await {
             EventMsg::TurnStarted(event) => turns.push(event.turn_id),
-            EventMsg::StreamError(event) => panic!("noncapacity failure retried: {event:?}"),
+            EventMsg::StreamError(event) => {
+                waits += 1;
+                assert!(waits < request_count, "terminal refusal retried: {event:?}");
+                assert_eq!(
+                    event.codex_error_info,
+                    Some(CodexErrorInfo::ServerOverloaded)
+                );
+            }
             EventMsg::Error(error) => {
+                assert_eq!(waits + 1, request_count);
                 errors += 1;
                 assert_eq!(error.codex_error_info.as_ref(), Some(&expected));
             }
@@ -721,10 +732,10 @@ async fn assert_terminal(response: ResponseTemplate, expected: CodexErrorInfo) {
     }
     shutdown(&test).await;
     assert_eq!(errors, 1);
-    assert_eq!(mock.requests().len(), 1);
+    assert_eq!(mock.requests().len(), request_count);
     assert_eq!(
         responses::received_responses_requests(&server).await.len(),
-        1
+        request_count
     );
 }
 
@@ -732,11 +743,11 @@ async fn assert_terminal(response: ResponseTemplate, expected: CodexErrorInfo) {
 fn quota_exhaustion_remains_terminal() {
     big_stack(|| async {
         assert_terminal(
-            responses::sse_response(responses::sse_failed(
+            vec![responses::sse_response(responses::sse_failed(
                 "quota",
                 "insufficient_quota",
                 "The project has no remaining quota.",
-            )),
+            ))],
             CodexErrorInfo::UsageLimitExceeded,
         )
         .await;
@@ -747,15 +758,33 @@ fn quota_exhaustion_remains_terminal() {
 fn authentication_failure_remains_terminal() {
     big_stack(|| async {
         assert_terminal(
-            ResponseTemplate::new(401).set_body_json(json!({
+            vec![ResponseTemplate::new(401).set_body_json(json!({
                 "error": {
                     "type": "invalid_request_error",
                     "code": "invalid_api_key",
                     "message": "The captured test credential was rejected."
                 }
-            })),
+            }))],
             CodexErrorInfo::HttpConnectionFailed {
                 http_status_code: Some(401),
+            },
+        )
+        .await;
+    });
+}
+
+#[test]
+fn permanent_refusal_after_overload_stops_the_same_turn() {
+    big_stack(|| async {
+        let body =
+            json!({"error": {"code": "server_is_overloaded", "message": "Model is at capacity."}});
+        assert_terminal(
+            vec![
+                ResponseTemplate::new(503).set_body_json(&body),
+                ResponseTemplate::new(403).set_body_json(&body),
+            ],
+            CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(403),
             },
         )
         .await;

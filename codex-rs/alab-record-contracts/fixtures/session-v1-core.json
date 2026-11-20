@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "pid": 4242,
+  "version": "record-contract-fixture",
+  "execGeneration": 0,
+  "env": {},
+  "status": "busy",
+  "draftEmpty": true,
+  "autopilot": "off",
+  "statusUpdatedAt": 1000,
+  "updatedAt": 1000,
+  "kind": "codex",
+  "entrypoint": "exec"
+}

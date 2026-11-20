@@ -224,13 +224,7 @@ impl AppServerSession {
         let request_id = self.next_request_id();
         #[cfg(unix)]
         if let Some(original) = super::alab_retained_ui::original_resume::existing::original::before_original_send(self, request_id.clone(), params.clone(), &config, local_settings).await? { return Ok(original); } // ALAB(source-selection): continue the same original Started before any ordinary send/conversion; the real maintenance guard stays owned here.
-        let resume_response = self
-            .request_handle
-            .request_typed(ClientRequest::ThreadResume {
-                request_id,
-                params: params.clone(),
-            })
-            .await;
+        let resume_response = self.alab_request_resume(request_id, params.clone()).await; // ALAB(retained-ui): observe only this original resume, before bootstrap or history can fail.
         drop(rollout_maintenance_guard);
         let mut response: ThreadResumeResponse = match resume_response {
             Ok(response) => response,
@@ -240,8 +234,7 @@ impl AppServerSession {
                 self.history_support = ThreadHistorySupport::LegacyOnly;
                 params.exclude_turns = false;
                 let request_id = self.next_request_id();
-                self.request_handle
-                    .request_typed(ClientRequest::ThreadResume { request_id, params })
+                self.alab_request_resume(request_id, params) // ALAB(retained-ui): use the same exact-wire evidence for the original legacy retry.
                     .await
                     .map_err(|err| {
                         bootstrap_request_error("thread/resume failed during TUI bootstrap", err)
@@ -257,6 +250,7 @@ impl AppServerSession {
         if let Some(subscribed) = &mut self.attachment_subscribed {
             *subscribed = true;
         }
+        super::history_page::validate_thread_response("thread/resume", thread_id, &response.thread.id)?; // ALAB(history): keep the requested subscription for claim-aware cleanup before accepting any history.
         self.hydrate_initial_thread_history(
             &mut response.thread,
             response.turns_backwards_cursor.clone(),

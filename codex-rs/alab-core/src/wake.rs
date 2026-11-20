@@ -20,7 +20,8 @@
 //! A reading ([`observe`]) that finds that total grown by [`MIN_SLEEP`] or more since the reading
 //! before records a [`Wake`]: when the host woke, on the `Instant` clock, and how long it slept.
 //! Readers poll only while they wait: a wait reads every [`POLL`] ([`sleep_until`], [`timeout`]),
-//! a pending autopilot timer every [`POLL`], and the autopilot at each decision. Nothing reads
+//! a pending autopilot timer every [`POLL`] (a dated usage reset on macOS can park on a
+//! continuous-time kernel timer instead), and the autopilot at each decision. Nothing reads
 //! while nothing waits, and nothing here starts a thread, so a reading can come long after the
 //! wake it finds (a turn streamed, or the session stood idle). The wake is therefore dated by the
 //! kernel's own record of it where there is one (macOS: `kern.wake_abs_time`, the awake clock at
@@ -594,6 +595,28 @@ pub async fn sleep_until_with(
     )
     .await
 }
+
+/// Wait for a usage resume's selected deadline from its accepted sleep-count baseline. The
+/// native timer is a wakeup hint. Only the existing deadline and wake-settle rules
+/// decide when the caller may proceed.
+/// If the arm missed its baseline, `read_selected` may return the first reading
+/// already captured by the caller's durable record. Later calls return current readings.
+pub async fn sleep_until_dated_reset(
+    at: tokio::time::Instant,
+    baseline: Option<Reading>,
+    mut read_selected: impl FnMut() -> Option<Reading>,
+) {
+    let deadline = WaitDeadline {
+        at,
+        asleep: baseline.map(|reading| reading.asleep),
+    };
+    #[cfg(target_os = "macos")]
+    let deadline = continuous_timer::park(deadline, &mut read_selected).await;
+    sleep_tracks_until(deadline, None, POLL, &mut read_selected, |_| {}).await;
+}
+
+#[cfg(target_os = "macos")]
+mod continuous_timer;
 
 async fn sleep_tracks_until(
     mut deadline: WaitDeadline,

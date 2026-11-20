@@ -10,8 +10,15 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use std::sync::Arc;
 
+#[path = "../../../alab-core/glue/live_model_successor.rs"] mod alab_live_model_successor; // ALAB(defaults): advance the saved model when this session receives a new provider catalog.
+
 pub(super) async fn apply(session: &Session) {
+    alab_live_model_successor::observe_application(session, apply_current(session)).await; // ALAB(defaults): loaded resume observes the original session actor finishing its catalog update.
+}
+
+async fn apply_current(session: &Session) {
     let _settings_guard = thread_settings::acquire_persistence_lock(session).await;
+    if alab_live_model_successor::promote(session).await { return; } // ALAB(defaults): publish a validated successor through the ordinary thread settings event.
     let Ok(Some(commit)) = session
         .update_settings_if(SessionSettingsUpdate::default(), |current, updated| {
             current.step_settings != updated.step_settings

@@ -1,3 +1,4 @@
+#[path = "../../../alab-core/glue/mantle_catalog_region.rs"] mod alab_mantle_catalog_region; // ALAB(defaults): use the request partition for the native Mantle catalog.
 mod auth;
 mod auth_refresh;
 mod catalog;
@@ -28,6 +29,9 @@ use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 
 use crate::ProviderCapabilities;
@@ -277,6 +281,28 @@ impl ModelProvider for AmazonBedrockModelProvider {
         &self.info
     }
 
+    fn normalize_completed_output_item(&self, item: &mut ResponseItem) {
+        // Mantle's reasoning prefix omits empty annotations on commentary.
+        // Capture that form before the first replay so the prefix stays stable.
+        if self.endpoint == BedrockEndpoint::Mantle
+            && let ResponseItem::Message {
+                role,
+                phase: Some(MessagePhase::Commentary),
+                content,
+                ..
+            } = item
+            && role == "assistant"
+        {
+            for part in content {
+                if let ContentItem::OutputText { annotations, .. } = part
+                    && annotations.as_ref().is_some_and(Vec::is_empty)
+                {
+                    *annotations = None;
+                }
+            }
+        }
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             reasoning_summaries: true,
@@ -430,6 +456,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
         _codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
+        if config_model_catalog.is_none() && let Some(manager) = self.alab_regional_mantle_manager() { return manager; } // ALAB(defaults): keep regional catalog browsing and admission on the same owner.
         let origin = if config_model_catalog.is_some() {
             codex_models_manager::ModelOrigin::ExplicitConfig
         } else {

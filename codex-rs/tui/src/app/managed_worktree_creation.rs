@@ -187,7 +187,7 @@ impl App {
                     self.pending_managed_worktree_creation = true;
                     let source_cwd = self.config.cwd.clone();
                     let sender = self.app_event_tx.clone();
-                    tokio::spawn(async move {
+                    app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the same Git creation through original completion publication.
                         let create_cwd = source_cwd.to_path_buf();
                         let result = tokio::task::spawn_blocking(move || {
                             manager

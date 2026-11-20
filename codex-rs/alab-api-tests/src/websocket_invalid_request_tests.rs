@@ -24,33 +24,6 @@ impl codex_api::AuthProvider for NoAuth {
     }
 }
 
-fn request() -> codex_api::ResponsesApiRequest {
-    codex_api::ResponsesApiRequest {
-        model: "gpt-ws-invalid-request".into(),
-        stream: true,
-        service_tier: None,
-        input: vec![
-            serde_json::from_value(json!({
-                "type":"message", "role":"user",
-                "content":[{"type":"input_text", "text":PRIVATE}]
-            }))
-            .unwrap(),
-        ],
-        tools: None,
-        tool_choice: "auto".into(),
-        parallel_tool_calls: true,
-        reasoning: None,
-        store: false,
-        stream_options: None,
-        include: vec![],
-        prompt_cache_key: None,
-        prompt_cache_options: None,
-        text: None,
-        client_metadata: None,
-        access_programs: None,
-    }
-}
-
 async fn exchange(status: Option<u16>) {
     exchange_error("invalid_request", status, None).await;
 }
@@ -101,11 +74,12 @@ async fn exchange_error(code: &str, status: Option<u16>, status_alias: Option<&s
     .await
     .expect("WebSocket connection deadline")
     .expect("one loopback WebSocket connection");
+    let request = crate::streaming_request("gpt-ws-invalid-request", PRIVATE);
     let mut stream = tokio::time::timeout(
         WAIT,
         connection.stream_request(
             codex_api::ResponsesWsRequest::ResponseCreate(
-                codex_api::ResponseCreateWsRequest::from(&request()),
+                codex_api::ResponseCreateWsRequest::from(&request),
             ),
             false,
             None,

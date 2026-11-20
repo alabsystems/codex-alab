@@ -5,6 +5,10 @@
 //! builder/Command/Child/read/callback and actual channel census only. No
 //! Native Controller, App scope, Core/Go/currentness or full scene is fabricated.
 use super::*;
+use codex_alab_core::session::Shared;
+use codex_alab_tui::upgrade_capture;
+use codex_alab_tui::upgrade_terminal::Prepared;
+use pretty_assertions::assert_eq;
 use std::io;
 use std::io::Write;
 use std::mem::MaybeUninit;
@@ -37,6 +41,15 @@ async fn helper(case: &str) -> io::Result<()> {
     codex_alab_tui::terminal_modes::enable_raw_mode()?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let (mut app, _original_rx, _original_ops) = make_test_app_with_channels().await;
+    let primary = codex_protocol::ThreadId::new();
+    crate::app::owned_transcript::tests::attach_thread(&mut app, primary);
+    app.primary_thread_id = Some(primary);
+    app.active_thread_id = Some(primary);
+    let backend = crate::backend_id::BackendId::new();
+    app.app_server_backend_id = Some(backend);
+    assert!(app.backend_registry.observe(backend, primary));
+    let shared = Shared::new();
+    assert!(shared.set_upgrade_leave(Box::new(app.saved_openings.alab_upgrade_callback())));
     // Use the native fixture's private Codex home as the first trusted editor
     // directory. Read-only MODEL policy keeps the original directory guard
     // active and avoids falling back to the real user's home in this control.
@@ -207,17 +220,32 @@ async fn helper(case: &str) -> io::Result<()> {
         drop(repeated);
         job.release_local_cut_before_native(&cut).await?;
         drop(cut); // The original progression can resume only after SAME last owner drops.
+        let original = app.alab_wait_local_original_editor(&mut tui);
+        tokio::pin!(original);
+        let request =
+            upgrade_capture::request(&shared, Duration::from_millis(50), |_: Prepared| {
+                panic!("source attempted to capture the original editor's terminal")
+            });
+        tokio::select! {
+            () = &mut original => return Err(failure("finished before the editor returned")),
+            outcome = request => assert_eq!(outcome, Ok(upgrade_capture::Outcome::NotLeaving)),
+        }
+        assert_eq!(events.len(), parked_len);
+        assert!(codex_alab_tui::terminal_modes::editor_owns_terminal());
         std::fs::write(release, b"release")?;
-    } else if case != "spawn-failure" {
+        tokio::time::timeout(Duration::from_secs(60), original)
+            .await
+            .map_err(io::Error::other)?;
+    } else if case == "spawn-failure" {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            app.alab_wait_local_original_editor(&mut tui),
+        )
+        .await
+        .map_err(io::Error::other)?;
+    } else {
         return Err(failure("unknown isolated App editor case"));
     }
-    // SAME ordinary outer-loop consumer; no fake update/Native result is lent.
-    tokio::time::timeout(
-        Duration::from_secs(60),
-        app.alab_wait_local_original_editor(&mut tui),
-    )
-    .await
-    .map_err(io::Error::other)?;
     if app.alab_pending_original_editor().is_some()
         || !tui.alab_parent_tty_available()
         || codex_alab_tui::terminal_modes::editor_owns_terminal()
@@ -227,6 +255,13 @@ async fn helper(case: &str) -> io::Result<()> {
         return Err(failure(
             "actual App original callback did not retire/restore its native resources",
         ));
+    }
+    // The actor releases its final job reference when its wait loop returns.
+    // This test's additional C0/C1 observer must retire for the same reason.
+    drop(job);
+    if case == "success" {
+        app.paint_chat_widget_frame(&mut tui, ratatui::layout::Size::new(80, 24))
+            .map_err(|error| io::Error::other(error.to_string()))?;
     }
     let mut parked_exit_count = 0;
     let mut original_error = false;
@@ -255,6 +290,68 @@ async fn helper(case: &str) -> io::Result<()> {
             return Err(failure(
                 "actual original trim/apply callback changed document content",
             ));
+        }
+        let Some(AppEvent::AlabUpgrade(expired)) = app.saved_openings.next_event(&mut events).await
+        else {
+            return Err(failure("original actor lost the expired source request"));
+        };
+        assert!(!expired.refuse_if_pending());
+
+        // The returned document still owns input. Once cleared, the same actor
+        // may offer its actual terminal and editor to a new capture. Decline
+        // both attempts before any SDK admission or process replacement.
+        use tokio_stream::StreamExt;
+        let mut stream = tui.event_stream();
+        while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(20), stream.next()).await
+        {
+        }
+        for draft_present in [true, false] {
+            if !draft_present {
+                app.chat_widget.apply_external_edit(String::new());
+            }
+            let (captured, observed) = tokio::sync::oneshot::channel();
+            let request = upgrade_capture::request(
+                &shared,
+                Duration::from_secs(5),
+                move |input: Prepared| {
+                    assert!(input.valid() && input.editor_snapshot().is_some());
+                    captured
+                        .send(())
+                        .expect("original source is observing its capture");
+                    None
+                },
+            );
+            let dispatch = async {
+                let Some(AppEvent::AlabUpgrade(request)) =
+                    app.saved_openings.next_event(&mut events).await
+                else {
+                    return Err(failure("original actor missed its fresh source request"));
+                };
+                assert!(
+                    !crate::app::alab_session::accept_upgrade_and_capture(&app, &tui, request)
+                        .await?
+                );
+                Ok::<(), io::Error>(())
+            };
+            let (outcome, dispatched) = tokio::join!(request, dispatch);
+            dispatched?;
+            if observed.await.is_ok() == draft_present {
+                return Err(io::Error::other(format!(
+                    "capture disagrees with returned draft (draft={draft_present}, empty={}, queued={}, program={:?}, state={})",
+                    app.chat_widget.composer_is_empty(),
+                    app.chat_widget.alab_has_upgrade_input(),
+                    app.chat_widget.alab_program_state(),
+                    codex_alab_tui::upgrade::update_report("test"),
+                )));
+            }
+            assert_eq!(
+                outcome,
+                Ok(if draft_present {
+                    upgrade_capture::Outcome::TerminalUnavailable
+                } else {
+                    upgrade_capture::Outcome::NotLeaving
+                })
+            );
         }
     } else {
         if actual != "seed stays on failed spawn" {

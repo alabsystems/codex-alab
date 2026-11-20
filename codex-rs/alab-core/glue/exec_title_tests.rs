@@ -23,7 +23,7 @@ mod process;
 fn product_of(client: &str) -> &'static str {
     match client {
         "0.165.0-dev.1+gaaaaaaaaa" => "0.1.0-dev.1+gaaaaaaaaa",
-        "0.166.0-dev.2+gbbbbbbbbb" => "0.2.0-dev.2+gbbbbbbbbb",
+        "0.166.0-dev.2+gbbbbbbbbb" => "0.2.0-dev.2+codex.0.165.1.gbbbbbbbbb",
         other => panic!("no product version for {other}"),
     }
 }
@@ -33,15 +33,15 @@ fn the_exec_report_opens_with_codex_alab_s_own_version() -> std::io::Result<()> 
     assert!(!codex_alab_core::active());
     let stderr = process::run(module_path!())?;
     assert_eq!(stderr.len(), 2, "one report per identity");
-    for (said, client) in stderr
-        .iter()
-        .zip(["0.165.0-dev.1+gaaaaaaaaa", "0.166.0-dev.2+gbbbbbbbbb"])
-    {
+    for (said, (client, baseline)) in stderr.iter().zip([
+        ("0.165.0-dev.1+gaaaaaaaaa", "0.164.0"),
+        ("0.166.0-dev.2+gbbbbbbbbb", "0.165.1"),
+    ]) {
         let first = said.lines().next().unwrap_or_default();
         assert_eq!(
             first,
             format!(
-                "codex-alab v{} · based on OpenAI Codex 0.164.0",
+                "codex-alab v{} · based on OpenAI Codex {baseline}",
                 product_of(client)
             ),
             "{said}"
@@ -66,13 +66,24 @@ async fn running_version_consumer_child() {
         return;
     };
     let product = product_of(client);
-    codex_alab_core::version::initialize_package(
+    let (baseline, release, commit) = match client {
+        "0.165.0-dev.1+gaaaaaaaaa" => (
+            "0.164.0",
+            Some("0.164.0"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ),
+        _ => ("0.165.1", None, None),
+    };
+    codex_alab_core::version::initialize_stamped_package(
         client,
         Some(product),
-        Some("0.164.0"),
-        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        Some(baseline),
+        release,
+        commit,
     )
     .unwrap_or_else(|err| panic!("first running identity: {err}"));
+    assert_eq!(codex_alab_core::version::upstream_release(), release);
+    assert_eq!(codex_alab_core::version::upstream_commit(), commit);
     codex_alab_core::activate();
     let codex_home = tempfile::tempdir().unwrap_or_else(|err| panic!("codex home: {err}"));
     let cwd = tempfile::tempdir().unwrap_or_else(|err| panic!("cwd: {err}"));

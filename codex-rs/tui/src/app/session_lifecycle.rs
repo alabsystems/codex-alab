@@ -547,6 +547,7 @@ impl App {
     pub(super) fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
         #[cfg(unix)] chat_widget.alab_bind_retained_startup(&self.app_server_target); // ALAB(retained-frontier): reconnect/thread UI replacement preserves the same physical-target input hold.
         chat_widget.inherit_view_transition_key_guard(&mut self.chat_widget);
+        chat_widget.alab_inherit_picker_release(&mut self.chat_widget); // ALAB(interface): the terminal still owes the release of an already-consumed press.
         chat_widget.fork_in_progress = self.chat_widget.fork_in_progress;
         self.pending_right_click_paste = None;
         self.config_notification_test_pending = None;
@@ -1737,7 +1738,7 @@ impl App {
             Ok(prepared) => prepared,
             Err(control) => return Ok(control),
         };
-        self.activate_prepared_session(tui, app_server, prepared)
+        self.alab_activate_selected_resume(tui, app_server, target_session.thread_id, prepared) // ALAB(retained-ui): both named and picker switches preserve the drafts of their actual conversations.
             .await
     }
 
@@ -1773,6 +1774,7 @@ impl App {
             .get(&resumed_thread_id)
             .filter(|channel| channel.backend_id.is_none_or(|owner| owner == backend_id));
         let same_thread = self.chat_widget.thread_id() == Some(resumed_thread_id);
+        let held_input = same_thread && owned_channel.is_some() && self.chat_widget.alab_snapshot_input_held(); // ALAB(retained-ui): only this conversation can pass its held input to a replacement.
         let refreshing_history = same_thread
             && !was_reconnecting
             && owned_channel.is_some_and(|channel| channel.history_may_be_incomplete);
@@ -1781,10 +1783,11 @@ impl App {
             && (refreshing_history
                 || was_reconnecting
                 || self.chat_widget.is_external_writer_view()
-                || self.chat_widget.has_provider_error()))
+                || self.chat_widget.has_provider_error() || held_input)) // ALAB(retained-ui): a replay-only widget may have neither a provider error nor an external writer.
         .then(|| self.chat_widget.capture_thread_input_state())
         .flatten();
-        let confirmed_message_ids = refreshing_history.then(|| {
+        let reattaching_held_input = held_input && !read_only && !resumed.blocks_direct_input; // ALAB(retained-ui): reconcile the return to writable input with the actual server history.
+        let confirmed_message_ids = (refreshing_history || reattaching_held_input).then(|| {
             super::thread_events::confirmed_user_message_ids(&resumed.turns, std::iter::empty())
         });
         self.detach_current_thread_for_navigation(app_server, Some(resumed_thread_id))
@@ -1815,6 +1818,7 @@ impl App {
                 if let Some(mut input) = retained_input {
                     // A successful resume is the authority for clearing the old rejection.
                     input.provider_error = None;
+                    self.chat_widget.alab_prepare_resumed_input(&mut input, read_only, held_input); // ALAB(retained-ui): keep the captured graph held during another view-only adoption.
                     if let Some(confirmed_message_ids) = confirmed_message_ids {
                         input.reconnect_pending = true;
                         self.chat_widget
@@ -1823,11 +1827,13 @@ impl App {
                         self.chat_widget.restore_thread_input_state(
                             Some(input),
                             ThreadInputStateRestoreMode {
-                                preserve_in_flight_turn: false,
+                                preserve_in_flight_turn: held_input, // ALAB(retained-ui): another view-only retry must preserve pending delivery identity.
                             },
                         );
                     }
-                    if was_reconnecting && !read_only && provider_error.is_none() {
+                    if reattaching_held_input {
+                        self.chat_widget.alab_resume_snapshot_input(); // ALAB(retained-ui): release the initial before any queued follow-up.
+                    } else if was_reconnecting && !read_only && provider_error.is_none() {
                         self.chat_widget.maybe_send_next_queued_input();
                     }
                 }

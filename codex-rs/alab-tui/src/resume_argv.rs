@@ -35,13 +35,14 @@ pub fn command() -> Option<fn() -> Command> {
 }
 
 /// Arguments that select a session (or start one) and are never carried over.
-const DROPPED_IDS: [&str; 6] = [
+const DROPPED_IDS: [&str; 7] = [
     "prompt",
     "images",
     "session_id",
     "last",
     "all",
     "include_non_interactive",
+    "aterm_bound_picker_v1",
 ];
 
 /// Arguments that cannot be resumed in place (`codex resume` rejects `--worktree`, and

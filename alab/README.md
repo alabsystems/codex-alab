@@ -35,7 +35,7 @@ it needs no functional hook.
 | `features.toml`, `feature_inventory.py` | behavior contracts and hook-topic ownership at one commit; `python3 alab/feature_inventory.py [--source REV]` defaults to committed `HEAD`, separately from semantic qualification |
 | `feature_evidence.py`, `feature_gate.py`, `python_test_results.py` | source-bound named scenario declarations, portable log bundles, Python workflow execution and affected-feature admission before sync compilation |
 | `upstream_status.py`, `artifact_status.py` | local source/review lag plus optional explicit packaged, selected and running artifact identities; no qualification or promotion is inferred |
-| `account_registry_probe.py` | read-only OpenAI account associations for a registry machine; reports duplicate names and checks a requested count without authenticating or changing accounts |
+| `account_registry_probe.py` | Read-only OpenAI account associations for a Registry machine. Checks a minimum count, registered login addresses, or stable account keys and reports ambiguous bindings. Use `--show-alias-declarations` for saved alias links and `--show-mail-routes` for receiving mailboxes. [Registry lookup guide](interface.md#sign-in-and-separate-accounts) |
 | `github_push.py` | publish an exact fast-forward main through Agh using a fresh admitted transport repository while preserving the source clone's guards |
 | `package.sh` | build a codex package and advance its already selected local artifact channel |
 | `local_update.py` | poll origin/main for that selected local channel; prepare its separate LaunchAgent |
@@ -50,9 +50,10 @@ it needs no functional hook.
 | `smoke/capacity_exec.py` | the smokes' shared loopback Responses model, command-guardian runner and package reader; its capacity and quota cases run in aterm's jailed lane ("Headless capacity and quota recovery") |
 | `smoke/kimi.py` | every native Kimi model through real `codex exec` calls against loopback Responses, including reasoning, tools, images, profiles and subscription auth |
 | `smoke/parallel_logins.py` | concurrent real exec processes with distinct credentials and shared conversation storage; no build |
+| `smoke/ordinary_account_renewal.py` | checks that two app servers sharing a Codex home can renew separate subscriptions at the same issuer concurrently, keep using their own accounts and reopen their saved logins |
 | `smoke/quota_resume.py` | quota recovery across persisted thread origins using existing binaries |
 | `smoke/quota_wait.py` | repeated stale-reset backoff and native cancellation during a distant reset |
-| `smoke/request_recovery.py` | opaque HTTP 400 retry after a completed plan step, retained input and Retry-After, with specific/array refusal controls; runs an existing binary or package; requires Python 3.11+ for secondary exception diagnostics |
+| `smoke/request_recovery.py` | HTTP 503, streamed overload and opaque HTTP 400 recovery after a completed plan step. Checks the JSON capacity notice, retained input and Retry-After, with terminal HTTP 400 and overload-looking HTTP 403 controls. A misalignment refusal over HTTP 400, HTTP 403 or a failed stream must end the original exec turn with the provider's message even with retry advice. Runs an existing binary or package with Python 3.11+. |
 | `smoke/weekly_reset.py` | earned reset credits, natural resets, receipt reconciliation and paced recovery using an existing binary or package |
 | `smoke/history_pagination.py` | real app-created saved history, native PTY paging and resizing with a custom loopback provider; runs in the maintained gate |
 | `smoke/prune_test.py` | `prune.py` against a scratch package root and atpkg prefix |
@@ -136,7 +137,13 @@ alab/sync.sh --status     # what is pending or in progress
 The sync never touches anyone's checkout. It works in one persistent sync worktree
 (`.git/alab-sync`, or `ALAB_SYNC_DIR`), whose `codex-rs/target/` survives between runs
 while the disk has room (`daily.sh` removes it otherwise, "Running unattended"), so the daily
-build reuses every unchanged crate. A pristine upstream tree beside it
+build reuses every unchanged crate. Sync creates a checkout only at an unoccupied, unregistered
+path. Set `ALAB_SYNC_DIR` only to a directory dedicated to sync: an existing linked checkout
+of this clone is eligible when detached or on `alab-sync`. Startup, continuation, and abort
+preserve locked, unavailable, or mismatched registrations. A new merge requires a clean worktree,
+including untracked files. Each prefix creates `alab-sync` at the selected `origin/main` or
+fast-forwards an existing branch to that commit. A tip with independent commits stays in place.
+A pristine upstream tree beside it
 (`alab-pristine-<full-upstream-commit>` inside the sync worktree's git dir) is built, in its own `target/`, when a
 failure has to be told apart from upstream's own (below). One sync runs at a time per
 clone: a kernel lock (`lockf`, or `flock` on Linux) that is released however the run ends
@@ -202,6 +209,10 @@ An upstream history rewrite, a non-forward candidate, an authentication error or
 an unknown write outcome stops publication. A typed lease conflict retries only
 after a fresh admitted fetch proves that main advanced forward; every composed
 candidate is checked again by the existing sync loop.
+
+During publication on POSIX, `SIGTERM` lets the current Git or Agh command
+finish and removes the temporary repository before exit.
+If a push was already in progress, fetch main to learn whether it landed.
 
 Autopilot's offline repository probe reads remote-tracking refs. `agh repo fetch-main`
 updates a private ref, so it can verify main while leaving `origin/main` stale and
@@ -491,9 +502,9 @@ but leaves that tree's registration behind (`git worktree list` shows it `prunab
 `git worktree remove --force --force <its path>` rather than `git worktree prune`, which would also
 drop a person's worktree on a disk that is not mounted.
 
-The sync runs `check.sh` (including its certified pristine attribution inside the same
-selected gate) and the lock re-resolve (`targo metadata`, which reads the
-`.cargo/config.toml` upstream just merged) **contained** (`lib.sh`, `alab_contained`): they build and run code upstream
+The sync leases the worktree's selected Trust toolchain through `atpkg-publish`
+before resolving the lock with `targo metadata`. Lock resolution and `check.sh`
+(including certified pristine attribution) run **contained** (`lib.sh`, `alab_contained`): they build and run code upstream
 landed hours ago, build scripts of newly added crates included, as the account that holds
 `~/.codex/auth.json`, git and `gh` credentials, the SSH agent and the release key. Under
 a macOS sandbox (`sandbox-exec`) with a scrubbed environment and a scratch `TMPDIR`, that
@@ -515,6 +526,13 @@ its cooperative claims, CPU slots and lock files there, even with a scratch
 `HOME`. Aliased ledger roots are refused. No neighboring aterm cache or state
 directory becomes readable or writable, and explicit read-only fences still
 take precedence. It keeps the network: builds fetch crates and V8.
+
+For feature recipes that build, the host requests an ordinary reservation before
+entering the protected profile. It uses the stage's measured or cold memory estimate
+and the requested Cargo job count (four by default). Host admission waits up to a
+minute. A resource refusal exits 75 before the candidate starts. The compiler front
+checks its reservation inside the profile. Older hosts that lack the claim verb
+keep their existing per-build admission.
 
 Before those contained commands create a target, sync and packaging ask aterm's Rust cache
 registrar to record their real workspace. Packaging validates its compiler-keyed location
@@ -645,24 +663,30 @@ lint in step 4 and, if codex depends on it, the build in step 2.
 
 ### Running unattended
 
-`daily.sh` is the scheduled entry point. Each run is one stepwise sync. It appends the
-output to `.git/alab-daily.log` and rewrites `.git/alab-daily.status` with one line:
-when, exit status, the two tips and how many upstream commits are pending.
+`daily.sh` is the scheduled entry point. Each run is one stepwise sync. Its journal,
+`.git/alab-daily.log`, retains the newest 20,000 lines within 4 MiB, including the latest run
+header. The bound applies while the command produces output, including long individual lines.
+`.git/alab-daily.status` records the time, exit status, two tips and number of pending commits.
 The whole run holds a kernel lock; an overlapping daily invocation exits 75 before
 syncing or changing status. Failures stay in the journal for an agent to revisit.
 The scheduler sends no notifications or callbacks and keeps no alert delivery state.
 
-Before each run, holding the sync lock, and only while no sync is merging or holds commits
-`main` lacks (a resolver may be building in the sync worktree), a `target/` of the sync
-worktree or its pristine tree over `ALAB_TARGET_CAP_GB` (default 40, each) is deleted. This
+Cleanup runs under the sync lock when the clone's registered sync checkout is idle, clean
+and already on `origin/main` or an ancestor. Both cleanup passes honor the clone's
+`alab-preserve-builds` marker. Pristine candidates must be clean, detached, unlocked
+registrations of the same clone. Before a run, an eligible `target/` over
+`ALAB_TARGET_CAP_GB` (default 40, each) is emptied. This
 Mac's disk ran 96 to 100% full while this was built; a codex build plus one crate's unit
 tests take 12 to 15 GB of `target/`, and the gate's test builds add more.
 
-After each run, landed or stopped, holding the sync lock again, `daily.sh` removes the
-pristine tree's `target/` always, and the sync worktree's unless at least
-`ALAB_KEEP_TARGET_GB` (default 100) is free on its volume once the pristine one is gone; the
-daily log says what it removed, how big it was, and what is free after. Measured on this
-Mac (2026-10-16): the two trees stayed on disk between runs at about 11 and 14 GB, and with
+After each run, landed or stopped, holding the sync lock again, `daily.sh` empties the
+eligible pristine targets and then the eligible sync target unless at least
+`ALAB_KEEP_TARGET_GB` (default 100) is free on its volume after pristine cleanup. The
+daily log records the estimated size and the space free afterward. Cleanup preserves
+tracked target paths, nested Git repositories, linked targets and mounted subtrees. It
+rechecks the selected directories after inspecting process use and Cargo locks and after the
+final policy check. It removes children from the open target directory and keeps the directory
+itself. Measured on this Mac (2026-10-16): the two trees stayed on disk between runs at about 11 and 14 GB, and with
 other builds running they took the data volume, 97% full, down to 13 GB free. A `target/`
 a cargo build holds is kept whatever the space: cargo flocks `<profile>/.cargo-lock` for a
 whole build, and a person's build in the sync worktree by hand holds no sync lock (with the
@@ -670,7 +694,7 @@ store's Trust: the lock probes busy while a build runs and free after it). When 
 the lock, nothing is removed and the log says so. The next check rebuilds what went: a
 cold codex `target/` is about 11 minutes here.
 
-Both cleanup passes honor the clone-wide `alab-preserve-builds` policy before removing a
+Both cleanup passes honor the clone-wide `alab-preserve-builds` policy before emptying a
 target. Any marker kind in the shared Git directory preserves the builds across linked
 worktrees; an unavailable or unreadable policy helper also keeps them. Without that
 policy, the normal size, free-space and active-use checks still govern cleanup.
@@ -687,9 +711,14 @@ The plist starts a run when it is loaded (at bootstrap and at every login), then
 during sleep. It carries the PATH and HOME of the shell that printed it, so `targo`
 resolves. Include the durable `aterm` CLI directory too (`~/.local/bin` for the standard
 install, as above). The generator preserves the supplied PATH without adding executable
-directories. The plist also carries `ALAB_SYNC_DIR`, `ALAB_CARGO`, `ALAB_ATERM`, `ATPKG_BIN`,
-`ALAB_TARGET_CAP_GB`, `ALAB_KEEP_TARGET_GB`, `ALAB_CONTAIN`, `ALAB_CARGO_HOME`,
-`ALAB_PYTHON`, `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` if they were set. Select
+directories. If the qualified `atpkg-publish` is outside PATH, set `ALAB_ATPKG_PUBLISH` to its
+absolute path when generating the plist. The job carries that setting along with
+`ALAB_SYNC_DIR`, `ALAB_CARGO`, `ALAB_ATERM`, `ATPKG_BIN`, `ALAB_TARGET_CAP_GB`,
+`ALAB_KEEP_TARGET_GB`, `ALAB_CONTAIN`, `ALAB_CARGO_HOME`,
+`ALAB_PYTHON`, `CARGO_BUILD_JOBS`, `CARGO_TARGET_DIR` and `RUST_TEST_THREADS` if set.
+To recover from admission refusing a historical target, set `CARGO_TARGET_DIR` to a fresh
+absolute path reserved for this sync when generating the plist. Scheduled cleanup only
+examines the sync and registered pristine worktrees’ `codex-rs/target` directories. Select
 Python 3.11 or newer through `ALAB_PYTHON` for the native V8 artifact resolver when
 the default interpreter is older. Smaller ranges conflict less, so more often is
 cheaper. Name one sync host: the lock is per clone, and two hosts would race to push.
@@ -816,7 +845,14 @@ To ship something aligned with upstream release X:
    just added), then `targo metadata` in `codex-rs/` to
    re-resolve the lock, and commit. Then merge `upstream-tags/rust-vX`. That brings in the
    rest of the branch point, the version bump and the release's cherry-picks.
-4. Package from the leaf. Nothing on it ever merges back into `main`.
+4. Commit a one-line `alab/upstream-release` on the leaf. Record the official
+   stable tag name, annotated tag object ID and peeled commit ID, separated by
+   spaces. Obtain both IDs from the fetched `refs/upstream-tags/rust-vX`;
+   verify the reference against OpenAI. The native gate, pristine comparison,
+   scenario collector and package metadata now use the release commit. They
+   verify its ancestry and require the leaf's mainline frontier to equal the
+   release branch point. The package's client-version floor still applies.
+5. Package from the leaf. Nothing on it ever merges back into `main`.
 
 Whether ALab ships from `main` (alpha-equivalent, daily) or from release leaves
 (stable-equivalent, weekly) is an owner decision. Trailing latest points to `main`.
@@ -878,11 +914,13 @@ inherited Git redirection and global/system Git configuration cannot substitute
 another clone's refs or metadata directory. The same Git environment reaches
 the fetched controller, guardian and build, while their non-Git settings remain.
 
-The packager's upstream fetch has a 120-second deadline inside the already owned
-transaction group. A timeout stops and reaps Git, fails the transaction, and lets
-the existing guardian stop any remaining helpers before cache unlock. The next
-scheduled poll can try again; compilation has no added deadline. Read-only
-package queries also own a command group, without acquiring a package-cache lock.
+The setup and package fetch commands request cancellation after 120 seconds.
+The controller asks native Agh to retire its object writer and waits for the
+outcome. The package guardian holds its lock during this wait and then retires
+the inherited command group. If the controller takes another 120 seconds to
+exit, the deadline wrapper stops it and reports that writer retirement is
+unconfirmed. Expiry still fails the transaction. Read-only package queries also
+own a command group, without acquiring a package-cache lock.
 
 The command guardian's surviving custodian inherits the same package-cache BSD
 flock and owns the real command as an unreaped direct child in a separate process
@@ -927,8 +965,22 @@ source refresh to adopt the public dispatcher and its pre-checkout binding; no b
 inferred from an already checked-out source. The new public mode then lets the
 guardian and its private caller advance together. Journal snapshots never grant authority.
 An unchanged source hint ends a no-op poll without creating a controller worktree or granting
-any package authority. Before allocating a controller for newer source, the dispatcher
-checks the same eight build-disk paths against the 20 GiB floor. A known shortage or
+any package authority. When the advertised origin requires an object transfer, the poll
+checks for 20 GiB free on the common Git directory, object store and its pack directory,
+including from a linked worktree. For GitHub it also checks the temporary volume and directs Agh to stage
+its pack there. During a transfer the poll samples those destinations every second and again
+when the command succeeds. If a destination moves, its free space falls below the floor, or a
+measurement fails, the poll stops its local Git process group or asks Agh to retire its Git
+workers. If their exit is uncertain, the poll keeps the staging directory. A completed
+failed poll records the retained path alongside the original failure in the Git journal
+and job log. The standalone updater restores the default child-exit signal handling
+if its launcher ignored `SIGCHLD`. An embedded guarded fetch needs the default
+`SIGCHLD` disposition to observe Git exit statuses, and a single thread when it starts
+an object transfer so it can interrupt its writer. An unchanged ref needs no transfer. Before allocating
+a controller for newer source, the dispatcher
+checks the build-disk paths and the controller scratch directory against the 20 GiB
+floor. The `.ubd` directory under Python's selected temporary directory can be on a
+separate volume. A known shortage or
 unreadable measurement refuses the poll without allocating source trees; repeated
 low-disk polls cannot accumulate controllers before reaching the fetched guardian.
 This preflight reserves no space or cache lock; the guardian still checks throughout
@@ -1321,7 +1373,9 @@ What a run does, in order (`--help` says the same):
    (`lab codex-measure --package <pkg>`, run in an aterm worktree and landed there: aterm
    reads a codex build's session record only once it has measured that client version, so
    until an aterm that did ships, the build's tabs log no turns). It keeps the newest
-   `--keep` (3) packages in `<out>/codex` (`alab/prune.py`). A package in use is never
+   `--keep` (3) packages in `<out>/codex` (`alab/prune.py`), ordered by the instant in
+   each manifest's `built_at`. A directory with an unreadable or undated manifest stays
+   in place and leaves the retention count available to dated packages. A package in use is never
    deleted: one atpkg links as
    `codex` (its link marker `<prefix>/links/codex`, the `bin/codex` shim and the
    `agents/codex` twin, a symlink resolved and never read through, a regular file read
@@ -1424,6 +1478,8 @@ Builds wait for `ALAB_MIN_FREE_GB` (35) free on the volume, checking every 5 min
 up to `ALAB_DISK_WAIT_MINUTES` (120), then stop. A failure (no `~/Developer`, a missing
 manifest, `df` failing) stops with an `alab:` message. Packaging and scheduled local updates
 also check their cache, output, worktree, Cargo-home and temporary volumes once a second.
+The V8 cache and ripgrep's Cargo home are checked separately because each can reside
+on its own volume beneath the package cache.
 If any has less than 20 GiB free, or its free space cannot be measured, the guardian stops
 its owned process group and returns nonzero before releasing the cache lock. Below 20 GiB
 it refuses to start rather than entering the 35 GiB admission wait. This does not remove
@@ -1447,7 +1503,8 @@ working directory; `{workspace-root}` follows an explicit workspace manifest
 even when the caller stands in pristine; `{cargo-cache-home}` covers the actual
 Cargo/Trust homes. A build-directory template this guard cannot resolve stops
 before launch. With no target/build override, the macOS shim's shared intermediate
-root is checked too. These checks retain the caller's output routing and caches.
+root is checked too. Each poll follows the configured paths through symlinks
+and also checks the destinations they named at launch.
 
 Measured on the owner's Mac (2026-10-16),
 packaging `main` at ccd947b69 as `0.164.0-dev.12321+gccd947b69` (`--rebuild`, beside the
@@ -1505,12 +1562,15 @@ with file notifications providing earlier hints; a failed or closed watcher leav
 minute checks running. A delayed check skips missed intervals rather than replaying them.
 No updater modifies the running executable in place.
 
-The existing idle gate decides the handoff: every loaded thread must be idle, no background
-terminal or active goal may remain, the exact conversation must be resumable, and the
-claim, person-input and attention checks must still permit the act. The process writes its
-resumption record, including a paced action it owes, leaves through the TUI's teardown and
-re-executes the managed launch path. The next image resumes the same conversation and
-restores that action once. A held gate keeps the old image running. `/alab update` (also
+The signed package can advance while a conversation is open. Process replacement also
+requires the host to grant execution and the destination to take custody of the conversation.
+On November 18 the unattended package command selected signed 0.11 during a conversation
+on 0.10. The original process answered another turn and a fresh 0.11 process resumed the
+same thread. The installed host reported native execution unavailable. The development
+handoff prepares idle loaded threads and checkpoints eligible active goals before the
+final input and ownership checks. See the [handoff contract and signed update observations](design/goal-upgrade-admission.md).
+
+`/alab update` (also
 `/alab version`) shows the running version, the installed launch target's own package
 version, and the pending reason or degraded watcher. It works with the ALab interface off.
 For a verified local artifact package, these commands also read the channel's fixed,
@@ -1581,9 +1641,12 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
      its real patch number: the same stable step 1 names as the upstream base and the build
      compiles in as `CODEX_ALAB_UPSTREAM_VERSION`. It is what codex-alab says it is
      (`codex --version`, `/alab version`, the session record, `codex-package.json`,
-     `alab-build.json`'s `version`, the package directory, atpkg's pkg record); the banner
-     and the composer show the readable `0.1.0-dev.<count>` beside "based on OpenAI Codex
-     <baseline>", as they did. `alab-build.json` records `baseline` too. The client version,
+     `alab-build.json`'s `version`, the package directory, atpkg's pkg record). The banner
+     and composer show the two release numbers, for example `0.11 on Codex 0.169` or
+     `0.11 on Codex 0.169.1` for a patch baseline. A parentless published snapshot gets
+     its numeric baseline from the frozen ledger row. The packager passes it to the
+     executable as `CODEX_ALAB_BASELINE` and records it as `baseline` in `alab-build.json`.
+     Only upstream history supplies the exact merged source commit. The client version,
      the user agent and every other server-facing reader are unchanged (still
      `<client line>-dev.<count>+g<sha9>`), and so is the `codex-alab@<pid>` claim.
    - **Why build metadata**, not a pre-release or the patch slot. SemVer and Cargo ignore
@@ -1843,10 +1906,18 @@ the local-only packaging and future published-lane plans in Decisions 3 and 6.
    unverified lane; they confer no proof authority on the shipping application.
    After the live certified build, the gate executes that new Codex against
    isolated loopback reset fixtures: eligible weekly windows at least 99 percent
-   used with refreshes strictly more than 48 hours away. Five-hour limits alone
-   and weekly refreshes 24, 25 or exactly 48 hours away preserve earned credits;
-   both preflight and reactive recovery have 48-hour refusal and 49-hour positive
-   controls. Usage below 99 percent or an elapsed refresh cannot authorize a POST.
+   used with refreshes strictly more than 24 hours away. Five-hour limits alone
+   and weekly refreshes at most 24 hours away preserve earned credits. The gate
+   checks a 24-hour preflight refusal and redemption at 25 and 48 hours in both
+   preflight and reactive recovery, plus a 49-hour recovery control. Usage below
+   99 percent or an elapsed refresh cannot authorize a POST. The
+   `existing-usage-credits` case keeps the plan allowance exhausted and reports
+   an existing credit balance. The gate requires one retry with the completed
+   tool output, one credit-retry notice and zero earned-reset redemptions.
+   A second case refuses that paid retry while the balance remains available.
+   It requires the same one notice and waits for another paced account check.
+   The gate also runs `no-credit` through two empty polls, requiring zero reset
+   notices and zero redemptions before the probe interrupts the waiting turn.
    The gate also changes the
    allowance, cycle or account after selecting an earned credit and requires a
    fresh usage check before any redemption POST. Restored-at-99 recovery keeps
@@ -1947,12 +2018,50 @@ public `alabsystems/codex-alab` is one snapshot commit of the dev repo's `origin
 release, minus the paths no ALab repo exports (`docs/`, `publish/`, `.github/`), with the
 dev org rewritten and the engine's guards run on exactly the bytes it pushes. `pub stage
 codex-alab` puts the snapshot in the private staging repo; only `pub promote`, on the owner's
-direction, writes the public one. That rule is for the source snapshot. A package's
-`atpkg-codex-<build>` prerelease on the public repository is a different act: aterm's daily
-publish writes it with `atpkg-publish mirror`, just before the index that pins it. The agent
-running that publish performs the step on a rostered Mac that holds the release credential
-(aterm `docs/RUNBOOK-atpkg-republish.md`, "codex-alab", step 4). `publish/` holds the repo's
-policy for the snapshot.
+direction, writes the public one. `publish/` holds the policy for the source snapshot.
+
+The publication registry assigns regular releases to `codex-release` through its
+`released_by` field. The generic scheduled `pub cycle --all` skips this repo.
+On the rostered publishing worker, `codex-release cycle` discovers unshipped regular
+versions from authenticated main and the signed channel. It runs the native
+product and ripgrep qualifications before reserving the version. The existing
+`codex-release publish` workflow builds or reuses the package and asks
+atpkg for the signed channel predecessor and candidate. For an upgrade it runs the predecessor's
+actual compatibility test against the candidate and supplies the checked pair to
+`atpkg-publish` for index promotion. A failed reader check ends the attempt before
+promotion. The publisher's readback establishes which package is available to clients.
+A running session's adoption is observed separately. See the [release controller](../codex-rs/alab-release/README.md).
+
+To compare saved conversations across release binaries, set `previous_codex` and
+`candidate_codex` to their executable paths and `results` to an existing
+directory. Each surface creates a new subdirectory.
+
+```sh
+for surface in terminal exec live live-terminal loaded unloaded picker terminal-last exec-last; do
+  python3 alab/smoke/model_resume.py --seed-codex "$previous_codex" --codex "$candidate_codex" \
+    --surface "$surface" --output "$results/resume-$surface" || exit 1
+done
+```
+
+For terminal and exec resume, the loopback provider publishes a successor after
+the original process exits. In the two live cases, the candidate first resumes
+and answers on the saved model. The provider signals a catalog change in that
+response. The next ordinary turn must use the successor in the same app-server
+or interactive terminal. Two more cases release the successor silently and
+reopen the thread in the same app-server. One keeps the thread loaded. The other
+archives and restores it, then checks that it has left memory before reopening.
+Both check the resume reply and the next provider request. Three selectors start
+the original conversation in a terminal, then reopen it from the picker,
+`codex resume --last`, or `codex exec resume --last`. The terminal cases check
+the displayed model and effort and wait for the original thread to record turn
+completion before typing the next prompt or closing the terminal. Each provider
+request must carry a distinct turn ID. The exec check creates a newer thread
+with a different model and effort in a second workspace. From the original
+directory, `--last --all` must continue the newer thread, and `--last` must
+continue the local thread. The next provider request verifies each selection.
+Each result records both binary digests and verifies the thread ID, conversation
+history and the saved Ultra preference's wire effort on actual provider requests.
+Omitting `--seed-codex` exercises both processes with the candidate.
 
 `publish/forbidden-extra.txt` adds the owner's account, the second machine's account, the
 name run together and the machines' host names to the central patterns (none is in the tree,
@@ -1974,7 +2083,9 @@ GitHub reads. Setup and the package gate call it explicitly for upstream, and
 the package gate for origin;
 `versions.py` uses it for published snapshots. It invokes native Agh, preserving
 its `agh` argv[0], binding the selected executable for the operation, and requiring
-exact anonymous batch fetch support. `ALAB_AGH=/absolute/path/to/qualified/agh` selects a retained
+exact anonymous batch fetch support. Installed symlinks resolve as before; the
+executable digest and initial identity come from one stable regular-file descriptor.
+FIFO and other non-regular paths are refused before capability probing. `ALAB_AGH=/absolute/path/to/qualified/agh` selects a retained
 client during rollout. A missing capability refuses before transport; no token,
 credential helper, PATH shim or private publication-module dependency is added.
 Upstream and public snapshot reads are explicitly anonymous; a quota refusal is
@@ -1983,8 +2094,13 @@ retained without changing identity. Origin uses Agh's registered owner route.
 The adapter enumerates matching refs with native `api --all` and fetches one
 explicit `{source, into, expected_oid}` batch into Agh's namespace. Native Agh
 checks every raw OID before atomically updating its cache refs; the adapter then
-checks that same snapshot before
-updating local metadata. GitHub's [matching-ref contract](https://docs.github.com/en/rest/git/refs#list-matching-references)
+checks that same snapshot before updating local metadata. Branch-head rows fetch
+the enumerated object ID, so movement after enumeration does not change the
+selected snapshot. Heads sharing an object reuse one transfer and a stable
+ref-keyed cache slot. A destination can repeat only with the same source ref,
+raw OID and force policy; conflicting mappings are refused before transfer even
+when their object IDs match. Tags and other refs keep their named expected-OID
+checks; their cache entries never supply a head group. GitHub's [matching-ref contract](https://docs.github.com/en/rest/git/refs#list-matching-references)
 defines all prefix matches; the native qualification observed 1,489 upstream
 `rust-v` refs (225 decimal version shapes, 193 eligible under the release floor's
 bounded version grammar), no pagination Link, and identical included/all-page
@@ -1994,8 +2110,35 @@ still enumerates again; only unchanged exact cached OIDs avoid re-fetching the
 same graph. Origin/upstream main remain fast-forward only, local
 ref updates compare old OIDs atomically and retain reflogs, and the configured
 `+` for `refs/upstream-tags/` remains local metadata policy. Public snapshot tag
-OIDs are immutable and a tag changed during fetch refuses. Local fixture remotes
-remain explicit file transfers, with hooks/helpers/network protocols disabled.
+OIDs are immutable and a tag changed during fetch refuses. The version ledger
+imports release heads and tags into private tracking refs in a fresh bare
+repository with no templates. It peels the advertised object IDs in one Git
+batch and checks each distinct snapshot commit once. Every original release
+name is retained, including aliases for an annotated tag. Local fixture remotes
+use one atomic Git fetch for the missing named refs. Their cache slots advance
+together, then the adapter compares the imported OIDs with the advertisement.
+If another local fetch imports the same refs first, the adapter checks the named
+refs again and can reuse the objects or fetch the remaining refs once. When a
+batch changes tracking refs, the same transaction verifies every requested ref
+that was already current. A newer observation stops the batch. The file
+transport disables hooks, helpers and network protocols.
+
+On POSIX, the release fetch command checks for 20 GiB of available space before
+each object transfer. It checks the receiving Git directory, its object and pack
+directories, and the temporary volume where native Agh will stage a batch. A
+fetch satisfied by current refs or cached objects can still finish below the
+floor. During a native object fetch, the adapter rechecks available space on
+the launch volumes while Agh runs and once more before accepting success. The
+publication command also checks its temporary volume before initializing the
+candidate repository and during the local history copy. If space falls below
+20 GiB, the adapter stops the active writer and reports the affected path. The
+scheduled updater continues to monitor both native and local fetches. Local
+reads of release refs inside publication and version checks also monitor their
+active transfers. A local fetch running in its caller's process group rechecks
+the floor after Git exits, before updating the tracking refs. Standalone setup
+owns the group containing its deadline wrapper and ref-discovery commands, so
+it waits for that group to exit before returning.
+
 The reader admits at most 2,048 snapshot refs, matching the native batch contract,
 and 8,192 local refs. Larger catalogs refuse explicitly. Shared local refs are
 read as bounded snapshots rather than launching Git repeatedly per identity;
@@ -2006,8 +2149,10 @@ guardian's deadline.
 The 1,490-tag source-signing retry exposed another per-ref cost: launching
 `check-ref-format` separately for each observed and mapped name. Full names now
 go through Git's own parser in NUL-delimited `update-ref --stdin -z` batches
-that end with `abort`, without preparing any update. This retains Git's syntax
-rules without a second parser or per-tag processes. The large warm-snapshot
+that end with `abort`, without preparing any update. Inside a repository,
+explicit catalogs also batch the literal names supplied by the caller. Git
+checks wildcard syntax separately. A fetch that needs an owned bare snapshot
+checks that repository once for the whole catalog. The large warm-snapshot
 regression bounds total Git calls, while malformed-name, command-injection,
 unchanged-ref/reflog and lock-cleanup checks exercise the aborted transaction.
 The existing floor, ledger, complete-history and source-identity checks still
@@ -2089,6 +2234,248 @@ the runner checks distinct conversation IDs and unchanged credential files.
 All credentials are synthetic. Each exec process uses the existing command
 guardian, and the retained result names the package source and executable hash.
 
+### Resuming local work after switching accounts
+
+Use the same local `CODEX_HOME` for both logins. On the ALab 0.170
+review build, sign in as B, run `codex resume` and choose A's conversation.
+On the Mac with the verified private review build, use this command.
+
+```sh
+~/.ubd/codex-0.170-review-6a986f3188/bin/codex resume
+```
+
+The picker opens with active local conversations from every login and
+project, including work started by `codex exec` and editor clients using
+the local app server, ordered by recent activity. If two rows have the
+same title, highlight each with **↑/↓** and
+press **Ctrl-E** to see its transcript, full session ID, directory and timestamps.
+Press **Enter** on the conversation you want. **Filter** and **Logins** can
+narrow the list for this launch. The next bare `codex resume` starts
+with all projects and logins visible again. To restore an archived
+conversation from either login, press **Tab** twice from the
+initial picker, press **Right** to switch **Status** to **Archived**, then
+select the conversation and press **Enter**. It returns to the active list.
+
+If you remember the exact saved title, `codex resume "Release notes"`
+opens it when it names one active local conversation. This includes
+conversations started in another project, login, editor or `codex exec`.
+If the title matches several, the command lists two matching IDs and
+exits before sending your prompt. Run bare `codex resume` and use
+**Ctrl-E** to identify the conversation by its transcript or directory.
+
+If you created a conversation with an API key, it has no ChatGPT
+account owner. It appears under **All local** and also under **Current**
+when you sign in to ChatGPT. Continuing it uses your active login.
+Older histories can also appear under **Current** across logins. For
+example, OpenAI 0.164.0 saved the creating account’s IDs but did not yet
+restrict discovery to that account. Resuming preserves the original
+creator record and uses the current login for the new turn.
+
+For automatic selection, `codex resume --last` opens the most recent
+interactive conversation visible under **Current** in the current project.
+That can be a shared conversation, even on your first turn with this login.
+`codex resume --last --all` searches the same history across projects.
+Use bare `codex resume` to choose a conversation started under another login.
+
+The original rollout supplies the conversation and completed tool results.
+B authenticates the next model request. When A signs back in, the same
+`codex resume` picker opens that conversation with B’s additions. A
+authenticates the next turn. When the shared background
+server is enabled, the enhanced build checks its login and workspace.
+A daemon serving B can continue the conversation. If the daemon still
+serves A, the CLI opens its own local app server under B and leaves A’s
+running conversations in place.
+
+If the picker says **This conversation is open in another app**, close the
+conversation in the original app. Leave B’s terminal open and press **R**
+to continue the same conversation there. If you press **R** before the
+original app has released it, you can still read the transcript. Press **R**
+again after the original app closes. If the original was the official
+OpenAI 0.170 terminal, its background server normally keeps an idle thread
+for about a minute after the last client closes. Keep the picker open
+and press **R** after that interval.
+
+The review picker reads the selected conversation’s latest saved directory
+when you press **Enter**. If the CLI asks which directory to use, choose **Use session
+directory** to continue in the original workspace. If you moved or renamed
+the project, start `codex resume` in its new location. The updated local
+picker highlights **Use current directory** when the saved path is gone.
+Press **Enter**. On earlier review builds, press **2** to choose it.
+**Ctrl-C** at this prompt quits before starting a turn.
+An explicit `-C` or a
+saved `tui.resume_cwd` preference can choose the working directory.
+
+On **signed ALab 0.11.0**, use `codex --no-daemon resume <thread-id>`
+after switching accounts. A’s exit summary contains the ID. Even with
+`--all --include-non-interactive`, that signed picker applies current-login
+visibility and omits threads recorded under A. Official OpenAI 0.170.0 also
+scopes the bare picker to the current login and accepts an explicit thread ID.
+
+If you no longer have A’s thread ID, run `codex --no-daemon migrate-rollouts --verbose`
+from B’s shell with the same `CODEX_HOME`. This dry run prints each active
+rollout’s migration status and available ID. Leave `--apply` off.
+
+<details>
+<summary>Find a signed 0.11.0 session by preview or project directory</summary>
+
+To recognize a conversation by its contents, use the signed local app server
+to list indexed, active conversations across logins and projects, including
+`codex exec` sessions.
+Each output line gives the ID, directory, and title or first-message preview.
+Use the matching ID with `codex --no-daemon resume <thread-id>`. This query
+reads the local index and requests no rollout repair or model turn.
+[Signed thread-list protocol](https://github.com/alabsystems/codex-alab/blob/70d63912591840da2a154f057dc0cade90a17d79/codex-rs/app-server-protocol/src/protocol/v2/thread.rs#L1450)
+
+```sh
+python3 - <<'PY'
+import json
+import subprocess
+
+with subprocess.Popen(["codex", "--no-daemon", "app-server", "--listen", "stdio://"],
+                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as server:
+    def send(message):
+        print(json.dumps(message), file=server.stdin, flush=True)
+
+    def request(number, method, params):
+        send({"id": number, "method": method, "params": params})
+        for line in server.stdout:
+            reply = json.loads(line)
+            if reply.get("id") == number:
+                if "error" in reply:
+                    raise SystemExit(reply["error"])
+                return reply["result"]
+        raise SystemExit("Local app server closed before replying")
+
+    request(1, "initialize", {"clientInfo": {"name": "local_history", "version": "1"}})
+    send({"method": "initialized"})
+    params = {"currentAccountOnly": False, "useStateDbOnly": True, "archived": False,
+              "modelProviders": [], "sourceKinds": ["cli", "vscode", "exec", "appServer"],
+              "sortKey": "updated_at", "limit": 25}
+    number = 2
+    while True:
+        page = request(number, "thread/list", params)
+        for row in page["data"]:
+            print(json.dumps([row["id"], row["cwd"], row.get("name") or row["preview"]]))
+        if not page["nextCursor"]:
+            break
+        params["cursor"] = page["nextCursor"]
+        number += 1
+PY
+```
+
+</details>
+
+For a noninteractive continuation, run
+`codex exec resume <thread-id> "Continue the task"` under the destination
+login. The same thread can start in the terminal and continue through exec.
+Exec uses the directory where you launch it. From another checkout, target
+the original workspace with
+`codex exec -C /path/to/original/repo resume <thread-id> "Continue the task"`.
+
+If both ALab logins are already active in separate credential files, start
+the fresh CLI with B's `CODEX_AUTH_PATH` and the same `CODEX_HOME`. For
+example, `CODEX_AUTH_PATH=/path/to/account-b/auth.json codex resume`
+opens the review build’s picker as B. Select A’s conversation to continue.
+
+The two-login terminal smoke uses a scratch home and a loopback provider.
+Run each surface with a fresh output directory.
+
+```sh
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --surface id --output /tmp/resume-by-id
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --surface exec-project-id --output /tmp/resume-exec-other-project
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --surface bare-all-default --output /tmp/resume-picker
+python3 alab/smoke/account_resume_last.py --codex /path/to/bin/codex --output /tmp/resume-last-two-logins
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/upstream/bin/codex --surface bare-all-default --seed-surface app-server --empty-destination-login --output /tmp/resume-first-login-editor
+python3 alab/smoke/account_resume_shared_history.py --codex /path/to/bin/codex --output /tmp/resume-shared-history
+python3 alab/smoke/account_resume_filter_restart.py --codex /path/to/bin/codex --output /tmp/resume-filter-restart
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-surface exec --surface bare-all-default --separate-auth-files --output /tmp/resume-exec-in-terminal
+python3 alab/smoke/account_resume_writer.py --codex /path/to/bin/codex --seed-codex /path/to/upstream/bin/codex --output /tmp/resume-open-writer
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/upstream/bin/codex --surface bare-all-default --seed-surface exec --switch-back --output /tmp/resume-back-to-first-login
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/upstream/bin/codex --surface bare-all-default --seed-surface terminal --switch-back --idle-seed-daemon --output /tmp/resume-after-vanilla-terminal
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/signed/bin/codex --seed-surface exec --surface bare-all-default --separate-auth-files --page-boundary --output /tmp/resume-second-page
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/signed/bin/codex --seed-surface exec --surface bare-all-default --duplicate-titles --output /tmp/resume-same-title
+python3 alab/smoke/account_resume_paged_titles.py --codex /path/to/bin/codex --seed-codex /path/to/signed/bin/codex --output /tmp/resume-paged-titles
+python3 alab/smoke/account_resume_named.py --codex /path/to/bin/codex --page-boundary --output /tmp/resume-exact-name-pages
+python3 alab/smoke/account_resume_paged_titles.py --codex /path/to/bin/codex --seed-codex /path/to/upstream/bin/codex --shared-seed-auth --output /tmp/resume-paged-from-vanilla
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --surface id --separate-auth-files --output /tmp/resume-active-logins
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --surface id --separate-auth-files --renew-destination --output /tmp/resume-expired-login
+```
+
+To test a restored rollout, remove A's index row in the synthetic home after
+B creates an indexed conversation. The fixture records both rollout digests,
+checks SQLite integrity, and captures the first bare picker before a
+rollout-aware `thread/list` can repair the index. On POSIX it gives an
+unrelated temporary directory mode 000 for that first screen and records
+whether the process actually received a permission error. It also opens the picker
+after only A's history header has arrived and again after the first turn
+has been restored. A further trial starts with the blank preview an
+older reader could persist. Both complete histories must appear, with B's
+index row and both history files intact. B then continues A's thread.
+
+```sh
+python3 alab/smoke/account_resume.py --codex /path/to/bin/codex --seed-codex /path/to/signed/bin/codex --seed-surface exec --surface bare-all-default --restored-source --output /tmp/resume-restored
+```
+
+To exercise the archive picker, add `--archived-source` in place of
+`--restored-source` above. A archives the original rollout before B signs
+in. The test checks that B sees its own conversation under **Active** and
+A’s under **Archived**, then continues A’s original thread in its project.
+It verifies the restored rollout retains every byte preceding B’s new turn.
+
+To exercise a moved project, replace `--restored-source` with
+`--moved-project`. The fixture renames A’s project, cancels B’s first
+directory choice and checks that both conversations are intact. It then
+continues A’s thread under B and runs a shell command in the new directory.
+Pass `--moved-project default-current` to require that pressing **Enter** at
+the directory prompt selects the new location without a navigation key.
+
+To exercise a reverted conversation, the following check creates two turns
+as A, reverts the second, and removes A's index entry. From B's project it
+opens `codex resume`, selects A, and verifies that B's next request
+contains the surviving turn and excludes the reverted prompt and answer.
+
+```sh
+python3 alab/smoke/account_resume_reverted.py --codex /path/to/bin/codex --output /tmp/resume-reverted
+```
+
+To reproduce the official OpenAI comparison, supply the package executable
+and the executable that creates A's original exec conversation. The default
+expected version is 0.170.0. To measure 0.171.0, pass its executable and
+`--expected-version 0.171.0`. Use a new, short output path for the private
+daemon's Unix socket.
+
+```sh
+python3 alab/smoke/official_resume_picker.py --codex /path/to/openai-0.170.0/bin/codex --seed-codex /path/to/signed/bin/codex --output /tmp/vanilla-picker
+```
+
+The smoke runs literal `codex resume` as B in a sibling project. It records the
+empty screen before input, then uses the same binary's app server to find A's
+thread and vary account, directory and source filters individually. The receipt
+includes the executable digests and versions. The private daemon starts normally
+with background package updates disabled and stops after the measurement.
+
+The page-boundary case creates 25 newer conversations under the destination
+login and records both pages of `thread/list`. It scrolls the ordinary picker
+to the original exec thread at row 26 and checks its resumed shell directory
+and model requests. The paged-title smoke puts identically named originals at rows 25 and 26
+in two projects. A searches from bare resume, expands both UUIDs, and continues B’s
+older conversation in its original directory. The other 25 saved conversations must
+stay byte-identical. Add `--resume-as b` to select row 26 under its original login.
+The last case gives the destination an expired access token. Its resumed
+model request must use the newly issued credential on the original thread,
+and the command from the first turn must have executed exactly once.
+
+The direct Guardian smoke resumes the same parent in a new app-server with a
+second login and repeats the check with the original login. Each review must
+use the active login and workspace. Consecutive reviews on the same live parent
+reuse its private rationale. After restart, and on a different parent, the first
+review must start with empty private reviewer history. Every recorded command
+remains unexecuted.
+
+```sh
+python3 alab/smoke/guardian_account_resume.py --codex /path/to/bin/codex --output /tmp/guardian-resume
+```
+
 ### Headless capacity and quota recovery
 
 For retry behavior and public, selected and running build identities, see
@@ -2125,8 +2512,9 @@ output, requests, socket log and verdict:
   `x-codex-rate-limit-reached-type` one of the four credit-depletion and spending-cap types
   fails the same way, the misleading reset notwithstanding.
 
-`codex exec --json` can emit a nonfatal `error` retry notice while the same turn is still
-running, so the lane reads each outcome from `turn.completed` or `turn.failed` and the exit
+ALab's `codex exec --json` emits a scheduled retry as an `item.completed` warning with
+item type `error`. Package 2026111701 emitted a top-level `error` even when it recovered
+and exited successfully. The lane reads each outcome from `turn.completed` or `turn.failed` and the exit
 status. It witnesses egress: before each case a jailed `nc` reaches the model's port and is
 refused a loopback canary port, whose listener takes nothing, and while `codex exec` runs its
 process tree's sockets are sampled with `lsof` on a clock and at each request the model takes
@@ -2174,6 +2562,29 @@ confirmed exhaustion can use a fresh earned credit. Without a known deadline,
 pending recovery keeps polling; an already-used grant returns scheduling to the
 native quota policy.
 
+Routine preflight checks, failed passive lookups and empty earned-reset inventories stay silent. A real
+wall can retry the original request once on the account's existing usage credits
+when a fresh authenticated read shows they are available and no spend control
+or workspace restriction blocks them. If that read confirms the plan allowance
+has returned while earned resets were being listed, recovery uses the ordinary
+allowance and preserves the paid retry. The retry keeps completed tool work and
+reports the attempt. If the provider denies it, the same turn can still use an
+earned reset or hand off to a ready account. Its saved retry record prevents
+another paid attempt across a restart. Once recovery has confirmed the current
+quota wall and found no eligible reset, handoff needs no further credit check.
+When a usable earned reset is being redeemed or preserved
+at a wall, recovery reports its inventory, expiry and decision.
+The current policy requires verified ordinary weekly usage of at least 99 percent
+with its natural refresh strictly more than 24 hours away; a five-hour limit alone
+does not qualify. The earliest-expiring usable credit is selected, followed by a
+fresh account and usage check before redemption. If a lookup fails during reactive recovery, the notice identifies the unavailable data.
+
+The decision appears while recovery is pending. Applying a reset and confirming
+restored allowance are reported separately, so a redemption attempt is not shown
+as successful recovery before fresh usage confirms it. These describe the current
+source behavior; a signed package retains its own source revision until an update
+is published and installed.
+
 `alab/smoke/weekly_reset.py --codex /path/to/codex --output /new/retained-output`
 checks these paths with fake ChatGPT auth and a loopback service. It retains the
 original request's completed plan across recovery. Use repeatable `--case` options
@@ -2181,6 +2592,23 @@ for focused checks, including `late-credit`, `natural-reset`, `committed-ack`, a
 `lost-ack-propagation`. The natural-reset case starts with zero credits, observes
 a denied allowance, then verifies a paced fresh usage check and success with no
 redemption POST. The probe builds nothing and keeps raw process and HTTP evidence.
+The `no-credit` case waits through two empty earned-reset polls and rejects both
+earned-reset and paid-credit notices in the exec transcript. A native quota-wait
+message is permitted. The release check counts the two notice labels separately.
+The `existing-usage-credits` case changes the balance during the earned-reset
+check and requires exactly one paid-retry notice with the newly reported amount.
+In `plan-renewed-before-credit-retry`, the funded account regains its ordinary
+allowance during the empty reset listing. The retry must report that restoration
+and retain the completed plan. In `paid-retry-refused`, the provider refuses
+the single funded retry. The check observes the waiting turn through a second
+paced usage poll, with the original tool output intact and one retry notice
+across the full transcript. In `spend-control-reopens`, the balance stays
+positive while the first empty inventory check triggers a spending block.
+A later poll observes that spending reopened and a fresh check authorizes
+the retry. In `spend-control-blocked`, the account has credits throughout but
+its spending control stays active. The single restriction notice falls between
+the original tool work and the native quota wait. There are no inventory or
+redemption requests for that block.
 The `usage-outage` and `credit-list-outage` cases inject one HTTP 503 after quota
 exhaustion and require a paced retry before any credit redemption.
 The `usage-outage-deadline` and `credit-list-outage-deadline` cases keep the backend
@@ -2191,7 +2619,10 @@ usage check that restores work before the original wall deadline.
 
 Use `--package /absolute/package` instead of `--codex` to bind the probe to an
 immutable package's build and layout records. The aggregate report retains its
-source commit, binary hash and probe hash. `passed` describes only the requested
+source commit, binary hash and probe hash. When the build record includes
+compiler verification, the probe checks its source and compares the executable
+with both the built and packaged SHA-256 digests before running any case.
+`passed` describes only the requested
 run; require `fullSuite: true` for complete declared coverage. `requestedCases`
 names the intended cases and `cases` retains those completed successfully.
 Repeatable `--case` selects distinct cases; duplicate selections are rejected.
@@ -2217,7 +2648,20 @@ runs two packages and builds nothing (defaults: the newest `package.sh` output a
 vendor build in atpkg's store, `codex-old`'s). Each flag is compared with its short form,
 whether it takes a value and its possible values, and each page's positional arguments as
 written; a short flag, value or argument OpenAI's build has and codex-alab lacks fails unless
-upstream's source no longer names it, and a clone with no `upstream/main` (before
+upstream's source no longer names it. For a package with an upstream commit in
+`alab-build.json`, the comparator verifies the candidate's committed upstream identity before
+attributing any difference. A marked release leaf uses its pinned official tag. Other
+sources use their common ancestor with upstream main.
+The experimental app-server check compares each binary’s emitted definitions, properties and
+enum values with its source archive, including the owning type in the combined v2 bundle.
+It attributes differences against the pristine archive at the merge base. A fork addition
+needs an ALab payload declaration or a marked protocol hook. A vendor item that is still in
+pristine upstream fails when the fork removes it.
+The check requires the committed experimental export archive at all three revisions.
+Upstream introduced it in July 2026 before ALab introduced the drop-in check in October.
+A missing archive fails the schema check because the stable JSON files omit experimental items.
+Run `git fetch upstream` to refresh the configured upstream branch and release-tag
+refs when the clone is behind. A clone with no `upstream/main` (before
 `alab/setup.sh`) fails rather than excuse every removal. The files `exec` leaves in `CODEX_HOME` compare codex-alab's own
 names there (`alab-core/src/home.rs`: `skills/.alab-system`, `models_cache.alab.*`) as the
 vendor's (`skills/.system`, `models_cache.*`), and a file codex-alab writes under one of the
@@ -2276,10 +2720,23 @@ sheet or frames into `~/.codex` for a pet nothing draws, and writes no progress 
 check each key through `ConfigBuilder` (an upstream rename would otherwise turn it into a
 silent no-op) and that a user's config still wins.
 
+New unpinned OpenAI conversations default to the newest released Sol that supports
+Ultra. On resume, a saved thread can restore its model and reasoning effort over
+global preferences; following a model successor preserves that saved effort.
+An explicit launch, profile or project selection takes precedence. Use `--model`
+to pin a model and `-c 'model_reasoning_effort="ultra"'` to override saved effort
+for that launch. A global model preference can follow an eligible successor.
+If new sessions keep starting on a different family or effort, check the
+top-level `model` and `model_reasoning_effort` in your user configuration.
+Remove the settings you want the package to supply, then start a new thread
+and check its model and effort in `/status`. The packaged values printed by
+`codex debug packaged-defaults` precede user configuration.
+
 The composer keeps its spectrum rule and identifies `codex-alab` and its OpenAI Codex
 source separately. Packaging supplies the included upstream release baseline and exact
-source commit before capturing ALab's package version in the final executables; an ordinary unstamped build says
-`dev` / `unreleased`. Launch and `/status` cards also show both identities. The names use
+source commit before capturing ALab's package version in the final executables. An ordinary
+unstamped workspace build displays `dev` / `unreleased` and sends the client version from
+`alab/client-version` when fetching its model catalog. Launch and `/status` cards also show both identities. The names use
 their normal spelling and neutral terminal text, following [OpenAI's brand guidance](https://openai.com/brand/).
 The footer omits routine activity and default permission labels. Its weekly meter shows
 reported usage, the reset time, earned reset-credit dots and an inline warning during a

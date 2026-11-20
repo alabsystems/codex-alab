@@ -44,13 +44,16 @@ fn alabs_own_defaults_parse() {
         for feature in [
             "daemon_auto_start",
             "plugins",
-            "misalignment_review",
             "safety_recourse",
             "skill_mcp_dependency_install",
             "unbounded_connection_retries",
         ] {
             assert_eq!(merged["features"][feature].as_bool(), Some(false));
         }
+        assert_eq!(
+            merged["features"]["misalignment_review"].as_bool(),
+            Some(true)
+        );
         assert_eq!(merged["tui"]["notifications"].as_bool(), Some(false));
         assert_eq!(
             merged["tui"]

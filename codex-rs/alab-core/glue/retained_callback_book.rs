@@ -23,17 +23,17 @@ impl Retired {
             return;
         }
         let (mut first, mut last) = (id, id);
-        if let Some((&a, &b)) = self.ranges.range(..=id).next_back() {
-            if b.checked_add(1) == Some(id) {
-                first = a;
-                self.ranges.remove(&a);
-            }
+        if let Some((&a, &b)) = self.ranges.range(..=id).next_back()
+            && b.checked_add(1) == Some(id)
+        {
+            first = a;
+            self.ranges.remove(&a);
         }
-        if let Some((&a, &b)) = self.ranges.range(id..).next() {
-            if id.checked_add(1) == Some(a) {
-                last = b;
-                self.ranges.remove(&a);
-            }
+        if let Some((&a, &b)) = self.ranges.range(id..).next()
+            && id.checked_add(1) == Some(a)
+        {
+            last = b;
+            self.ranges.remove(&a);
         }
         if self.floor.checked_add(1) == Some(first) {
             self.floor = last;

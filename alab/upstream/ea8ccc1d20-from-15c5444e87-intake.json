@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "base": "15c5444e87e334d40262d07adb8e383c1e5172fc",
+  "target": "ea8ccc1d20ff65398e02490ac34f8c1012848625",
+  "frontier": "15c5444e87e334d40262d07adb8e383c1e5172fc",
+  "commits": [
+    {
+      "sha": "ea8ccc1d20ff65398e02490ac34f8c1012848625",
+      "subject": "Keep explicitly pinned history outside the carryover token budget (#62677)",
+      "paths": [
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/compact_tests.rs",
+        "codex-rs/history/src/lib.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Preserve explicitly pinned history at zero soft carryover budget, including the destination selected during injection. An oversized pinned user message must leave the available budget for ordinary user history. Preserve the existing treatment of legacy feature-retained items and grouped tool exchanges.",
+      "evidence": [
+        "ea8ccc1d20:codex-rs/history/src/lib.rs records an explicit child disposition for new Always injections. For older metadata without that field, retained developer messages and named call-less tool outputs keep the historical budget treatment. Other eligible legacy pins can still be recognized.",
+        "ea8ccc1d20:codex-rs/core/src/compact_remote_v2.rs selects explicit eligible groups for the destination before spending the soft budget newest first. The existing group traversal retains associated call and notice positions, and the position-keyed result restores source order.",
+        "ea8ccc1d20:codex-rs/core/src/compact.rs skips charging a previously selected user a second time. The retained-client selection, implementation in compact_remote_v2.rs and grouped history in compact_remote_history.rs preserve the thread/child distinction before carryover.",
+        "ea8ccc1d20:codex-rs/core/src/compact_tests.rs::local_compaction_keeps_an_ordinary_user_beside_a_pinned_user and compact_remote_v2.rs::tests::explicit_pins_survive_an_exhausted_budget_only_in_their_destination define the two regression controls.",
+        "Both named Core regressions passed on pristine upstream ea8ccc1d20 with source-selected Trust 15698 and the locked dependency graph on macOS arm64. The zero-budget case checked thread, child and shared pins, an excluded item, and preservation of source order. The local case kept an ordinary user message alongside an oversized pin. Exact native libtest log SHA-256 0902c826dd1f48d099a61ddd426ad6c59cd6ba731e90969b37a678cd99d2266d."
+      ],
+      "revisit": ""
+    }
+  ]
+}

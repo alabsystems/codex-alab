@@ -90,6 +90,7 @@ impl ChatWidget {
                 self.on_thread_settings_updated(notification);
             }
             ServerNotification::TurnStarted(notification) => {
+                if !from_replay && self.alab_refused_turn(&notification.turn.id) { return; } // ALAB(misalignment-review): a duplicate start cannot reopen its terminal finding.
                 self.turn_lifecycle.has_turn_history = true;
                 if self
                     .bottom_pane
@@ -246,13 +247,13 @@ impl ChatWidget {
                         notification.turn_id.clone(),
                         notification.error.message.clone(),
                     ));
-                    if !from_replay
-                        && notification.error.codex_error_info
-                            == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
+                    if notification.error.codex_error_info
+                        == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
                     {
-                        self.on_misalignment_error(
+                        self.on_turn_misalignment_error(
                             Some(notification.turn_id),
                             notification.error.misalignment,
+                            replay_kind,
                         );
                     } else {
                         self.handle_non_retry_error(
@@ -537,13 +538,13 @@ impl ChatWidget {
                     .error
                     .or_else(|| recourse.as_mut()?.deferred_error.take());
                 if let Some(error) = error {
-                    if replay_kind.is_none()
-                        && error.codex_error_info
-                            == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
+                    if error.codex_error_info
+                        == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
                     {
-                        self.on_misalignment_error(
+                        self.on_turn_misalignment_error(
                             Some(notification.turn.id.clone()),
                             error.misalignment,
+                            replay_kind,
                         );
                         self.last_non_retry_error = None;
                     } else if safety_recourse::render_failure(self, recourse, &error) {
@@ -667,6 +668,7 @@ impl ChatWidget {
                 self.on_context_compaction_started(id, elapsed);
             }
             item @ ThreadItemPayload::CommandExecution { .. } => {
+                if !self.alab_finding_commands.start(&notification.thread_id, &notification.turn_id, &item) { return; } // ALAB(misalignment-review): bind a command to its actual incoming envelope.
                 // Buffered notifications were received from this thread's live subscription.
                 self.on_command_execution_started(item, ThreadItemRenderSource::Live)
             }
@@ -747,6 +749,7 @@ impl ChatWidget {
         }
         match notification.item.payload {
             item @ ThreadItemPayload::CommandExecution { .. } => {
+                if self.alab_complete_finding_command(&notification.thread_id, &notification.turn_id, &item) { return; } // ALAB(misalignment-review): a delayed command outcome does not reopen the stopped turn.
                 self.on_command_execution_completed(item)
             }
             item => self.handle_thread_item(

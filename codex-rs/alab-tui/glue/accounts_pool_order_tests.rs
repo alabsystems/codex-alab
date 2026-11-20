@@ -6,12 +6,26 @@
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use crate::chatwidget::tests::render_bottom_popup;
+use codex_alab_tui::accounts_ui::Destination;
+use codex_alab_tui::accounts_ui::PickerAction;
+use codex_alab_tui::accounts_ui::Snapshot;
+use crossterm::event::KeyCode;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 type Completion = oneshot::Sender<Result<String, codex_alab_aterm::Error>>;
+
+fn snapshot_text(text: String) -> Snapshot {
+    Snapshot {
+        text,
+        cached_text: None,
+        shared_mask: false,
+        address_revision: None,
+        destinations: Vec::new(),
+    }
+}
 
 fn controlled_fetch(
     view: Weak<Mutex<View>>,
@@ -23,6 +37,7 @@ fn controlled_fetch(
         reply
             .await
             .expect("test supplies the fetch result")
+            .map(snapshot_text)
             .map_err(|error| failure(&error).to_owned())
     })
     .expect("account view is open");
@@ -54,6 +69,147 @@ async fn completed_update(
 
 fn apply(chat: &mut ChatWidget, ready: (Weak<Mutex<View>>, Option<ThreadId>, Update)) {
     chat.alab_accounts_ready(ready.0, ready.1, ready.2);
+}
+
+fn show_destinations(chat: &mut ChatWidget) -> Weak<Mutex<View>> {
+    let view = chat.alab_accounts_view();
+    let token = view.upgrade().unwrap().lock().unwrap().begin_snapshot();
+    let destinations = ["work", "spare"]
+        .map(|label| Destination {
+            id: format!("{label}-id"),
+            label: label.into(),
+            selection_ref: if label == "work" { "d" } else { "e" }.repeat(64),
+            revision: "0".repeat(64),
+            masked_email: Some(format!("{label}***@example.com")),
+        })
+        .into();
+    chat.alab_accounts_ready(
+        view.clone(),
+        chat.thread_id(),
+        Update::Snapshot {
+            token,
+            result: Ok(Snapshot {
+                text: "Available subscriptions\nwork · /accounts use work\nspare · /accounts use spare"
+                    .into(),
+                cached_text: Some("Available subscriptions\nwork\nspare".into()),
+                shared_mask: false,
+                address_revision: None,
+                destinations,
+            }),
+        },
+    );
+    view
+}
+
+fn picker_event(
+    events: &mut UnboundedReceiver<AppEvent>,
+) -> (Weak<Mutex<View>>, Option<ThreadId>, PickerAction) {
+    let AppEvent::AlabAccountsPicker {
+        view,
+        thread_id,
+        action,
+    } = events.try_recv().expect("a picker key posts its action")
+    else {
+        panic!("the picker must post a local account action");
+    };
+    (view, thread_id, action)
+}
+
+fn open_picker(chat: &mut ChatWidget, events: &mut UnboundedReceiver<AppEvent>) {
+    chat.handle_key_event(KeyCode::Right.into());
+    let (view, thread, action) = picker_event(events);
+    assert!(matches!(action, PickerAction::Open));
+    chat.alab_accounts_picker(view, thread, action);
+    assert_eq!(chat.bottom_pane.active_view_id(), Some(PICKER_ID));
+}
+
+#[tokio::test]
+async fn picker_keys_route_the_chosen_row_through_the_account_move_guard() {
+    let (mut chat, _tx, mut events, mut ops) = make_chatwidget_manual_with_sender().await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.apply_external_edit("unfinished draft".into());
+    while events.try_recv().is_ok() {}
+    while ops.try_recv().is_ok() {}
+    let view = show_destinations(&mut chat);
+    assert!(render_bottom_popup(&chat, 160).contains("switch account"));
+
+    chat.handle_key_event(KeyCode::Enter.into());
+    let AppEvent::AlabAccountsRefresh {
+        view: refreshed, ..
+    } = events.try_recv().unwrap()
+    else {
+        panic!("Enter on the account details refreshes the pane");
+    };
+    assert!(Weak::ptr_eq(&refreshed, &view));
+    open_picker(&mut chat, &mut events);
+    let picker = render_bottom_popup(&chat, 160);
+    assert!(
+        picker.contains("work") && picker.contains("spare"),
+        "{picker}"
+    );
+    assert!(picker.contains("spare***@example.com"), "{picker}");
+    chat.handle_key_event(KeyCode::Char('2').into());
+    assert_eq!(chat.selected_index_for_active_view(PICKER_ID), Some(1));
+    assert!(events.try_recv().is_err(), "a number only highlights a row");
+    let narrow = render_bottom_popup(&chat, 32);
+    assert!(narrow.contains("spare***@example.com"), "{narrow}");
+    assert!(!narrow.contains("work***@example.com"), "{narrow}");
+    chat.handle_key_event(KeyCode::Up.into());
+    assert_eq!(chat.selected_index_for_active_view(PICKER_ID), Some(0));
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Enter.into());
+    let (owner, thread, action) = picker_event(&mut events);
+    let PickerAction::Select(row) = &action else {
+        panic!("Enter in the picker selects its highlighted subscription");
+    };
+    let chosen = row.upgrade().unwrap();
+    assert_eq!(chosen.label, "spare");
+    assert_eq!(chosen.id, "spare-id");
+    assert_eq!(chosen.revision, "0".repeat(64));
+
+    chat.alab_accounts_picker(owner, thread, action);
+    assert!(render_bottom_popup(&chat, 160).contains("Send or clear the composer draft"));
+    assert_eq!(chat.composer_text_with_pending(), "unfinished draft");
+    assert!(events.try_recv().is_err());
+    assert!(ops.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn dismissed_picker_selection_cannot_act_on_a_new_picker_in_the_same_pane() {
+    let (mut chat, _tx, mut events, mut ops) = make_chatwidget_manual_with_sender().await;
+    chat.thread_id = Some(ThreadId::new());
+    while events.try_recv().is_ok() {}
+    while ops.try_recv().is_ok() {}
+    let view = show_destinations(&mut chat);
+    assert!(render_bottom_popup(&chat, 160).contains("/accounts use work"));
+    open_picker(&mut chat, &mut events);
+    chat.handle_key_event(KeyCode::Enter.into());
+    let (owner, thread, action) = picker_event(&mut events);
+    chat.handle_key_event(KeyCode::Esc.into());
+    assert_eq!(chat.bottom_pane.active_view_id(), Some(VIEW_ID));
+    open_picker(&mut chat, &mut events);
+    chat.alab_accounts_picker(owner, thread, action);
+    assert_eq!(chat.bottom_pane.active_view_id(), Some(PICKER_ID));
+    assert!(events.try_recv().is_err());
+
+    chat.handle_key_event(KeyCode::Esc.into());
+    let token = view.upgrade().unwrap().lock().unwrap().begin_snapshot();
+    chat.alab_accounts_ready(
+        view,
+        thread,
+        Update::Snapshot {
+            token,
+            result: Err("Account information unavailable".into()),
+        },
+    );
+    let cached = render_bottom_popup(&chat, 160);
+    assert!(cached.contains("Available subscriptions"));
+    assert!(!cached.contains("/accounts use"));
+    assert!(!cached.contains("switch account"));
+    chat.handle_key_event(KeyCode::Right.into());
+    assert_eq!(chat.bottom_pane.active_view_id(), Some(VIEW_ID));
+    assert!(events.try_recv().is_err());
+    assert!(ops.try_recv().is_err());
 }
 
 async fn refresh_with(
@@ -89,10 +245,12 @@ async fn cached_snapshot_survives_failed_refreshes_then_recovers() {
         codex_alab_aterm::Error::Unanswered,
         codex_alab_aterm::Error::Refused("ERR private token or path".into()),
     ] {
-        let before = render_bottom_popup(&chat, 100);
         let expected = failure(&error);
         let (done, task) = controlled_fetch(view.clone(), chat.thread_id(), tx.clone());
-        assert_eq!(render_bottom_popup(&chat, 100), before);
+        let pending = render_bottom_popup(&chat, 100);
+        assert!(pending.contains("Refreshing subscription accounts"));
+        assert!(pending.contains("Saved account · 21% used"));
+        assert!(!pending.contains("Showing previously loaded"));
         done.send(Err(error)).unwrap();
         let ready = completed_update(task, &mut events).await;
         let Update::Snapshot { token, result } = &ready.2 else {
@@ -101,7 +259,9 @@ async fn cached_snapshot_survives_failed_refreshes_then_recovers() {
         assert_eq!(result.as_ref().unwrap_err(), expected);
         let duplicate = Update::Snapshot {
             token: token.clone(),
-            result: Ok("duplicate failure response must not apply".into()),
+            result: Ok(snapshot_text(
+                "duplicate failure response must not apply".into(),
+            )),
         };
         apply(&mut chat, ready);
         let shown = render_bottom_popup(&chat, 100);
@@ -247,7 +407,7 @@ async fn account_refresh_completions_cannot_overwrite_a_newer_result() {
         };
         let duplicate = Update::Snapshot {
             token: token.clone(),
-            result: Ok("duplicate response must not apply".into()),
+            result: Ok(snapshot_text("duplicate response must not apply".into())),
         };
         apply(&mut chat, newer);
         let newer_view = render_bottom_popup(&chat, 100);

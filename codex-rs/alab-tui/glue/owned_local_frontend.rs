@@ -39,11 +39,11 @@ pub(crate) struct StartingFrontend {
     start: Option<RetainedStart>,
 }
 impl StartingFrontend {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         controller: Controller,
         settings: codex_alab_tui::frontend_control::StartupSettings,
     ) -> io::Result<Self> {
-        let start = native::prepare_start(&controller, &operation(), settings)?;
+        let start = native::prepare_start(&controller, &operation(), settings).await?;
         Ok(Self {
             controller: Some(controller),
             start: Some(start),
@@ -88,7 +88,7 @@ struct Selection {
     side_views: Mutex<side_views::State>,
 }
 enum DeliverySlot {
-    Owned(DeliveryState),
+    Owned(Box<DeliveryState>),
     Borrowed,
 }
 struct DeliveryState {
@@ -398,11 +398,11 @@ impl OwnedLocalTarget {
             service,
             _creator: creator,
             entered,
-            delivery: Mutex::new(DeliverySlot::Owned(DeliveryState {
+            delivery: Mutex::new(DeliverySlot::Owned(Box::new(DeliveryState {
                 seed,
                 phase: None,
                 purpose: None,
-            })),
+            }))),
             returned: Notify::new(),
             snapshot: std::sync::OnceLock::new(),
             declaration: Mutex::new(None),
@@ -489,6 +489,15 @@ impl OwnedLocalTarget {
         }
         Ok(snapshot)
     }
+    /// The local config reader keeps the latest backend policy, including typed failures.
+    pub(crate) fn managed_cloud_loader(&self) -> io::Result<codex_config::CloudConfigBundleLoader> {
+        let initial = self.snapshot()?;
+        let managed = self.0.managed_cloud.lock().map_err(|_| unavailable())?;
+        Ok(match &*managed {
+            Some(actual) => actual.frozen_loader(),
+            None => initial.ui_cloud_loader(),
+        })
+    }
     pub(crate) fn observe_managed_cloud(
         &self,
         actual: codex_app_server_client::retained_readers::ManagedCloudData,
@@ -504,14 +513,13 @@ impl OwnedLocalTarget {
                 .delivery
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let DeliverySlot::Owned(DeliveryState {
-                phase:
-                    Some(DeliveryPhase::Active {
-                        owner,
-                        role: ActiveRole::SessionClaimed,
-                    }),
-                ..
-            }) = &*slot
+            let DeliverySlot::Owned(state) = &*slot else {
+                return true;
+            };
+            let Some(DeliveryPhase::Active {
+                owner,
+                role: ActiveRole::SessionClaimed,
+            }) = &state.phase
             else {
                 return true;
             };
@@ -536,14 +544,13 @@ impl OwnedLocalTarget {
             .delivery
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let DeliverySlot::Owned(DeliveryState {
-            phase:
-                Some(DeliveryPhase::Active {
-                    owner,
-                    role: ActiveRole::SessionClaimed,
-                }),
-            ..
-        }) = &*slot
+        let DeliverySlot::Owned(state) = &*slot else {
+            return None;
+        };
+        let Some(DeliveryPhase::Active {
+            owner,
+            role: ActiveRole::SessionClaimed,
+        }) = &state.phase
         else {
             return None;
         };
@@ -658,11 +665,13 @@ impl OwnedLocalTarget {
             .delivery
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        match &mut *slot {
-            DeliverySlot::Owned(DeliveryState {
-                phase: Some(DeliveryPhase::Active { owner, role }),
-                ..
-            }) if matches!(role, ActiveRole::SessionUnclaimed) => {
+        let DeliverySlot::Owned(state) = &mut *slot else {
+            return Err(unavailable());
+        };
+        match &mut state.phase {
+            Some(DeliveryPhase::Active { owner, role })
+                if matches!(role, ActiveRole::SessionUnclaimed) =>
+            {
                 *role = ActiveRole::SessionClaimed;
                 Ok(FrontendTenure {
                     target: self.clone(),
@@ -744,7 +753,7 @@ impl OwnedLocalTarget {
 }
 struct DeliveryLease {
     selection: Arc<Selection>,
-    state: Option<DeliveryState>,
+    state: Option<Box<DeliveryState>>,
 }
 impl Drop for DeliveryLease {
     fn drop(&mut self) {
@@ -793,11 +802,13 @@ impl PreparationEndpoint {
                 .delivery
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            match &mut *slot {
-                DeliverySlot::Owned(DeliveryState {
-                    phase: Some(DeliveryPhase::Active { owner, role }),
-                    ..
-                }) if Arc::ptr_eq(owner, expected) => *role = ActiveRole::SessionUnclaimed,
+            let DeliverySlot::Owned(state) = &mut *slot else {
+                return Err(unavailable());
+            };
+            match &mut state.phase {
+                Some(DeliveryPhase::Active { owner, role }) if Arc::ptr_eq(owner, expected) => {
+                    *role = ActiveRole::SessionUnclaimed;
+                }
                 _ => return Err(unavailable()),
             }
         }
@@ -1142,10 +1153,12 @@ mod configured_tenure;
 #[path = "owned_local_side_views.rs"]
 mod side_views;
 
-pub(crate) use side_views::SideViewCheckpoint;
-
 #[path = "retained_image_frontend.rs"]
 mod image_delivery;
 
 #[path = "retained_backend_tenure.rs"]
 mod backend_aggregate; // ALAB(retained-ui): actual open tenure binds backend slots to original service DATA.
+
+#[cfg(test)]
+#[path = "owned_local_managed_policy_tests.rs"]
+mod managed_policy_tests;

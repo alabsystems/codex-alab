@@ -47,7 +47,14 @@ pub(crate) struct KeymapActionFilter {
 }
 
 impl KeymapActionDescriptor {
+    pub(super) fn visible_in_edition(self) -> bool { // ALAB(interface): expose the Autopilot action only in Enhanced.
+        self.action != "open_autopilot" || codex_alab_tui::interface::enabled()
+    }
+
     pub(super) fn is_visible(self, filter: KeymapActionFilter) -> bool {
+        if !self.visible_in_edition() {
+            return false;
+        }
         match self.required_feature {
             None => true,
             Some(KeymapActionFeature::FastMode) => filter.fast_mode_enabled,
@@ -313,6 +320,9 @@ define_keymap_actions! {
         decline => "Decline and provide corrective guidance.",
         cancel => "Cancel an elicitation request.",
     }
+    chat "Chat" {
+        open_autopilot => "Choose Cruise, Land or Off.", // ALAB(interface): append to preserve saved picker indices.
+    }
 }
 
 /// Convert a stable action identifier into a display label.
@@ -321,6 +331,9 @@ define_keymap_actions! {
 /// parsed back into an action name, because underscores and casing are part of
 /// the stable config contract.
 pub(crate) fn action_label(action: &str) -> String {
+    if action == "open_autopilot" { // ALAB(interface): name the picker in its shortcut row.
+        return "Open Autopilot picker".to_string();
+    }
     if action == "change_host" {
         return "Change Where to Run".to_string();
     }
@@ -415,6 +428,7 @@ pub(super) fn matching_actions_for_key_event(
 ) -> Vec<KeymapDebugActionMatch> {
     KEYMAP_ACTIONS
         .iter()
+        .filter(|descriptor| descriptor.visible_in_edition()) // ALAB(interface): keep Vanilla key inspection native.
         .filter_map(|descriptor| {
             let bindings =
                 bindings_for_action(runtime_keymap, descriptor.context, descriptor.action)?;

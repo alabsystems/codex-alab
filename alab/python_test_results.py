@@ -101,7 +101,7 @@ def execute(suite):
     with redirect_stdout(output), redirect_stderr(output):
         result = unittest.TextTestRunner(
             stream=output, verbosity=2, resultclass=NamedResult).run(suite)
-    record = {'schema': 1, 'kind': 'python-unittest-results', 'completed': True,
+    record = {'schema': 1, 'kind': 'python-unittest-results', 'completed': not result.shouldStop,
               'tests_run': result.testsRun, 'tests': result.rows,
               'exit_status': 0 if result.wasSuccessful() else 1, 'output': output.getvalue()}
     try:
@@ -111,17 +111,43 @@ def execute(suite):
     return record
 
 
+def test_ids(suite):
+    for child in suite:
+        if isinstance(child, unittest.TestSuite):
+            yield from test_ids(child)
+        else:
+            yield child.id()
+
+
+def discover(directory, pattern, names):
+    loader = unittest.TestLoader()
+    if names:
+        if (len(names) != len(set(names))
+                or any('.' not in name or not all(part.isidentifier() for part in name.split('.'))
+                       for name in names)):
+            raise ValueError('expected distinct, fully qualified unittest names')
+        loader.testNamePatterns = names
+    suite = loader.discover(str(directory.resolve()), pattern)
+    if names and sorted(test_ids(suite)) != sorted(names):
+        raise ValueError('discovered tests differ from the exact requested names')
+    return suite
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--start-directory', type=Path, required=True)
     parser.add_argument('--pattern', default='test*.py')
     parser.add_argument('--record', type=Path, required=True)
+    parser.add_argument('--tests', nargs='+', help='exact test identities from the selected fixture')
     args = parser.parse_args()
     try:
         # Refuse existing output before discovery or test side effects begin.
         with args.record.open('x') as stream:
-            suite = unittest.TestLoader().discover(str(args.start_directory.resolve()), args.pattern)
+            suite = discover(args.start_directory, args.pattern, args.tests)
             record = execute(suite)
+            if args.tests and sorted(row['id'] for row in record['tests']) != sorted(args.tests):
+                record['exit_status'] = 1
+                record['output'] += '\nExecuted tests differ from the exact requested names.\n'
             json.dump(record, stream, indent=2)
             stream.write('\n')
         sys.stdout.write(record['output'])
@@ -130,7 +156,7 @@ def main():
         if not CLI['successful_exit'](error):
             raise
         return CLI['report_failure']('Python test results: ', error, incomplete=True)
-    except (OSError, ImportError) as error:
+    except (OSError, ImportError, ValueError) as error:
         return CLI['report_failure']('Python test results: ', error)
 
 

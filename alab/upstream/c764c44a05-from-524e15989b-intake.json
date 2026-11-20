@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "base": "524e15989b79039e14d01cd197ed6e6580bd59f2",
+  "target": "c764c44a0559b36e016efefcfeb473966162e5d5",
+  "frontier": "524e15989b79039e14d01cd197ed6e6580bd59f2",
+  "commits": [
+    {
+      "sha": "c764c44a0559b36e016efefcfeb473966162e5d5",
+      "subject": "Let extensions attach metadata to MCP tool requests (#62435)",
+      "paths": [
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/core/tests/suite/scenarios_multi_environment_mcp.rs",
+        "codex-rs/ext/extension-api/src/contributors.rs",
+        "codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs",
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/policy.rs"
+      ],
+      "classes": [
+        "feature",
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Use the upstream MCP request metadata contributor for plugin-scoped data when its inputs and timing fit. Existing contributors default to no change. The persisted result size limit becomes an exported constant with the same value.",
+      "evidence": [
+        "The call builds one context from the prepared MCP registration, including its optional plugin package ID. The request and result callbacks see that context. Existing approval and request preparation precede the metadata contribution.",
+        "Each contributor can add one unique top-level metadata key. A collision fails preparation before the tool request is sent. The existing asynchronous per-thread request hook still owns its separate operation, including call and request identities.",
+        "The upstream integration test configures two executors with same-named servers and inspects their actual MCP calls. Only the selected plugin registration receives x-notes-preview. Other plugin and configuration-backed calls retain their own metadata.",
+        "ALab’s x-alab-task-fork-invocation uses the existing upstream asynchronous per-thread hook. It binds the actual loaded thread, turn and call, checks the selected transport and can refuse obsolete ownership. The new optional contributor receives plugin registration and extension stores. It lacks the per-call identity and asynchronous admission this fork operation needs. The rollout exports and compaction hook also retain distinct jobs."
+      ],
+      "revisit": "Run same_named_executor_mcps_keep_calls_and_approvals_separate and the existing registration-scoping and original-turn fork controls. Reassess the fork adapter if upstream exposes its required per-call identity and asynchronous admission."
+    }
+  ]
+}

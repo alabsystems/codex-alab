@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "base": "6257fbc4bd5339144e6ffb3398a011917d883a2e",
+  "target": "f2d3086682a848e9121c5f688cf1d77ad5d2a114",
+  "frontier": "6257fbc4bd5339144e6ffb3398a011917d883a2e",
+  "commits": [
+    {
+      "sha": "f2d3086682a848e9121c5f688cf1d77ad5d2a114",
+      "subject": "Trace MCP binding capture and tool catalog refresh (#62320)",
+      "paths": [
+        "codex-rs/codex-mcp/src/client_tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/codex-mcp/src/tools.rs"
+      ],
+      "classes": [
+        "telemetry",
+        "refactor"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream tracing to distinguish time spent waiting on MCP startup, active calls, or catalog publication without changing the binding's owner or cache key.",
+      "evidence": [
+        "The binding hit still requires equal stable per-server revisions and a live weak binding on the original published runtime. Only a miss boxes the catalog-capture future. A capture that loses a publication race still records its own miss.",
+        "Refresh retains the order of the single refresher, fetch, active-call exclusion, catalog write lock, validity check and publication. Spans now distinguish those waits and mark startup, preparation, snapshot and normalization. The new spans record operation names and one cache_hit boolean. They omit arguments, catalog contents, credentials and server identities.",
+        "The clean merge at dc247a66f941a3d7db309457c11a8619aaa91a28 retains the fork's account-scoped elicitation router, held connection authority and old-generation retirement. These hooks live outside the new capture and refresh spans.",
+        "The native MCP controls exercise binding identity across unchanged and refreshed catalogs, running and stale prepared calls, publication scoping and retirement of the original account router.",
+        "Nine Trust 15698 MCP unit tests passed on dc247a66f941a3d7db309457c11a8619aaa91a28. They exercised strong binding identity on hits, changed client revisions, ownership across runtime publications, active and stale prepared calls, and removal of old account form permissions. The native test image SHA-256 was 915edeabaa4326ce6495efd2bc0fc72585f6ae93f31efe32205b6709a9f2876e.",
+        "The real app-server from 10c0218162031a2e0c1ef33618b5595882e0082f ran three loopback model turns with a native stdio MCP server. A tool-list notification published an echo tool, and a direct call returned its fixture value. Eight binding and catalog span names appeared. All three capture spans recorded cache_hit=false. The identical ordinary flow on db0afcca2fcfcfc30a34ea9fac3eb9244c6d52e4 emitted none of the new spans.",
+        "Two explicit app/installed refreshes on one loaded thread at 10c0218162031a2e0c1ef33618b5595882e0082f published both successive callable connector names from a loopback Apps MCP service. Each refresh emitted client readiness, refresh lock, fetch, active-call wait, publication lock and publish spans. An ordinary server's tool-list notification takes the separate refresh_after_notifications path. The CLI SHA-256 was eb0b4ba9b34b9e676e246d48aa6ef153cff0fa918ab7e1e071f4c9b7f4010790."
+      ],
+      "revisit": "Recheck cache hit and miss identity, authorization of active and stale calls, and scoped router retirement if the publication lock or catalog owner changes."
+    }
+  ]
+}

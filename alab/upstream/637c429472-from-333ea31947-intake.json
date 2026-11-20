@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "base": "333ea3194740c2e19edb215e7c8867170e013e13",
+  "target": "637c42947236017bc78da59d1a22916400ccae63",
+  "frontier": "333ea3194740c2e19edb215e7c8867170e013e13",
+  "commits": [
+    {
+      "sha": "637c42947236017bc78da59d1a22916400ccae63",
+      "subject": "Enable lazy startup for stdio MCP servers by default (#62366)",
+      "paths": [
+        "codex-rs/core/tests/suite/code_mode.rs",
+        "codex-rs/core/tests/suite/mcp_tool_cache.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs",
+        "codex-rs/features/src/lib.rs"
+      ],
+      "classes": [
+        "defaults",
+        "feature",
+        "background"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the stable upstream default for cached stdio MCP servers. A new chat can list cached tools without launching another optional process. Its first tool call starts the server. The explicit eager setting stays available.",
+      "evidence": [
+        "The feature registry changes McpLazyStdioStartup from under development and disabled to stable and enabled. ALab has no packaged override. The earlier review of af9a98b074 kept the then-experimental flag opt-in.",
+        "Session startup selects DeferCachedStdio for an ordinary chat. The connection manager requires a matching usable catalog with an allowed tool, skips selected plugin servers, and keeps explicit reconnect eager. Required servers with live readiness still start eagerly. A required server configured for catalog readiness opts into deferral. Non-stdio transports keep their ordinary startup behavior.",
+        "The three changed test files exercise the default on a warm catalog, explicitly disable it for the eager PID control, and remove waits for optional processes in configured-identity and fallback-cwd cases. The existing scoped catalog and account-aware connection pool still determine reuse. The patch changes no live process transfer, model resolution, signed-update path or wire format."
+      ],
+      "revisit": "Run cached_stdio_stays_dormant_in_a_new_chat_until_first_use, code_mode_excludes_mcp_servers_using_their_configured_identity, and local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd against the merged source to qualify the default, eager override and first call."
+    }
+  ]
+}

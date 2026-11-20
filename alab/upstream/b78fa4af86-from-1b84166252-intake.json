@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "base": "1b84166252b6ecfd36be9e12c29ac01454a30d7e",
+  "target": "b78fa4af8636859f4acc4d57420e41e923c84cdd",
+  "frontier": "1b84166252b6ecfd36be9e12c29ac01454a30d7e",
+  "commits": [
+    {
+      "sha": "8e1fc8e0592c850d3adeeba7ba7355947540617e",
+      "subject": "Route turn and response checkpoints through the rollout budget policy (#62190)",
+      "paths": [
+        "codex-rs/core/Cargo.toml",
+        "codex-rs/core/src/rollout_budget.rs",
+        "codex-rs/core/src/rollout_budget/work_gate.rs",
+        "codex-rs/core/src/session/rollout_budget.rs",
+        "codex-rs/core/src/session/turn.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "exec-handoff",
+        "execution-continuity"
+      ],
+      "decision": "adopt",
+      "reason": "Carry the rollout-budget checkpoint refactor in chronological order. Preserve ALab input custody before per-input hooks, exact provider charge accounting, and the current cancellation decision after both tool draining and accounting.",
+      "evidence": [
+        "Reviewed the complete parent-to-commit patch, SHA-256 4fa1cf9053fa89fc64cfa82e2c816c116204f5dc1d5597f87f66f530b83f857c.",
+        "The existing shared stop latch remains a OnceLock and the post-sampling acceptance still checks it. The new retry, compaction, after-stop, error, and charge extension methods are inert in this commit. The retained input checkpoint sits outside the changed turn hunks."
+      ],
+      "revisit": "Run the exact integrated sampling charge, cancellation after billing, accepted-mail custody, and retained additional-context checks once this commit enters the chronological source integration."
+    },
+    {
+      "sha": "b78fa4af8636859f4acc4d57420e41e923c84cdd",
+      "subject": "Distinguish Windows sandbox provisioning timeouts and pipe closures (#62192)",
+      "paths": [
+        "codex-rs/cli/src/doctor/sandbox.rs",
+        "codex-rs/windows-sandbox-rs/src/provisioning_client.rs",
+        "codex-rs/windows-sandbox-rs/src/provisioning_client_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/setup_error.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Keep registered Windows Core provisioning fail-closed. Distinguish a transport deadline from an early pipe close while retaining ordinary provisioning's existing fallback behavior.",
+      "evidence": [
+        "Reviewed the complete parent-to-commit patch, SHA-256 d10df16af4d00b6ec2439d756609c19f7b7da49031a35f39f3a2b4464735dcb1. All four touched files are byte-identical to this commit's parent on ALab main 09c2a831e3.",
+        "The registered_core value comes from the request payload and matched transport errors retain their underlying cause. Unix sandbox paths, named-pipe authentication, and workload credential routing are untouched."
+      ],
+      "revisit": "Run registered_setup_retains_the_transport_cause_for_metrics and workload_identity_selects_helper_fallback_except_for_registered_core on qualified Windows. This Mac did not execute the Windows tests."
+    }
+  ]
+}

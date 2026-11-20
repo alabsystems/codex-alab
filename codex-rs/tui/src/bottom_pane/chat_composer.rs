@@ -181,6 +181,7 @@
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
 //! intact until reconnection succeeds, except for `/warnings`, `/config`, `/quit`, and `/exit`.
+//! ALAB(interface): the Enhanced conversation also accepts a fresh local `/alab menu` submission.
 //! When connected but the thread is unavailable, configured
 //! submit keys may dispatch explicitly allowed recovery and local commands; other drafts stay put.
 //! Empty-prompt agents navigation remains available with its usual editor and draft guards.
@@ -413,6 +414,7 @@ mod passive_hints;
 mod paste_input;
 mod popup_state;
 mod reconnect;
+#[path = "../../../alab-tui/glue/disconnected_autopilot_command.rs"] mod alab_disconnected_autopilot; // ALAB(interface): validate the local menu through the native slash parser before restricted editing.
 pub(crate) use reconnect::RestrictedInputMode;
 mod slash_input;
 mod sparkle;
@@ -817,6 +819,7 @@ impl ChatComposer {
                 )
                 .map(ShortcutHint::from),
                 queue_key: default_keymap.primary_hint(KeymapContext::Composer, "queue"),
+                open_autopilot_key: default_keymap.primary_hint(KeymapContext::Chat, "open_autopilot"), // ALAB(interface): resolve the picker hint on startup.
                 toggle_shortcuts_key: default_keymap
                     .primary_hint(KeymapContext::Composer, "toggle_shortcuts"),
                 history_search_key: default_keymap
@@ -1104,6 +1107,7 @@ impl ChatComposer {
         self.footer.external_editor_key =
             keymap.primary_hint(KeymapContext::Global, "open_external_editor");
         self.footer.show_warnings_key = keymap.primary_hint(KeymapContext::Global, "open_warnings");
+        self.footer.open_autopilot_key = keymap.primary_hint(KeymapContext::Chat, "open_autopilot"); // ALAB(interface): refresh the reference when a binding changes.
         self.footer.show_transcript_key =
             keymap.primary_hint(KeymapContext::Global, "open_transcript");
         self.footer.find_transcript_key =
@@ -11844,13 +11848,13 @@ mod tests {
         composer
             .draft
             .textarea
-            .set_text_clearing_elements("/Users/example/project/src/main.rs");
+            .set_text_clearing_elements("/repos/example/project/src/main.rs");
 
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         if let InputResult::Submitted { text, .. } = result {
-            assert_eq!(text, "/Users/example/project/src/main.rs");
+            assert_eq!(text, "/repos/example/project/src/main.rs");
         } else {
             panic!("expected Submitted");
         }

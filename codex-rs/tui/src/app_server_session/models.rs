@@ -16,12 +16,10 @@ use uuid::Uuid;
 
 impl AppServerSession {
     pub(crate) fn set_available_models(&mut self, models: Vec<ModelPreset>) {
-        if let Some(default) = models
-            .iter()
-            .find(|model| model.is_default)
-            .or(models.first())
-        {
+        if let Some(default) = super::Config::alab_advertised_default(&models) { // ALAB(defaults): consume the serving backend's advertised default.
             self.default_model = Some(default.model.clone());
+        } else if codex_alab_core::active() {
+            self.default_model = None;
         }
         self.available_models = models;
     }

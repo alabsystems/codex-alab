@@ -11,17 +11,47 @@ use chrono::Local;
 use codex_alab_tui::interface;
 use codex_alab_tui::quota;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
+use codex_app_server_protocol::RateLimitResetCredit;
 use codex_app_server_protocol::RateLimitResetCreditStatus;
 use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitResetType;
 use std::collections::BTreeSet;
 
+#[path = "thread_credit_usage.rs"]
+mod thread_credit_usage;
+
 const EXPIRING_SOON_SECONDS: i64 = 24 * 60 * 60;
 const STALE_SECONDS: i64 = 15 * 60;
+
+fn reset_read_fresh(observed_at: Option<i64>, now: i64) -> bool {
+    observed_at.is_some_and(|captured| (0..=STALE_SECONDS).contains(&now.saturating_sub(captured)))
+}
+
+fn reported_reset_count(summary: &RateLimitResetCreditsSummary) -> usize {
+    usize::try_from(summary.available_count.max(0)).unwrap_or(usize::MAX)
+}
+
+fn available_reset_rows(
+    summary: &RateLimitResetCreditsSummary,
+) -> impl Iterator<Item = &RateLimitResetCredit> {
+    let mut seen = BTreeSet::new();
+    summary
+        .credits
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(move |credit| {
+            credit.status == RateLimitResetCreditStatus::Available
+                && credit.reset_type == RateLimitResetType::CodexRateLimits
+                && seen.insert(&credit.id)
+        })
+        .take(reported_reset_count(summary))
+}
 
 #[derive(Default)]
 pub(super) struct State {
     account: Option<String>,
+    thread_credits: thread_credit_usage::State,
     pub(super) observed_plan: Option<codex_protocol::account::PlanType>,
     pub(super) weekly: Option<quota::Weekly>,
     accepted_history: quota::History,
@@ -46,17 +76,10 @@ impl State {
             .zip(incoming)
             .is_some_and(|(old, new)| old.available_count != new.available_count);
         let expired_details = incoming.is_some_and(|summary| summary.credits.is_none())
-            && self
-                .reset_credits
-                .as_ref()
-                .and_then(|summary| summary.credits.as_deref())
-                .is_some_and(|credits| {
-                    credits.iter().any(|credit| {
-                        credit.status == RateLimitResetCreditStatus::Available
-                            && credit.reset_type == RateLimitResetType::CodexRateLimits
-                            && credit.expires_at.is_some_and(|expiry| expiry <= now)
-                    })
-                });
+            && self.reset_credits.as_ref().is_some_and(|summary| {
+                available_reset_rows(summary)
+                    .any(|credit| credit.expires_at.is_some_and(|expiry| expiry <= now))
+            });
         let details_changed = count_changed || expired_details;
         if details_changed {
             self.reset_details_attempted_at = None;
@@ -84,13 +107,17 @@ impl State {
         }
     }
 
-    fn details_fresh(&self, now: i64) -> bool {
-        self.reset_details_observed_at
-            .is_some_and(|captured| (0..=STALE_SECONDS).contains(&now.saturating_sub(captured)))
-    }
-
     fn request_details(&mut self, now: i64) -> bool {
         let explicit = std::mem::take(&mut self.inspector_requested_details);
+        if !explicit
+            && reset_read_fresh(self.resets_observed_at, now)
+            && self
+                .reset_credits
+                .as_ref()
+                .is_some_and(|summary| summary.available_count == 0)
+        {
+            return false;
+        }
         let due = self
             .reset_details_attempted_at
             .is_none_or(|attempt| !(0..STALE_SECONDS).contains(&now.saturating_sub(attempt)));
@@ -114,21 +141,10 @@ impl State {
         clock: crate::clock_format::ClockFormat,
     ) -> Option<interface::ResetCredits> {
         let summary = self.reset_credits.as_ref()?;
-        let reported = usize::try_from(summary.available_count.max(0)).unwrap_or(usize::MAX);
-        let details_fresh = self.details_fresh(now);
-        let mut seen = BTreeSet::new();
+        let reported = reported_reset_count(summary);
+        let details_fresh = reset_read_fresh(self.reset_details_observed_at, now);
         let mut known_count = 0;
-        let expiries: Vec<i64> = summary
-            .credits
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|credit| {
-                credit.status == RateLimitResetCreditStatus::Available
-                    && credit.reset_type == RateLimitResetType::CodexRateLimits
-                    && seen.insert(&credit.id)
-            })
-            .take(reported)
+        let expiries: Vec<i64> = available_reset_rows(summary)
             .filter_map(|credit| {
                 known_count += 1;
                 credit.expires_at
@@ -162,9 +178,7 @@ impl State {
             expiring_count,
             expired_count,
             next_expiry,
-            stale: self.resets_observed_at.is_none_or(|captured| {
-                !(0..=STALE_SECONDS).contains(&now.saturating_sub(captured))
-            }),
+            stale: !reset_read_fresh(self.resets_observed_at, now),
             // The backend may cap its detail list. Returned deadlines remain
             // useful, but cannot identify the next expiry among unreturned rows.
             details_known: details_fresh && summary.credits.is_some() && known_count == reported,
@@ -174,19 +188,14 @@ impl State {
     pub(super) fn next_reset_change(&self, now: i64) -> Option<i64> {
         let summary = self.reset_credits.as_ref()?;
         let stale_at = self.resets_observed_at?.saturating_add(STALE_SECONDS + 1);
+        if summary.available_count == 0 {
+            return (stale_at > now).then_some(stale_at);
+        }
         let details_stale_at = self
             .reset_details_observed_at
             .map(|captured| captured.saturating_add(STALE_SECONDS + 1));
-        let details_fresh = self.details_fresh(now);
-        let expiry_changes = summary
-            .credits
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|credit| {
-                credit.status == RateLimitResetCreditStatus::Available
-                    && credit.reset_type == RateLimitResetType::CodexRateLimits
-            })
+        let details_fresh = reset_read_fresh(self.reset_details_observed_at, now);
+        let expiry_changes = available_reset_rows(summary)
             .filter_map(|credit| credit.expires_at)
             .flat_map(|expiry| {
                 [
@@ -378,6 +387,9 @@ impl ChatWidget {
                 // model catalog without opening a picker or selecting a different model.
                 self.refresh_account_scoped_models();
             }
+        }
+        if let (Some(account), Some(snapshot)) = (account_id, snapshot.as_ref()) {
+            self.alab_check_thread_credits(account, snapshot);
         }
         let weekly = snapshot.as_ref().and_then(|snapshot| {
             [&snapshot.primary, &snapshot.secondary]

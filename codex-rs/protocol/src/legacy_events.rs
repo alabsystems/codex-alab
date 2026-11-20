@@ -239,8 +239,10 @@ impl CommandExecutionItem {
             source: self.source,
             interaction_input: self.interaction_input.clone(),
             aggregated_output: self.aggregated_output.clone().unwrap_or_default(),
-            exit_code: self.exit_code.unwrap_or_default(),
+            exit_code: self.legacy_exit_integer(), // ALAB(shell-output): honor the required integer for existing raw listeners.
+            exit_code_unavailable: self.exit_code.is_none(), // ALAB(shell-output): preserve exactly whether the canonical result had a code.
             duration: self.duration.unwrap_or_default(),
+            duration_unavailable: self.duration.is_none(), // ALAB(shell-output): retain the presence of the canonical measurement.
             status,
         }))
     }

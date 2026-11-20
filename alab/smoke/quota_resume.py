@@ -18,6 +18,7 @@ import time
 import capacity_exec as probe
 
 SEED = "Create a persisted thread for quota recovery."
+MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 
 class Rpc:
@@ -32,35 +33,53 @@ class Rpc:
         self.process.stdin.write((json.dumps(value) + "\n").encode())
         self.process.stdin.flush()
 
-    def wait(self, matches):
-        end = time.monotonic() + 60
+    def wait(self, matches, *, timeout=60):
+        value = self.poll(matches, timeout)
+        probe.require(value is not None, "app-server protocol deadline expired")
+        return value
+
+    def poll(self, matches, timeout):
+        """Take the next matching message, or return None after the observation window."""
+        end = time.monotonic() + timeout
+        for index, value in enumerate(self.pending):
+            if matches(value):
+                return self.pending.pop(index)
         while True:
-            for index, value in enumerate(self.pending):
-                if matches(value):
-                    return self.pending.pop(index)
+            # Deliver messages in wire order even when one read contains several.
+            while b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                probe.require(len(line) <= MAX_FRAME_BYTES, "oversized app-server frame")
+                if line.strip():
+                    value = json.loads(line.decode("utf-8"))
+                    probe.require(isinstance(value, dict), "app-server message must be a JSON object")
+                    if matches(value):
+                        return value
+                    self.pending.append(value)
+                    probe.require(len(self.pending) <= 10000, "unbounded app-server notifications")
+            probe.require(len(self.buffer) <= MAX_FRAME_BYTES, "oversized app-server frame")
             remaining = end - time.monotonic()
-            probe.require(remaining > 0, "app-server protocol deadline expired")
+            if remaining <= 0:
+                return None
             ready, _, _ = select.select([self.process.stdout], [], [], min(remaining, 1))
             if not ready:
                 continue
             data = os.read(self.process.stdout.fileno(), 65536)
-            probe.require(bool(data), "app-server exited before its protocol reply")
-            self.output.write(data)
-            self.output.flush()
-            self.buffer += data
-            probe.require(len(self.buffer) <= 8 * 1024 * 1024, "oversized app-server frame")
-            while b"\n" in self.buffer:
-                line, self.buffer = self.buffer.split(b"\n", 1)
-                if line.strip():
-                    self.pending.append(json.loads(line))
-            probe.require(len(self.pending) <= 10000, "unbounded app-server notifications")
+            if data:
+                self.output.write(data)
+                self.output.flush()
+                self.buffer += data
+            else:
+                if not self.buffer.strip():
+                    raise probe.MissingProtocolReply("app-server exited before its protocol reply")
+                # EOF delimits the last JSONL record. Keep the captured bytes exact.
+                self.buffer += b"\n"
 
-    def request(self, method, params):
+    def request(self, method, params, *, timeout=60):
         self.request_id += 1
         request_id = self.request_id
         self.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         reply = self.wait(lambda value: value.get("id") == request_id
-                          and ("result" in value or "error" in value))
+                          and ("result" in value or "error" in value), timeout=timeout)
         probe.require("error" not in reply, f"{method} failed: {reply.get('error')}")
         return reply["result"]
 
@@ -71,12 +90,16 @@ class Rpc:
         })
         self.send({"jsonrpc": "2.0", "method": "initialized"})
 
-    def turn(self, thread_id, prompt):
-        self.request("turn/start", {
+    def turn(self, thread_id, prompt, *, completion_timeout=60):
+        started = self.request("turn/start", {
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt, "text_elements": []}],
         })
-        return self.wait(lambda value: value.get("method") == "turn/completed")["params"]["turn"]
+        turn_id = started["turn"]["id"]
+        return self.wait(lambda value: value.get("method") == "turn/completed"
+                         and value["params"]["threadId"] == thread_id
+                         and value["params"]["turn"]["id"] == turn_id,
+                         timeout=completion_timeout)["params"]["turn"]
 
 
 class ResumeMock(probe.Mock):

@@ -85,8 +85,8 @@ impl UnifiedExecProcessManager {
                             process.cancellation_token().cancel();
                             let _ = execution.await;
                         } else {
-                            drop(execution);
                             manager.release_process_id(process_id).await;
+                            drop(execution); // ALAB(shell-invocation): release while the original request still owns its number.
                         }
                         return (
                             Err(UnifiedExecError::process_failed("command cancelled".into())),

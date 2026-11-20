@@ -2,6 +2,11 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[path = "../../../alab-core/glue/retained_side_view_wire_tests.rs"]
+mod retained_side_view_wire_tests; // ALAB(side-boundary): exercise replacement lookups through the real WebSocket client.
+#[path = "../../../alab-core/glue/saved_resume_wire_tests.rs"]
+mod saved_resume_wire_tests; // ALAB(retained-ui): distinguish an original saved resume from its preparation.
+
 #[tokio::test]
 async fn remote_reply_handles_keep_original_connection() {
     let mut clients = Vec::new();

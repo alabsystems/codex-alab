@@ -1,3 +1,4 @@
+#[path = "../../alab-core/glue/aws_local_catalog_region.rs"] pub mod alab_local_catalog_region; // ALAB(defaults): query only the SDK region sources available to a static catalog.
 mod config;
 mod discovery;
 mod signing;

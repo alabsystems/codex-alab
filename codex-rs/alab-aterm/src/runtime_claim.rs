@@ -18,6 +18,31 @@ pub(crate) struct Receipt {
     pub(crate) build: u64,
 }
 impl Receipt {
+    /// Read one identity-bound state. A settlement observation never counts as adoption.
+    pub(crate) fn state<'a>(&self, status: &'a str) -> Option<&'a str> {
+        if status.len() > 4096 {
+            return None;
+        }
+        let mut fields = BTreeMap::new();
+        for word in status
+            .strip_prefix("OK native source-exec ")?
+            .split_ascii_whitespace()
+        {
+            let (key, value) = word.split_once('=')?;
+            if value.is_empty() || fields.insert(key, value).is_some() {
+                return None;
+            }
+        }
+        if fields.len() != 4
+            || fields.get("operation").copied() != Some(self.operation.as_str())
+            || fields.get("primary").copied() != Some(self.primary.as_str())
+            || fields.get("build").copied() != Some(self.build.to_string().as_str())
+        {
+            return None;
+        }
+        fields.get("state").copied()
+    }
+
     pub(crate) async fn check(&self, client: &Client) -> Result<bool, Error> {
         let result = tokio::time::timeout(crate::client::CLAIM_TIMEOUT, async {
             loop {
@@ -48,29 +73,7 @@ impl Receipt {
         if reply.is_err() {
             return Err(crate::conn::refusal(reply.status));
         }
-        if reply.status.len() > 4096 {
-            return Ok(Some(false));
-        }
-        let Some(body) = reply.status.strip_prefix("OK native source-exec ") else {
-            return Ok(Some(false));
-        };
-        let mut fields = BTreeMap::new();
-        for word in body.split_ascii_whitespace() {
-            let Some((key, value)) = word.split_once('=') else {
-                return Ok(Some(false));
-            };
-            if value.is_empty() || fields.insert(key, value).is_some() {
-                return Ok(Some(false));
-            }
-        }
-        if fields.len() != 4
-            || fields.get("operation").copied() != Some(self.operation.as_str())
-            || fields.get("primary").copied() != Some(self.primary.as_str())
-            || fields.get("build").copied() != Some(self.build.to_string().as_str())
-        {
-            return Ok(Some(false));
-        }
-        Ok(match fields.get("state").copied() {
+        Ok(match self.state(&reply.status) {
             Some("adopted") => Some(true),
             Some("waiting") => None,
             _ => Some(false),
@@ -92,7 +95,7 @@ pub(crate) fn publish(endpoint: &Endpoint, receipt: Receipt) {
     }));
 }
 
-/// Wait for settlement on the actual SDK stream, then connect independently.
+/// Wait for native confirmation of SDK settlement, then connect independently.
 /// The receipt identifies a native operation; it never grants this socket a claim.
 pub(crate) async fn settled_client(endpoint: Endpoint, options: Options) -> Result<Client, Error> {
     let mut ready = SETTLED.subscribe();

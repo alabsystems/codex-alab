@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "6271f35f527bf7709b9af5e4e752e9f122706a17",
+  "target": "d52a39b307b77e81cd272d08189341d944542b82",
+  "frontier": "6271f35f527bf7709b9af5e4e752e9f122706a17",
+  "commits": [
+    {
+      "sha": "d52a39b307b77e81cd272d08189341d944542b82",
+      "subject": "Honor elastic budgets for attached Guardian reviews (#62489)",
+      "paths": [
+        "codex-rs/core/src/guardian/attached_review.rs",
+        "codex-rs/guardian-context/src/composition.rs",
+        "codex-rs/guardian-context/src/composition_tests.rs",
+        "codex-rs/guardian-context/src/preparation/mod.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the attached reviewer's configured fixed or elastic budget when composing a pending action and carry its elastic configuration through final admission.",
+      "evidence": [
+        "The attached reviewer in core/src/guardian/attached_review.rs now passes spawn_config.guardian_context_budgeting() into ComposedContext::for_pending_action and carries guardian_sync_elastic_budget into PendingReviewContext. The four changed source paths have identical blobs on the prior upstream and fork revisions.",
+        "The fixed composition control checks an encrypted call and its evidence-only output verbatim. The elastic control supplies a call too large for fixed native-tool evidence, expects final refusal at the smaller request budget, and requires the exact call to survive admission at the larger budget.",
+        "The change uses the reviewer's existing policy and preserves the fixed path. It introduces no default configuration, protocol, account ownership or publishing change."
+      ],
+      "revisit": "Execute both pending-action composition controls on the merged source, run the Guardian context library and inspect the attached-review call site against upstream."
+    }
+  ]
+}

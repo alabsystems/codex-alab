@@ -9,8 +9,50 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 pub type Authorization = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Core reserves an order for each accepted user input. A steer supersedes earlier
+/// input immediately, even while the model is still responding to that input.
+#[derive(Default)]
+pub struct TurnInputOrder {
+    latest_steer: AtomicU64,
+    recorded: Mutex<Option<u64>>,
+}
+
+impl TurnInputOrder {
+    pub fn accept_steer(&self, order: u64) {
+        self.latest_steer.fetch_max(order, Ordering::SeqCst);
+    }
+
+    pub fn record(&self, order: Option<u64>) {
+        *self.recorded.lock().unwrap_or_else(PoisonError::into_inner) = order;
+    }
+
+    pub fn recorded_input(self: &Arc<Self>) -> Option<RecordedInput> {
+        let order = (*self.recorded.lock().unwrap_or_else(PoisonError::into_inner))?;
+        Some(RecordedInput {
+            turn: Arc::clone(self),
+            order,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct RecordedInput {
+    turn: Arc<TurnInputOrder>,
+    order: u64,
+}
+
+impl RecordedInput {
+    pub fn current(&self) -> bool {
+        self.turn.latest_steer.load(Ordering::SeqCst) <= self.order
+    }
+}
 
 tokio::task_local! {
     static AUTHORIZATION: Authorization;

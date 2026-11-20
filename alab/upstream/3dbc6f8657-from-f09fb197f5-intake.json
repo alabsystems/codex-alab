@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "base": "f09fb197f517acb3052ae3976a7fc3b5a5a8897d",
+  "target": "3dbc6f86570ec10aaf1df2b1011912d47274622b",
+  "frontier": "f09fb197f517acb3052ae3976a7fc3b5a5a8897d",
+  "commits": [
+    {
+      "sha": "3dbc6f86570ec10aaf1df2b1011912d47274622b",
+      "subject": "Keep the TUI composer caret anchored while typing (#62174)",
+      "paths": [
+        "codex-rs/tui/src/app/owned_transcript_follow_tests.rs",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__input_tests__escape_returns_to_latest.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__input_tests__raw_paste_burst_render.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__tests__fullscreen_composer_right_click_copy.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__tests__owned_transcript_composer_gap.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__warnings_tests__warnings_page.snap",
+        "codex-rs/tui/src/app/snapshots/codex_tui__app__warnings_tests__warnings_partial_dismissal.snap",
+        "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__background_task_defaults_tests__command_center_new_draft_handoff.snap",
+        "codex-rs/tui/src/app/warning_notice_tests.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/composer_layout.rs",
+        "codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__status_surface__tests__slash_popup_footer_wide.snap",
+        "codex-rs/tui/src/bottom_pane/chat_composer/status_surface_tests.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__app__tests__hide_and_reopen_side_conversation.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "qualification-fixtures"
+      ],
+      "decision": "adapt",
+      "reason": "Preserve the composer caret row across typing transitions while fitting the terminal-specific footer and retained composer presentation.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 f9477fef95ee7d34c0f51b6a7e5cee4367a5f55e34e90ae57d596d5afbdabd3e.",
+        "The shared row solver reserves one passive hint row when the status line has spare room after input and previews. Attachments and dialog backdrops keep their existing allocation. The caret test covers the empty, typed, and deleted states, and the constrained slash popup test keeps command suggestions visible with a short status line.",
+        "The patch also updates fixed-height snapshots for transcript, startup, warning, and Side layouts. Confirm ALab footer extensions and retained geometry through the same row allocator when importing this source."
+      ],
+      "revisit": "Run the caret test at the protected terminal geometry, including ALab footer modes, raw-paste batching and retained Side transcript focus."
+    }
+  ]
+}

@@ -22,6 +22,7 @@ decodes through the real client, in the gate.
 """
 
 import argparse
+from collections import Counter
 import http.server
 import ipaddress
 import json
@@ -69,6 +70,605 @@ class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
             raise ValueError("fixture server requires a numeric loopback address")
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
+
+
+def check_capacity_header(failed, seconds):
+    advice = failed.get("retryAfter")
+    if "retryAfter" not in failed or type(advice) is not type(seconds) or advice != seconds:
+        expected = "without Retry-After" if seconds is None else f"with Retry-After {seconds}"
+        raise ValueError(f"expected a capacity response {expected}")
+    extra = failed.get("responseHeaders", {})
+    if not isinstance(extra, dict) or any(name.lower() == "retry-after" for name in extra):
+        raise ValueError("capacity response requires valid headers without a Retry-After override")
+
+
+def retry_after_delay(overload, retry, seconds, *, attempt=None, frame_delay=None):
+    """Measure from the headers or failure frame that supplied the advice.
+
+    The provider brackets the write that carries the advice. A frame_delay
+    also requires that the failure frame was sent that long after the headers.
+    Handler entry is server-observed arrival, not a TCP wire-time measurement.
+    """
+    if not isinstance(overload, dict) or not isinstance(retry, dict):
+        raise ValueError("missing or invalid Retry-After timing")
+    clock = "Retry-After"
+    # An ordinary provider deadline has no capacity attempt counter.
+    local_floor = 0
+    if attempt is not None or seconds is None:
+        local_floor = local_backoff_upper(attempt or 1) / 2
+    local_wait = seconds is None or seconds < local_floor
+    if local_wait or (attempt is not None and frame_delay is None):
+        check_capacity_header(overload, seconds)
+    if local_wait:
+        # Even a positive provider interval cannot shorten the local capacity wait.
+        if overload.get("status") != 503:
+            raise ValueError("local capacity backoff requires a 503 response")
+        seconds = local_floor
+        clock = "local capacity backoff"
+    start, header, request = overload.get("headerStartedAt"), overload.get("headerAt"), retry.get("requestStartedAt")
+    if not all(type(v) in (int, float) and abs(v) <= sys.float_info.max for v in (start, header, request)):
+        raise ValueError("missing or invalid Retry-After timing")
+    if "requestStartedAt" in overload:
+        arrival = overload["requestStartedAt"]
+        if type(arrival) not in (int, float) or not -sys.float_info.max <= arrival <= start:
+            raise ValueError("Retry-After headers precede their request or its arrival is invalid")
+    end, origin = header, "headers"
+    if frame_delay is not None:
+        frame = overload.get("failureFrameStartedAt")
+        end = overload.get("failureFrameFlushedAt")
+        if (type(frame) not in (int, float) or type(end) not in (int, float)
+                or start > header or not header + frame_delay <= frame <= end <= request):
+            raise ValueError("missing or invalid delayed failure frame timing")
+        start, origin = frame, "failure frame"
+    emission = end - start
+    if not 0 <= emission <= 0.050:
+        raise ValueError(f"Retry-After timing inconclusive: emission of {origin} took {emission:.6f}s")
+    delay = request - end
+    if request < math.nextafter(start + seconds, -math.inf):
+        raise ValueError(f"{clock} bypassed: {delay:.6f}s after {origin}")
+    return delay
+
+
+PROMPT = "Keep this headless capacity smoke task and its completed plan."
+CALL_ID = "capacity-smoke-plan"
+PLAN = "Completed work survives a capacity retry"
+
+# ResponseItem's native work tags; unrelated history metadata is not tool work.
+TOOL_CALL_TYPES = frozenset(("function_call", "custom_tool_call", "local_shell_call",
+                             "tool_search_call", "web_search_call", "image_generation_call"))
+TOOL_OUTPUT_TYPES = frozenset(("function_call_output", "custom_tool_call_output", "tool_search_output"))
+
+
+def plan_call():
+    return {"type": "function_call", "call_id": CALL_ID, "name": "update_plan",
+            "arguments": json.dumps({"plan": [{"step": PLAN, "status": "completed"}]})}
+
+
+def completed_plan_records(history):
+    """Require the single ordered tool call and result issued by this fixture."""
+    calls = [item for item in history if item.get("type") in TOOL_CALL_TYPES]
+    _require(len(calls) == 1 and calls[0].get("type") == "function_call"
+             and calls[0].get("call_id") == CALL_ID
+             and calls[0].get("name") == "update_plan"
+             and calls[0].get("namespace") in (None, "", "functions"),
+             "completed plan call is missing, duplicated or changed")
+    # History retains the fixture's raw argument string, not a re-encoded view.
+    # Equality between two requests alone cannot prove that the first kept it.
+    _require(calls[0].get("arguments") == plan_call()["arguments"],
+             "completed plan call arguments differ from the fixture")
+    outputs = [item for item in history if item.get("type") in TOOL_OUTPUT_TYPES]
+    _require(len(outputs) == 1 and outputs[0].get("type") == "function_call_output"
+             and outputs[0].get("call_id") == CALL_ID
+             and outputs[0].get("name") in (None, "update_plan")
+             and outputs[0].get("namespace") in (None, "", "functions"),
+             "completed plan output is missing, duplicated or changed")
+    _require(outputs[0].get("output") == "Plan updated",
+             "completed plan output does not record the successful update")
+    _require(history.index(calls[0]) < history.index(outputs[0]),
+             "completed plan result precedes its call")
+    return [calls[0], outputs[0]]
+
+
+def user_message_texts(inputs):
+    """Decode the plain and structured user messages in a text-only smoke request."""
+    texts = []
+    _require(isinstance(inputs, list), "expected a request input list")
+    for item in inputs:
+        _require(isinstance(item, dict), "unexpected request input item")
+        if item.get("role") != "user":
+            continue
+        _require(item.get("type", "message") == "message", "unexpected user item in request input")
+        content = item.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+            continue
+        _require(isinstance(content, list) and content, "missing user message content in request input")
+        for part in content:
+            _require(isinstance(part, dict) and part.get("type") == "input_text"
+                     and isinstance(part.get("text"), str), "unexpected user content in request input")
+            texts.append(part["text"])
+    return texts
+
+
+def check_capacity_request_identity(events, posts, model, *, handshake=None):
+    """Bind every sampling POST to the exec thread and its original foreground turn."""
+    threads = [(index, event.get("thread_id")) for index, event in enumerate(events)
+               if event.get("type") == "thread.started"]
+    if len(threads) != 1:
+        raise ValueError("expected one exec thread for capacity recovery")
+    index, thread = threads[0]
+    if not isinstance(thread, str) or not thread:
+        raise ValueError("expected one exec thread for capacity recovery")
+    if any(event.get("type") == "turn.started" for event in events[:index]):
+        raise ValueError("exec thread started after its capacity recovery turn")
+    turn = handshake["turnId"] if handshake is not None else None
+    if handshake is not None and handshake["threadId"] != thread:
+        raise ValueError("capacity handshake belongs to another exec thread")
+    for post in posts:
+        body = post.get("body") if isinstance(post, dict) else None
+        if not isinstance(body, dict) or body.get("model") != model:
+            raise ValueError("capacity request did not use the configured model")
+        metadata = body.get("client_metadata")
+        encoded = metadata.get("x-codex-turn-metadata") if isinstance(metadata, dict) else None
+        meta = json.loads(encoded) if isinstance(encoded, str) else None
+        if (not isinstance(meta, dict) or meta.get("request_kind") != "turn" or meta.get("thread_id") != thread
+                or not isinstance(meta.get("turn_id"), str) or not meta["turn_id"]):
+            raise ValueError("capacity request lacks the original exec thread and turn identity")
+        if turn is None:
+            turn = meta["turn_id"]
+        if meta["turn_id"] != turn:
+            raise ValueError("capacity request changed turns")
+    return thread, turn
+
+
+def attributed_context(origin):
+    """Recognize non-user provenance from current and legacy ContentItemMetadata."""
+    _require(isinstance(origin, dict), "invalid user content attribution")
+    namespace = origin.get("source_tool_namespace")
+    injected = origin.get("harness_injected")
+    _require((namespace is None or isinstance(namespace, str)) and
+             (injected is None or isinstance(injected, bool)), "invalid legacy user content attribution")
+    provenance = origin.get("provenance")
+    if provenance is None:
+        return namespace is not None or injected is True
+    _require(isinstance(provenance, dict) and isinstance(provenance.get("type"), str),
+             "invalid user content provenance")
+    source = provenance["type"]
+    if source == "harness":
+        _require(isinstance(provenance.get("hook", False), bool), "invalid harness provenance")
+    elif source == "developer_instructions":
+        _require(isinstance(provenance.get("from_additional_requirements"), bool), "invalid developer provenance")
+    elif source == "tool":
+        namespace = provenance.get("namespace")
+        _require(namespace is None or isinstance(namespace, str), "invalid tool provenance")
+    return source in ("harness", "agents_md", "skills", "developer_instructions", "tool")
+
+
+def check_reported_user_input(rollout):
+    """A persisted UI notification can reveal input even if no model request carried it."""
+    item_id = None
+    client_id = None
+    legacy_seen = False
+    ended = False
+    for record in rollout:
+        if record.get("type") != "event_msg":
+            continue
+        event = record["payload"]
+        kind = event.get("type")
+        if kind in ("task_complete", "turn_complete"):
+            ended = True
+            continue
+        elif kind == "user_message":
+            _require(not ended and not legacy_seen and event.get("message") == PROMPT,
+                     "could not verify a single original UI user message")
+            attachments = ("images", "local_images", "file_ids", "audio", "local_audio", "audio_references")
+            _require(all(event.get(key) in (None, []) for key in attachments),
+                     "unexpected attachment on UI user message")
+            legacy_seen = True
+            reported_id = event.get("client_id")
+        elif kind in ("item_started", "item_completed"):
+            item = event.get("item")
+            if not isinstance(item, dict) or item.get("type") != "UserMessage":
+                continue
+            identity = item.get("id")
+            _require(isinstance(identity, str) and identity and item_id in (None, identity)
+                     and (not ended or (kind == "item_completed" and item_id == identity)),
+                     "could not verify a single original UI user message")
+            parts = item.get("content")
+            _require(isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], dict)
+                     and parts[0].get("type") == "text" and parts[0].get("text") == PROMPT,
+                     "unexpected UI user message content")
+            item_id = identity
+            reported_id = item.get("client_id")
+        else:
+            continue
+        if reported_id is not None:
+            _require(isinstance(reported_id, str) and client_id in (None, reported_id),
+                     "inconsistent UI user message client ID")
+            client_id = reported_id
+
+
+def check_unsteered_input(rollout, requests):
+    """Match the single operator prompt and permitted context in saved history and provider requests."""
+    check_reported_user_input(rollout)
+    inputs = []
+    context = Counter()
+    for event in rollout:
+        if event.get("type") != "response_item":
+            continue
+        message = event.get("payload")
+        _require(isinstance(message, dict), "invalid response item in rollout")
+        if message.get("role") != "user":
+            continue
+        _require(message.get("type") == "message", "invalid user response item in rollout")
+        parts = message.get("content")
+        _require(isinstance(parts, list) and parts, "missing user message content in rollout")
+        metadata = message.get("internal_chat_message_metadata_passthrough")
+        _require(metadata is None or isinstance(metadata, dict), "invalid user message metadata in rollout")
+        origins = (metadata or {}).get("content_item_metadata")
+        if origins is None:
+            origins = [{}] * len(parts)
+        _require(isinstance(origins, list) and len(origins) == len(parts), "misaligned user content attribution")
+        for part, origin in zip(parts, origins, strict=True):
+            _require(isinstance(part, dict) and part.get("type") == "input_text"
+                     and isinstance(part.get("text"), str), "unexpected user content in rollout")
+            if attributed_context(origin):
+                context[part["text"]] += 1
+            else:
+                inputs.append(part["text"])
+    _require(inputs == [PROMPT],
+             f"could not verify the original prompt alone: {len(inputs)} parts outside attributed context")
+    # Wire inputs omit per-part provenance. Only the rollout can establish which
+    # context a request may carry alongside the original prompt.
+    allowed = context + Counter(inputs)
+    for request in requests:
+        texts = user_message_texts(request["body"].get("input"))
+        _require(texts.count(PROMPT) == 1 and Counter(texts) <= allowed,
+                 "request input differs from the original prompt and attributed context")
+
+
+def check_capacity_rollout(case_dir, thread, turn, *, requests, answer, failure=None):
+    """Cross-check the provider's turn against the fresh exec session's saved history."""
+    sessions = case_dir / "codex-home/sessions"
+    paths = [p for p in sessions.rglob("rollout-*.jsonl") if p.name.endswith(f"-{thread}.jsonl")]
+    _require(len(paths) == 1 and paths[0].is_file() and not paths[0].is_symlink(),
+             "expected one saved rollout for the capacity exec thread")
+    lifecycle = []
+    saved_work = []
+    completion = None
+    rollout = read_stdout_events(paths[0])
+    for row in rollout:
+        _require(isinstance(row, dict), "invalid capacity rollout record")
+        kind, payload = row.get("type"), row.get("payload")
+        if kind == "response_item":
+            _require(isinstance(payload, dict) and isinstance(payload.get("type"), str),
+                     "invalid response item in capacity rollout")
+            item_type = payload["type"]
+            if item_type in TOOL_CALL_TYPES or item_type in TOOL_OUTPUT_TYPES:
+                _require(lifecycle and lifecycle[-1][0] == "start", "saved tool work outside the active turn")
+                metadata = payload.get("internal_chat_message_metadata_passthrough")
+                _require(metadata is None or isinstance(metadata, dict) and metadata.get("turn_id") in (None, turn),
+                         "saved tool work has conflicting turn attribution")
+                saved_work.append(payload)
+            continue
+        if kind not in ("session_meta", "event_msg"):
+            continue
+        _require(isinstance(payload, dict), "invalid capacity rollout payload")
+        if kind == "session_meta":
+            lifecycle.append(("thread", payload.get("id")))
+        elif payload.get("type") in ("task_started", "turn_started"):
+            lifecycle.append(("start", payload.get("turn_id")))
+        elif payload.get("type") in ("task_complete", "turn_complete"):
+            lifecycle.append(("end", payload.get("turn_id")))
+            completion = payload
+        elif payload.get("type") == "turn_aborted":
+            raise ValueError("capacity rollout contains an aborted turn")
+    _require(lifecycle == [("thread", thread), ("start", turn), ("end", turn)],
+             "capacity rollout did not start and finish the original exec turn")
+    check_unsteered_input(rollout, requests)
+    completed_plan_records(saved_work)
+    _require(completion.get("last_agent_message") == answer, "saved capacity answer differs from exec output")
+    error = completion.get("error")
+    if answer is None:
+        _require(isinstance(failure, dict) and isinstance(failure.get("message"), str) and failure["message"]
+                 and isinstance(error, dict) and error.get("message") == failure["message"],
+                 "saved capacity refusal differs from exec output")
+        # A floating-point HTTP status compares equal in Python but cannot deserialize as u16.
+        expected_kind = failure.get("codex_error_info")
+        _require(expected_kind is not None and json.dumps(error.get("codex_error_info"), sort_keys=True)
+                 == json.dumps(expected_kind, sort_keys=True),
+                 "saved capacity refusal has the wrong error classification")
+    else:
+        _require(error is None, "capacity rollout saved a failure for a recovered turn")
+
+
+def check_reasoning_settings(posts):
+    """Compare requests for one operation against its initial reasoning policy."""
+    original = posts[0]["body"].get("reasoning")
+    for index, post in enumerate(posts[1:], 2):
+        _require(post["body"].get("reasoning") == original,
+                 f"request {index} changed the original reasoning settings")
+
+
+def check_capacity_history(posts, *, fail_with_tool):
+    """Check the original prompt, completed tool work and every subsequent POST."""
+    histories = []
+    for index, post in enumerate(posts, 1):
+        body = post.get("body") if isinstance(post, dict) else None
+        history = body.get("input") if isinstance(body, dict) else None
+        texts = user_message_texts(history)
+        _require(texts.count(PROMPT) == 1, f"request {index} did not retain exactly one operator prompt")
+        histories.append(history)
+    _require(len(histories) >= 2, "expected initial and continuation requests")
+    check_reasoning_settings(posts)
+    original, continuation = histories[:2]
+    _require(continuation[:len(original)] == original, "original request input was lost or changed")
+    appended = continuation[len(original):]
+    _require(not any(item.get("role") == "user" for item in appended),
+             "tool continuation contains a new user message")
+    plan = completed_plan_records(continuation)
+    _require(plan[0] in appended, "initial request already contained the completed plan call")
+    if fail_with_tool:
+        _require(appended == plan, "retry must append only the tool call and its output from the failed stream")
+    _require(all(history == continuation for history in histories[2:]),
+             "retry changed the input or completed tool output")
+
+
+CAPACITY_NOTICE = "Model is at capacity; retrying automatically (interrupt to stop)..."
+CAPACITY_MESSAGES = {
+    "server_is_overloaded": CAPACITY_NOTICE,
+    "policy_capacity_unavailable": "Policy-restricted capacity is unavailable; retrying automatically (interrupt to stop)...",
+}
+REPEATED_CAPACITY_CODES = ("server_is_overloaded", "policy_capacity_unavailable")
+TURN_EVENT_TYPES = ("turn.started", "turn.completed", "turn.failed")
+
+
+def read_stdout_events(path):
+    # Match the stdout pipe's LF framing. Unicode separators inside JSON strings are data.
+    with path.open("rb") as stream:
+        return [json.loads(line.decode("utf-8")) for line in stream if line.strip()]
+
+
+def partial_stdout_observations(path, *, compaction):
+    result = {}
+    try:
+        with path.open("rb") as stream:
+            observed = result["appServerEvents" if compaction else "turnEvents"] = []
+            for number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line.decode("utf-8"))
+                except (ValueError, RecursionError):
+                    event = None
+                if not isinstance(event, dict):
+                    # A killed writer can leave its final JSON record incomplete.
+                    result.setdefault("invalidStdoutLines", []).append(number)
+                elif compaction:
+                    if observation := app_server_observation(event):
+                        observed.append(observation)
+                elif (kind := event.get("type")) in TURN_EVENT_TYPES:
+                    observed.append(kind)
+                elif notice := capacity_notice(event, include_legacy=True):
+                    reason, message = notice
+                    row = {"stdoutLine": number, "eventType": kind, "reason": reason}
+                    seconds = capacity_notice_seconds(message, reason)
+                    if seconds is not None:
+                        row["scheduledSeconds"] = seconds
+                    result.setdefault("capacityNotices", []).append(row)
+    except OSError as error:
+        result["stdoutReadError"] = str(error)
+    return result
+
+
+def app_server_error_fields(error):
+    fields = {}
+    info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+    if isinstance(info, str):
+        fields["reason"] = info
+    elif isinstance(info, dict) and len(info) == 1:
+        (reason, detail), = info.items()
+        fields["reason"] = reason
+        if isinstance(detail, dict) and type(detail.get("httpStatusCode")) is int:
+            fields["httpStatusCode"] = detail["httpStatusCode"]
+    return fields
+
+
+def app_server_observation(event):
+    method, params = event.get("method"), event.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("threadId"), str):
+        return None
+    row = {"method": method, "threadId": params["threadId"]}
+    if method in ("turn/started", "turn/completed"):
+        turn = params.get("turn")
+        if isinstance(turn, dict) and isinstance(turn.get("id"), str) and isinstance(turn.get("status"), str):
+            return {**row, "turnId": turn["id"], "status": turn["status"], **app_server_error_fields(turn.get("error"))}
+    elif isinstance(params.get("turnId"), str):
+        row["turnId"] = params["turnId"]
+        if method == "error":
+            error = params.get("error")
+            if isinstance(error, dict) and type(params.get("willRetry")) is bool:
+                if params["willRetry"] and error.get("codexErrorInfo") in ("serverOverloaded", "policyCapacityUnavailable"):
+                    seconds = retry_schedule_seconds(error.get("additionalDetails"))
+                    if seconds is not None:
+                        row["scheduledSeconds"] = seconds
+                return {**row, "willRetry": params["willRetry"], **app_server_error_fields(error)}
+        elif method in ("item/started", "item/completed"):
+            item = params.get("item")
+            if isinstance(item, dict) and item.get("type") == "contextCompaction" and isinstance(item.get("id"), str):
+                return {**row, "itemId": item["id"], "itemType": "contextCompaction"}
+    return None
+
+
+def turn_events(events):
+    result = []
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError("exec event must be a JSON object")
+        if (kind := event.get("type")) in TURN_EVENT_TYPES:
+            result.append(kind)
+    return result
+
+
+def capacity_notice(event, *, include_legacy=False):
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "item.completed":
+        event = event.get("item")
+    elif not include_legacy:
+        return None
+    if isinstance(event, dict) and event.get("type") == "error":
+        message = event.get("message")
+        if isinstance(message, str):
+            for code, prefix in CAPACITY_MESSAGES.items():
+                if message.startswith(prefix):
+                    return code, message
+    return None
+
+
+def capacity_notices(events, *, include_legacy=False):
+    return [(index, notice[1]) for index, event in enumerate(events)
+            if (notice := capacity_notice(event, include_legacy=include_legacy))]
+
+
+def retry_schedule_seconds(details):
+    if not isinstance(details, str):
+        return None
+    # retry_timing formats an unsigned 64-bit count of whole seconds.
+    match = re.fullmatch(r"Retry scheduled in (0|[1-9][0-9]{0,19})s\.", details)
+    if match:
+        seconds = int(match[1])
+        if seconds < 1 << 64:
+            return seconds
+    return None
+
+
+def capacity_notice_seconds(message, code):
+    prefix = CAPACITY_MESSAGES.get(code) if isinstance(code, str) else None
+    if prefix is None or not isinstance(message, str):
+        return None
+    opening = prefix + " ("
+    if message.startswith(opening) and message.endswith(")"):
+        return retry_schedule_seconds(message[len(opening):-1])
+    return None
+
+
+def scheduled_capacity_notice(message, limit, *, minimum=1, code="server_is_overloaded"):
+    seconds = capacity_notice_seconds(message, code)
+    return seconds is not None and minimum <= seconds <= limit
+
+
+def check_capacity_notices(events, answer_index, waits, failures):
+    """Match each refusal to an advisory between turn start and the recovered answer."""
+    notices = capacity_notices(events)
+    _require(len(notices) == len(waits), "expected one advisory capacity notice per refusal")
+    start = next(index for index, event in enumerate(events) if event.get("type") == "turn.started")
+    for attempt, ((index, message), seconds, failed) in enumerate(zip(notices, waits, failures, strict=True), 1):
+        _require(start < index < answer_index, "capacity notice outside the wait before the recovered answer")
+        # Provider advice can age before selection. The client starts its local
+        # backoff at selection and rounds the announced delay up to whole seconds.
+        local_upper = local_backoff_upper(attempt)
+        upper = max(seconds or 0, local_upper)
+        _require(scheduled_capacity_notice(message, upper, minimum=math.ceil(local_upper / 2),
+                                           code=failed.get("capacityCode", "server_is_overloaded")),
+                 "capacity notice did not report the selected wait and capacity reason")
+
+
+def check_live_notices(events, observed, requests, waits, *, expected_codes=None, startup=False):
+    """Each complete advisory line must reach the stdout reader during its own provider wait."""
+    if (not isinstance(observed, list) or len(observed) != len(events)
+            or not all(type(t) in (int, float) and abs(t) <= sys.float_info.max for t in observed)
+            or any(a > b for a, b in zip(observed, observed[1:]))):
+        raise ValueError("missing or invalid stdout observation times")
+    notices = capacity_notices(events)
+    if len(notices) != len(waits) or len(requests) != len(waits) + 1:
+        raise ValueError("expected one observed advisory per capacity wait")
+    if expected_codes is not None:
+        for failed, code, seconds in zip(requests[:-1], expected_codes, waits, strict=True):
+            if (failed.get("status") != 503 or failed.get("capacityCode") != code
+                    or failed.get("retryAfter") != seconds):
+                raise ValueError("provider trace did not exercise the expected capacity reasons and retry advice")
+    pairs = zip(notices, requests[:-1], requests[1:], waits, strict=True)
+    for attempt, ((index, message), failed, retry, seconds) in enumerate(pairs, 1):
+        start = failed["headerStartedAt"]
+        received = observed[index]
+        local_upper = local_backoff_upper(attempt)
+        advice = seconds or 0
+        deadline = start + advice
+        # The next request bounds delivery when jitter sets the delay or when
+        # startup advice reaches the foreground late. A longer provider wait
+        # also supplies an independently measurable deadline.
+        end = retry["requestStartedAt"]
+        if not startup and advice >= local_upper:
+            end = min(deadline, end)
+        if not start <= received < end:
+            raise ValueError("capacity notice was not visible during its provider wait")
+        # The message was generated by the time stdout delivered it. Its rounded
+        # duration must cover at least the provider time still remaining at receipt.
+        minimum = max(math.ceil(local_upper / 2), math.ceil(math.nextafter(deadline, -math.inf) - received))
+        scheduled = capacity_notice_seconds(message, failed.get("capacityCode", "server_is_overloaded"))
+        if scheduled is None or not minimum <= scheduled <= max(advice, local_upper):
+            raise ValueError("observed capacity notice did not report the selected wait and capacity reason")
+        # The client rounds up. Even if it selected the wait as soon as the
+        # refusal began, a four-second notice needs more than three seconds
+        # before the retry. Allow the clock's rounding at the exact boundary.
+        earliest = start + (scheduled - 1)
+        if retry["requestStartedAt"] < math.nextafter(earliest, -math.inf):
+            raise ValueError("capacity retry arrived too early for its announced wait")
+
+
+def check_open_stream_retry(failed, retry):
+    flushed = failed.get("failureFrameFlushedAt")
+    if (failed.get("status") != 200 or retry.get("arrivedDuringFailedStream") is not True
+            or type(flushed) not in (float, int)
+            or not failed["headerAt"] <= flushed <= retry["requestStartedAt"]):
+        raise ValueError("retry did not arrive while the failed SSE body was open")
+
+
+def check_expired_stream_advice(failed, retry, seconds, events):
+    """A late failure starts local backoff after the opening header's deadline."""
+    start = failed.get("failureFrameStartedAt")
+    flushed = failed["failureFrameFlushedAt"]
+    if (type(failed.get("retryAfter")) is not int or failed["retryAfter"] != seconds
+            or type(start) not in (int, float) or not failed["headerAt"] + seconds <= start <= flushed
+            or flushed - start > 0.050):
+        raise ValueError("stream failure did not establish a frame after the opening deadline")
+    upper = local_backoff_upper(1)
+    if retry["requestStartedAt"] < math.nextafter(start + upper / 2, -math.inf):
+        raise ValueError("local capacity backoff bypassed after the stream failure")
+    notices = capacity_notices(events)
+    if len(notices) != 1 or not scheduled_capacity_notice(notices[0][1], upper):
+        raise ValueError("late failure did not announce the local capacity wait")
+
+
+def local_backoff_upper(attempt):
+    return min(60, 2 ** min(attempt - 1, 6))
+
+
+def prewarm_retry_delay(trace, seconds):
+    """Bind the provider's startup refusal to the first foreground handshake and HTTP fallback."""
+    if len(trace) != 4 or not all(isinstance(row, dict) for row in trace):
+        raise ValueError("expected two WebSocket handshakes and two model POSTs")
+    startup, turn, first_post, last_post = trace
+    if (startup.get("requestKind") != "prewarm" or startup.get("turnId") != ""
+            or startup.get("status") != 503
+            or turn.get("requestKind") != "turn" or turn.get("status") != 426
+            or not isinstance(turn.get("turnId"), str) or not turn["turnId"]
+            or not isinstance(turn.get("threadId"), str) or not turn["threadId"]
+            or turn["threadId"] != startup.get("threadId")
+            or not all(isinstance(row.get("body"), dict) for row in (first_post, last_post))):
+        raise ValueError("missing startup refusal or foreground fallback on the original thread")
+    check_capacity_header(startup, seconds)
+    delay = retry_after_delay(startup, turn, seconds)
+    # The trace stores handshakes and POSTs separately. List order alone cannot
+    # establish that the client waited for the 426 or the response containing the plan.
+    for previous, following in ((turn, first_post), (first_post, last_post)):
+        arrival, start, sent = (previous.get(key) for key in ("requestStartedAt", "headerStartedAt", "headerAt"))
+        next_arrival = following.get("requestStartedAt")
+        if (not all(type(t) in (int, float) and abs(t) <= sys.float_info.max for t in (arrival, start, sent, next_arrival))
+                or not arrival <= start <= sent <= next_arrival):
+            raise ValueError("startup model POST lacks evidence that the preceding response headers were sent")
+    return delay
 
 
 def window(used, seconds, resets_in, now):
@@ -274,7 +874,7 @@ def not_included(plan, message):
 
 
 class FixtureFault(ValueError):
-    """A reply the fixture built that the client would not decode."""
+    """Recorded fixture data disagrees with the expected protocol."""
 
 
 def _require(condition, message):

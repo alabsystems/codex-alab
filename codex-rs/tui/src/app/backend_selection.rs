@@ -369,6 +369,7 @@ impl App {
         )
         .await;
         let destination = backends.session_at_mut(destination_slot);
+        self.saved_openings.alab_retry_saved_history(destination, None); // ALAB(retained-ui): return historical reads to their owning backend when its session is displayed.
         self.store_active_thread_receiver().await;
         self.clear_active_thread().await;
         self.agents_overview.search_matches.clear();

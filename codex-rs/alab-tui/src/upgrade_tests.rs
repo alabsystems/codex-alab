@@ -341,6 +341,107 @@ fn no_upgrade_is_planned_until_the_primary_rollout_is_on_disk() {
     );
 }
 
+/// File-bound manual selection cannot adopt the fresh Native Source constructor required
+/// by an in-place upgrade. Exercise both normal preflight and fresh admission in isolation.
+#[tokio::test]
+async fn manual_account_selection_defers_native_source_upgrade_without_losing_its_binding() {
+    use codex_alab_aterm::account_move::Selection;
+    use codex_alab_aterm::fake::FakeAterm;
+    use codex_alab_aterm::fake::Mode;
+    use codex_alab_core::session::Frame;
+    use codex_alab_core::session::ProgramState;
+
+    const CHILD: &str = "ALAB_TEST_PICKER_LIVE_UPGRADE";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "isolated upgrade check failed: {}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rollout = dir.path().join("rollout.jsonl");
+    std::fs::write(&rollout, "{}\n").unwrap();
+    let shared = codex_alab_core::session::shared();
+    codex_alab_core::activate();
+    crate::resume_argv::set_command(Cli::command);
+    shared.set_launch(Launch {
+        cwd: Some(dir.path().into()),
+        pid: std::process::id(),
+        identity: crate::identity::current().ok(),
+        proc_start: Some("birth".into()),
+        ..launch()
+    });
+    shared.observe(
+        &Frame {
+            primary_thread: Some(THREAD),
+            displayed_thread: Some(THREAD),
+            rollout_path: Some(&rollout),
+            cwd: dir.path(),
+            model: "fixture",
+            codex_home: dir.path(),
+            embedded: true,
+            state: ProgramState::Idle,
+            draft_empty: true,
+            queued_input: false,
+            popup_open: false,
+            editor_open: false,
+            pending_user_turn: false,
+        },
+        0,
+    );
+    assert!(crate::session::start(shared, dir.path()));
+    let writer = crate::session::selection_writer(shared).unwrap();
+    assert!(upgrade::exec_plan(shared).is_ok());
+    let selected = Selection::new("a".repeat(64), "b".repeat(64));
+    let attempt = writer.begin_manual_selection(THREAD, &selected).unwrap();
+    assert!(
+        upgrade::exec_plan(shared)
+            .err()
+            .unwrap()
+            .contains("Open /accounts")
+    );
+    drop(attempt);
+    assert!(upgrade::exec_plan(shared).is_err());
+    assert!(writer.release_manual_selection(&selected));
+    assert!(upgrade::exec_plan(shared).is_ok());
+
+    let host = FakeAterm::start(dir.path(), Mode::Current).await.unwrap();
+    let client = codex_alab_aterm::Client::connect(host.endpoint(), Default::default())
+        .await
+        .unwrap();
+    let before = host.requests();
+    let digest = "d".repeat(64);
+    codex_alab_core::bound_picker::install(&digest).unwrap();
+    let why = upgrade::exec_plan(shared).err().unwrap();
+    assert!(why.contains("confirmed subscription"));
+    assert_eq!(
+        upgrade::prepare_admitted(
+            shared,
+            &client,
+            std::time::Instant::now() + std::time::Duration::from_secs(5)
+        )
+        .await
+        .err()
+        .unwrap(),
+        why
+    );
+    assert_eq!(host.requests(), before);
+    assert!(!shared.exec_pending());
+    assert_eq!(
+        codex_alab_core::bound_picker::expected(),
+        Some(digest.as_str())
+    );
+}
+
 /// Even a materialized, resumable thread must keep its current session when the
 /// launch directory is missing or replaced. Planning never changes the process cwd.
 #[test]

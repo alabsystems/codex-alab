@@ -27,6 +27,7 @@ usage: native.py --codex target/debug/codex --fake target/debug/examples/fake_at
 """
 
 import argparse
+from contextlib import ExitStack
 import ctypes  # noqa: F401  (exe_of)
 import http.server
 import hashlib
@@ -210,12 +211,15 @@ def serve(mock):
 
 
 class Fake:
-    def __init__(self, exe, rendezvous):
+    def __init__(self, exe, rendezvous, *, env=None):
         self.proc = subprocess.Popen(
-            [exe, rendezvous], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+            [exe, rendezvous], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env
         )
         line = self.proc.stdout.readline().strip()
-        assert line.startswith("SID "), line
+        if not line.startswith("SID "):
+            self.proc.kill()
+            self.proc.wait()
+            raise ValueError(f"fake aterm did not return a session ID: {line!r}")
         self.sid = line[4:]
 
     def cmd(self, line):
@@ -242,8 +246,11 @@ class Pty:
     def __init__(self, argv, env, cwd, log):
         pid, fd = pty.fork()
         if pid == 0:
-            os.chdir(cwd)
-            os.execvpe(argv[0], argv, env)
+            try:
+                os.chdir(cwd)
+                os.execvpe(argv[0], argv, env)
+            finally:
+                os._exit(127)
         self.pid, self.fd = pid, fd
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         self.log = open(log, "wb")
@@ -306,6 +313,35 @@ def wait(what, done, timeout=90):
         time.sleep(0.2)
 
 
+def remove_owned_directory(path, fd):
+    try:
+        current = os.lstat(path)
+    except FileNotFoundError:
+        return
+    owned = os.fstat(fd)
+    if not os.path.samestat(current, owned):
+        print(f"scratch path was replaced; preserving {path}", file=sys.stderr)
+        return
+    # Traverse the directory we opened at creation, even if the pathname moves during cleanup.
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.name, dir_fd=fd)
+            else:
+                os.unlink(entry.name, dir_fd=fd)
+    try:
+        if os.path.samestat(os.lstat(path), owned):
+            os.rmdir(path)
+    except FileNotFoundError:
+        pass
+
+
+def register_directory_cleanup(cleanup, path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    cleanup.callback(os.close, fd)
+    cleanup.callback(remove_owned_directory, path, fd)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--codex", required=True)
@@ -313,20 +349,34 @@ def main():
     ap.add_argument("--starting-question-mode", choices=("land", "recommended"), default="land",
                     help="expected starting-version answer contract; recommended requires --next-codex")
     ap.add_argument("--fake", required=True)
-    ap.add_argument("--scratch")
-    ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--scratch", help="create the run directory at this unused path")
+    ap.add_argument("--keep", action="store_true", help="keep the run directory and its receipt")
     args = ap.parse_args()
     if args.starting_question_mode == "recommended" and not args.next_codex:
         ap.error("--starting-question-mode recommended requires a distinct --next-codex")
-    scratch = args.scratch or tempfile.mkdtemp(prefix="alab-smoke-")
-    os.makedirs(scratch, exist_ok=True)
-    print("scratch:", scratch)
+    with ExitStack() as cleanup:
+        if args.scratch is None:
+            scratch = tempfile.mkdtemp(prefix="alab-smoke-")
+        else:
+            scratch = os.path.abspath(args.scratch)
+            try:
+                os.makedirs(scratch, mode=0o700)
+            except FileExistsError:
+                ap.error(f"--scratch already exists: {scratch}. Choose an unused path.")
+        if not args.keep:
+            register_directory_cleanup(cleanup, scratch)
+        print("scratch:", scratch)
+        xdg = os.path.join(scratch, "xdg")
+        if len(os.fsencode(xdg)) > 60:
+            # The control socket's path must fit a sockaddr_un (104 bytes on macOS).
+            xdg = tempfile.mkdtemp(prefix="alab-x-")
+            register_directory_cleanup(cleanup, xdg)
+        run_probe(args, scratch, xdg, cleanup)
+
+
+def run_probe(args, scratch, xdg, cleanup):
     home = os.path.join(scratch, "codex-home")
     work = os.path.join(scratch, "work")
-    xdg = os.path.join(scratch, "xdg")
-    if len(xdg) > 60:
-        # The control socket's path must fit a sockaddr_un (104 bytes on macOS).
-        xdg = tempfile.mkdtemp(prefix="alab-x-")
     twin_dir = os.path.join(scratch, "agents")
     a = os.path.join(scratch, "store", "a", "bin", "codex")
     b = os.path.join(scratch, "store", "b", "bin", "codex")
@@ -363,6 +413,8 @@ def main():
 
     mock = Mock()
     server = serve(mock)
+    cleanup.callback(server.server_close)
+    cleanup.callback(server.shutdown)
     port = server.server_address[1]
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write(
@@ -382,6 +434,7 @@ def main():
         )
 
     fake = Fake(args.fake, os.path.join(xdg, "aterm"))
+    cleanup.callback(fake.close)
     print("fake aterm sid:", fake.sid)
     assert fake.cmd("policy human_grace_s 1") == "OK"
     assert fake.cmd("status autopilot land") == "OK"
@@ -399,10 +452,10 @@ def main():
     argv = ["codex", "--enable", "default_mode_request_user_input"]
     term = Pty(argv, env, work, os.path.join(scratch, "pty.log"))
     pid = term.pid
-    assert fake.cmd("leader %d" % pid) == "OK"
-    wait("the child execs codex", lambda: "codex" in os.path.basename(exe_of(pid)))
-    print("codex pid:", pid, "running", exe_of(pid))
     try:
+        assert fake.cmd("leader %d" % pid) == "OK"
+        wait("the child execs codex", lambda: "codex" in os.path.basename(exe_of(pid)))
+        print("codex pid:", pid, "running", exe_of(pid))
         assert os.path.realpath(exe_of(pid)) == os.path.realpath(a), exe_of(pid)
         wait("the claim is proven", lambda: (fake.state()["claim"] or {}).get("proven_pid") == pid)
         print("1. claim proven:", fake.state()["claim"])
@@ -497,10 +550,6 @@ def main():
             os.waitpid(pid, 0)
         except ChildProcessError:
             pass
-        fake.close()
-        server.shutdown()
-        if not args.keep:
-            shutil.rmtree(scratch, ignore_errors=True)
 
 
 if __name__ == "__main__":

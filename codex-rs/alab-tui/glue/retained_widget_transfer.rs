@@ -200,13 +200,14 @@ impl PreparedMessages {
         let Snapshot {
             initial_user_message,
             suppress_initial_user_message_submit,
-            input_queue,
+            mut input_queue,
             safety_buffering_prompt,
             safety_buffering_source,
             ..
         } = self.0;
         widget.initial_user_message = initial_user_message;
         widget.suppress_initial_user_message_submit = suppress_initial_user_message_submit;
+        input_queue.alab_snapshot_input_held = widget.input_queue.alab_snapshot_input_held;
         widget.input_queue = input_queue;
         widget.safety_buffering_prompt = safety_buffering_prompt;
         widget.safety_buffering_source = safety_buffering_source;

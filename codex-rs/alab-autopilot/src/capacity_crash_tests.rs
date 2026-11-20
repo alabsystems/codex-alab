@@ -95,24 +95,12 @@ fn run(phase: Phase) {
 }
 
 fn run_response(phase: Phase, opaque: bool) {
-    std::thread::Builder::new()
-        .stack_size(16 << 20)
-        .spawn(move || {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_stack_size(16 << 20)
-                .enable_all()
-                .build()
-                .expect("owned test runtime")
-                .block_on(async {
-                    tokio::time::timeout(Duration::from_secs(60), capacity_crash(phase, opaque))
-                        .await
-                        .expect("capacity crash test hang detector");
-                });
-        })
-        .expect("owned test thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    // Each real Core fixture owns its provider sockets and rollout files in a separate process.
+    crate::extension::native_test(move || async move {
+        tokio::time::timeout(Duration::from_secs(60), capacity_crash(phase, opaque))
+            .await
+            .expect("capacity crash test hang detector");
+    });
 }
 
 async fn capacity_crash(phase: Phase, opaque: bool) {

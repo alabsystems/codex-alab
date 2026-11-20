@@ -12,6 +12,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_core::CodexThread;
 use codex_thread_store::ThreadStoreError;
 
+pub(super) type ModelRefresh = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+
 pub(super) async fn prepare_projection(
     thread: &CodexThread,
     paginated: bool,

@@ -129,6 +129,58 @@ async fn resume_clock(runnable: tokio::task::JoinHandle<()>) {
 }
 
 #[test]
+fn displayed_end_during_native_preflight_refusal_continues_without_retrying_admission() {
+    bounded(|| async {
+        let mut h = displayed_complete().await;
+        *lock(&h.autopilot.upgrade_target_fixture) = None;
+        let gate = "native-act info source-exec";
+        let command = format!("@{} {gate}", h.fake.sid());
+        h.fake.reply_always(
+            &command,
+            "OK native source-exec preparation=1 execution=unavailable input-fence=1\n",
+        );
+        h.fake.gate(gate);
+        let queries = || {
+            h.fake
+                .requests()
+                .iter()
+                .filter(|line| line.as_str() == command.as_str())
+                .count()
+        };
+        let before_queries = queries();
+        let before_turns = h.rt.accepted_turns.load(Ordering::SeqCst);
+        let evaluating = Arc::clone(&h.autopilot).evaluate(Arc::clone(&h.rt));
+        tokio::pin!(evaluating);
+        tokio::select! {
+            held = h.fake.wait_for(|fake| fake.gated_requests().contains(&command)) => {
+                assert!(held, "the native capability request reached the host");
+            }
+            () = &mut evaluating => panic!("the evaluator skipped native preflight"),
+        }
+        h.shared.turn_handled_end(h.rt.key(), COMPLETED);
+        h.fake.open_gate(gate);
+        evaluating.await;
+
+        assert_eq!(
+            queries() - before_queries,
+            1,
+            "a displayed end cannot change host support"
+        );
+        assert_eq!(count(&h, upgrade::RULE_UPGRADE), 0);
+        wait_for_supervisor(|| h.rt.accepted_turns.load(Ordering::SeqCst) > before_turns).await;
+        assert_eq!(count(&h, words::RULE_CONTINUE), 1);
+        assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), before_turns + 1);
+        assert!(h.shared.turn_running_on(h.rt.key()));
+        assert!(!h.shared.exec_pending());
+        assert!(matches!(
+            h.requests.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        h.shutdown_and_export().await.expect("native shutdown");
+    });
+}
+
+#[test]
 fn a_later_displayed_end_retries_the_same_handoff_once() {
     bounded(|| async {
         let mut h = displayed_complete().await;

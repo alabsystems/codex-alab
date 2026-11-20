@@ -88,3 +88,6 @@ fn raw_grouped_history_retains_terminal_input_and_omits_reasoning() {
         expected_rich
     );
 }
+
+// ALAB(shell-output): exercise missing exits and compatibility with retained command output.
+include!("../../../alab-tui/glue/command_completion_tests.rs");

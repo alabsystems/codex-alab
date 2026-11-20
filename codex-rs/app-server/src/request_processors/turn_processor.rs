@@ -718,6 +718,7 @@ impl TurnRequestProcessor {
             .await?;
 
         target.before_submit(self, thread_id).await?; // ALAB(upgrade): recheck exact backend owner/runtime after fallible policy awaits.
+        let observed_steer_fallback = params.turn_trigger.as_deref() == Some(codex_protocol::turn_input::OBSERVED_STEER_FALLBACK_TRIGGER); // ALAB(queue-review): keep a rejected fallback recoverable in its original composer.
         let submission = thread
             .start_or_steer_turn(
                 TurnInputRequest::new(input)
@@ -763,6 +764,10 @@ impl TurnRequestProcessor {
             TurnInputSubmission::NotSubmitted { reason } => {
                 let error = if reason == NotSubmittedReason::ServerDraining {
                     crate::error_code::server_draining_error()
+                } else if matches!(reason, NotSubmittedReason::MisalignmentReview { .. }) { // ALAB(queue-review): tell the actual client why automatic delivery is held.
+                    invalid_request("a provider finding requires a new user message")
+                } else if observed_steer_fallback && reason == NotSubmittedReason::NotIdle { // ALAB(queue-review): a refused idle reservation did not consume this input.
+                    invalid_request("the previous turn has not finished")
                 } else {
                     internal_error(format!("failed to submit turn input: {reason:?}"))
                 };
@@ -1173,10 +1178,20 @@ impl TurnRequestProcessor {
             SteerSubmission::Steered { turn_id } => turn_id,
             SteerSubmission::NotSubmitted { reason } => {
                 let (message, data, error_type) = match reason {
+                    NotSubmittedReason::MisalignmentReview { .. } => ( // ALAB(queue-review): preserve the typed admission reason.
+                        "a provider finding requires a new user message".to_string(),
+                        None,
+                        None,
+                    ),
                     NotSubmittedReason::ServerDraining => {
                         return Err(crate::error_code::server_draining_error());
                     }
-                    NotSubmittedReason::NoActiveTurn | NotSubmittedReason::NotIdle => (
+                    NotSubmittedReason::NotIdle => ( // ALAB(queue-review): a finishing turn has no outcome yet; never promote its steer to turn/start.
+                        "turn is finishing and cannot accept steer input".to_string(),
+                        None,
+                        None,
+                    ),
+                    NotSubmittedReason::NoActiveTurn => (
                         "no active turn to steer".to_string(),
                         None,
                         Some(AnalyticsJsonRpcError::TurnSteer(

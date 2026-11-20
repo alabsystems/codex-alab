@@ -390,24 +390,26 @@ impl SessionHeaderHistoryCell {
 impl HistoryCell for SessionHeaderHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let width = usize::from(width);
+        let detail_style = alab_banner::plain_detail_style(); // ALAB(interface): resolve the secondary text ink once for the plain session header.
         let mut title = vec!["  ".into()];
         title.extend(codex_title(&self.version)); // ALAB(retained-ui): borrowed and restored historical banner text share the original renderer.
         let mut lines = vec![
             Line::default(),
             Line::from(title),
-            Line::from(vec![
+            alab_banner::plain_directory(self, width, detail_style).unwrap_or_else(|| Line::from(vec![ // ALAB(interface): give the full directory or checkout name room in plain split panes.
                 "     ".into(),
                 self.format_directory(Some(width.saturating_sub(/*rhs*/ 5)))
                     .dim(),
-            ]),
+            ])),
         ];
-        if let Some(model) = codex_alab_tui::service_tier::header_model(&self.model, self.reasoning_label()) { lines.insert(2, model); } // ALAB(speed): show the model, supported processing tier and matching reasoning in enhanced headers.
+        lines.splice(2..2, codex_alab_tui::service_tier::header_model(&self.model, self.reasoning_label(), width, detail_style)); // ALAB(speed): keep the model, processing tier and effort readable across enhanced header rows.
         if self.yolo_mode {
             lines.push(Line::from(vec![
-                "  permissions: ".dim(),
-                "YOLO mode".magenta().bold(),
+                Span::styled(codex_alab_tui::interface::session_permission_caption(width), detail_style), // ALAB(interface): fit the permission value before its plain-header caption.
+                alab_banner::plain_permission("YOLO mode".magenta().bold()), // ALAB(interface): match the enhanced launch card's permission ink.
             ]));
         }
+        if let Some(title) = codex_alab_tui::interface::narrow_session_title(&lines[1], width) { lines.splice(1..2, title); } // ALAB(interface): keep both releases readable in the plain launch header.
         lines
             .into_iter()
             .map(|line| truncate_line_with_ellipsis_if_overflow(line, width))
@@ -438,6 +440,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
 #[path = "../../../alab-tui/glue/banner_cell.rs"]
 mod alab_banner;
+pub(crate) use alab_banner::LiveBannerModel; // ALAB(banner): per-conversation live display.
 #[cfg(test)]
 #[path = "session_transcript_tests.rs"]
 mod transcript_tests; // ALAB(banner): the banner's cell lives in codex-rs/alab-tui; HistoryCell is pub(crate)

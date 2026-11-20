@@ -181,6 +181,8 @@ impl ChatWidget {
                 {
                     continue;
                 }
+                if status == TurnStatus::Failed && error.as_ref().is_some_and(|error| error.codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation))
+                    && self.alab_replay_finding_command(&turn_id, &item) { continue; } // ALAB(misalignment-review): restore unfinished commands from this exact failed-turn snapshot.
                 if trailing_reasoning_id.as_deref() == Some(item.id())
                     && let ThreadItemPayload::Reasoning {
                         id,

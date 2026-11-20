@@ -118,6 +118,7 @@ async fn api_key_discovery_respects_provider_routing() {
         let capture = Arc::new(CaptureModelsUrl(Mutex::new(/*t*/ None)));
         let auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key(api_key));
         let endpoint = Arc::new(OpenAiModelsEndpoint {
+            alab_default_api: None, // ALAB(defaults): this direct provider fixture has no registry context.
             provider_info: ModelProviderInfo {
                 name: name.to_string(),
                 ..ModelProviderInfo::create_openai_provider(base_url.map(str::to_string))
@@ -193,6 +194,7 @@ async fn provider_api_key_without_endpoint_overrides_uses_codex_backend() {
         let capture = Arc::new(CaptureModelsUrl(Mutex::new(/*t*/ None)));
         let auth_manager = auth.map(AuthManager::from_auth_for_testing);
         let endpoint = Arc::new(OpenAiModelsEndpoint {
+            alab_default_api: None, // ALAB(defaults): this direct provider fixture has no registry context.
             provider_info: ModelProviderInfo {
                 experimental_bearer_token: Some(api_key.into()),
                 ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
@@ -289,6 +291,7 @@ async fn model_request_uses_request_time_proxy_policy_and_exact_url() {
 
     let observed_request = Arc::new(Mutex::new(None));
     let endpoint = OpenAiModelsEndpoint {
+        alab_default_api: None, // ALAB(defaults): this direct provider fixture has no registry context.
         provider_info: ModelProviderInfo::create_openai_provider(Some(server.uri())),
         auth_manager: None,
         gateway_auth_manager: None,
@@ -336,6 +339,7 @@ async fn model_discovery_enforces_managed_residency_over_provider_headers() {
         "eu".into(),
     )]));
     let endpoint = OpenAiModelsEndpoint {
+        alab_default_api: None, // ALAB(defaults): this direct provider fixture has no registry context.
         provider_info,
         auth_manager: None,
         gateway_auth_manager: None,

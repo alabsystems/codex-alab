@@ -132,23 +132,13 @@ pub(crate) struct PreparedCache {
     native: Result<Vec<ModelPreset>>,
     data: Data,
 }
+#[derive(Default)]
 struct Progress {
     native: Option<Result<Vec<ModelPreset>>>,
     data: Option<std::result::Result<Data, String>>,
     panic: Option<Box<dyn Any + Send + 'static>>,
     lost: bool,
     consumed: bool,
-}
-impl Default for Progress {
-    fn default() -> Self {
-        Self {
-            native: None,
-            data: None,
-            panic: None,
-            lost: false,
-            consumed: false,
-        }
-    }
 }
 #[derive(Default)]
 struct Lifecycle {
@@ -370,10 +360,10 @@ impl std::future::Future for Observer {
                 "original model prefetch result was already consumed"
             )));
         }
-        if native.is_some() || panic.is_some() || lost {
-            if let Some(book) = job.book.upgrade() {
-                book.changed();
-            }
+        if (native.is_some() || panic.is_some() || lost)
+            && let Some(book) = job.book.upgrade()
+        {
+            book.changed();
         }
         if let Some(panic) = panic {
             std::panic::resume_unwind(panic);

@@ -230,11 +230,13 @@ pub(crate) fn capture(
         }
         (
             Some(Wall::Usage {
+                limit_class,
                 reset_at,
                 reset_label,
             }),
             Act::ResumeLimit { .. },
         ) => RecoveryWall::Usage {
+            limit_class: *limit_class,
             reset_at_ms: reset_at.map(&mut encode),
             reset_label: reset_label.clone(),
             quota: None,
@@ -275,6 +277,7 @@ pub(crate) fn capture_asked_wall(
         return None;
     }
     let Some(Wall::Usage {
+        limit_class,
         reset_at,
         reset_label,
     }) = &point.wall
@@ -300,6 +303,7 @@ pub(crate) fn capture_asked_wall(
         by_autopilot: point.by_autopilot,
         by_person: point.by_person,
         wall: RecoveryWall::Usage {
+            limit_class: *limit_class,
             reset_at_ms,
             reset_label: reset_label.clone(),
             quota: None,
@@ -314,10 +318,9 @@ fn current_failed_turn(items: &[RolloutItem], recovery: &Recovery) -> bool {
     else {
         return false;
     };
-    complete.turn_id == recovery.turn_id
+    complete.event.turn_id == recovery.turn_id
         && complete
             .error
-            .as_ref()
             .and_then(|error| error.codex_error_info.as_ref())
             .and_then(|info| {
                 crate::extension::classify(
@@ -390,11 +393,12 @@ pub(crate) fn restore(
             },
         },
         RecoveryWall::Usage {
+            limit_class,
             reset_at_ms,
             reset_label,
             ..
-        } => Wall::Usage {
-            reset_at: match reset_at_ms {
+        } => {
+            let reset_at = match reset_at_ms {
                 Some(ms) => {
                     let Some(at) = convert(*ms) else {
                         return refuse_clock(state, &recovery.turn_id, now, timing);
@@ -402,9 +406,18 @@ pub(crate) fn restore(
                     Some(at)
                 }
                 None => None,
-            },
-            reset_label: reset_label.clone(),
-        },
+            };
+            // Older records only saved HH:MM. Use the verified provider reset,
+            // which can precede the paced retry, for the current local date and time.
+            let label = reset_at
+                .and_then(|at| crate::words::usage_clock_after(at, now))
+                .or_else(|| reset_label.clone());
+            Wall::Usage {
+                limit_class: *limit_class,
+                reset_at,
+                reset_label: label,
+            }
+        }
     };
     state.observe_turn_end(
         TurnEnd {

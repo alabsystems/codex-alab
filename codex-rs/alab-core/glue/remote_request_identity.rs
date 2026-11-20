@@ -9,6 +9,16 @@ impl RemoteAppServerRequestHandle {
     }
 }
 
+#[cfg(unix)]
+impl RemoteAppServerRequestHandle {
+    pub(crate) fn alab_original_backend_identity(&self) -> crate::OriginalRequestIdentity {
+        let weak = self.command_tx.downgrade();
+        crate::OriginalRequestIdentity::from_weak(
+            move |actual| matches!(actual,crate::AppServerRequestHandle::Remote(actual) if weak.upgrade().is_some_and(|original|original.same_channel(&actual.command_tx))),
+        )
+    }
+}
+
 #[cfg(test)]
 mod original_input_tests {
     use super::*;
@@ -69,15 +79,5 @@ mod original_input_tests {
         assert!(wrong.adopt_original_input(&restored).is_err());
         assert!(wrong.retained_pending_for_client(&client));
         Ok(())
-    }
-}
-
-#[cfg(unix)]
-impl RemoteAppServerRequestHandle {
-    pub(crate) fn alab_original_backend_identity(&self) -> crate::OriginalRequestIdentity {
-        let weak = self.command_tx.downgrade();
-        crate::OriginalRequestIdentity::from_weak(
-            move |actual| matches!(actual,crate::AppServerRequestHandle::Remote(actual) if weak.upgrade().is_some_and(|original|original.same_channel(&actual.command_tx))),
-        )
     }
 }

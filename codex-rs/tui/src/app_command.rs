@@ -144,6 +144,10 @@ pub(crate) enum AppCommand {
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         #[serde(skip_serializing)]
+        alab_inherited_model_thread: Option<ThreadId>, // ALAB(defaults): identifies an ordinary echo of this thread's confirmed settings.
+        #[serde(skip_serializing)]
+        alab_observed_steer: Option<(ThreadId, String)>, // ALAB(queue-review): identify the live turn the composer addressed.
+        #[serde(skip_serializing)]
         alab_safety_retries: u32, // ALAB(daybreak): bound automatic retries across accepted fork commands.
     },
     OverrideTurnContext {
@@ -269,7 +273,9 @@ impl AppCommand {
             service_tier,
             final_output_json_schema,
             collaboration_mode,
+            alab_observed_steer: None, // ALAB(queue-review): only the composer observes the user's active turn.
             alab_safety_retries: 0,
+            alab_inherited_model_thread: None, // ALAB(defaults): programmatic selections are explicit by default.
         }
     }
 

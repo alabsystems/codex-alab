@@ -398,6 +398,13 @@ mod unix {
         if let Some(line) = latch.note(key, &route) {
             exec_route::tell(&line);
         }
+        wait_on_route(route, watch).await
+    }
+
+    async fn wait_on_route(
+        route: exec_route::NoRoute,
+        watch: &mut codex_core::ExecQuotaWatch,
+    ) -> Result<(), &'static str> {
         let closed = |_| "exec quota observation closed";
         match route.again() {
             None => watch.changed().await.map_err(closed),
@@ -421,7 +428,7 @@ mod unix {
             .await
             .map_err(|_| "exec quota observation unavailable")?;
         let mut connection: Option<Client> = None;
-        // One line per wall, keyed on its source and root turn (CONTRACT §1.1, "The line").
+        // Report transient outcomes once for this source, root turn and refused bucket.
         let mut latch = exec_route::Latch::default();
         tracing::debug!(target: "codex_alab_exec_handoff", "exec quota watch ready");
         loop {
@@ -431,9 +438,7 @@ mod unix {
                 && wall.current()
             {
                 let kind = wall.kind().clone();
-                // A model's own limit is asked of no host until one can judge that limit (gap 4,
-                // S5): the run waits out its reset with no claim and no line, as before S3, when
-                // such a wall published no observation.
+                // A model identifier outside the native grammar keeps its provider wait.
                 if !kind.asked() {
                     if let Some(client) = connection.take() {
                         client.close();
@@ -468,7 +473,8 @@ mod unix {
                     root_options
                         .as_ref()
                         .map(|options| options.turn().to_owned()),
-                );
+                )
+                .with_limit(kind.limit_id());
                 if latch.settled(&key) {
                     // Nothing this run can see changes this wall's outcome: ask nothing more.
                     if kept {
@@ -510,7 +516,11 @@ mod unix {
                             continue;
                         }
                         let route = identity.err().unwrap_or(exec_route::NoRoute::NoRootTurn);
-                        no_route(&mut latch, &key, route, &mut watch).await?;
+                        if kind.limit_id().is_some() {
+                            wait_on_route(route, &mut watch).await?;
+                        } else {
+                            no_route(&mut latch, &key, route, &mut watch).await?;
+                        }
                         continue;
                     }
                 };
@@ -528,6 +538,11 @@ mod unix {
                                 .map_err(|_| "exec quota observation closed")?;
                             continue;
                         }
+                        // Before a capable host is admitted, a model's own quota wait stays silent.
+                        Err(exec_route::Miss::Route(route)) if kind.limit_id().is_some() => {
+                            wait_on_route(route, &mut watch).await?;
+                            continue;
+                        }
                         Err(exec_route::Miss::Route(route)) => {
                             no_route(&mut latch, &key, route, &mut watch).await?;
                             continue;
@@ -536,7 +551,7 @@ mod unix {
                     }
                 }
                 if let Some(client) = connection.clone() {
-                    if root_options.thread() != thread || !wall.current() {
+                    if root_options.thread() != thread || !watch.observes(&wall) {
                         continue;
                     }
                     let origin = Origin {
@@ -550,13 +565,24 @@ mod unix {
                         .await
                         .step(kept);
                     tracing::debug!(target: "codex_alab_exec_handoff", ?step, "read native account selection");
+                    if !watch.observes(&wall) {
+                        continue;
+                    }
                     if step.keeps() {
                         watch.decide(&origin.turn, &kind, Verdict::Keep);
                     }
                     let destination = match step {
+                        account_recovery::ExecStep::Readmit => {
+                            client.close();
+                            connection = None;
+                            continue;
+                        }
                         account_recovery::ExecStep::Decline => {
                             if kept {
                                 decline(&watch, Some(&origin.turn), &kind);
+                            } else if let Some(client) = connection.take() {
+                                // A reused claim no longer serves this model wall.
+                                client.close();
                             }
                             watch
                                 .changed()
@@ -571,15 +597,16 @@ mod unix {
                         account_recovery::ExecStep::Again { .. } => None,
                         account_recovery::ExecStep::Move { destination, .. } => Some(destination),
                     };
-                    if let Some(destination) = destination
-                        && wall.current()
-                    {
+                    if let Some(destination) = destination {
                         // While armed or reserving, a kept wait does not end on its timer: its
                         // retry would end the observation this grant needs.
                         let _grant = watch.hold_grant(&origin.turn);
-                        let checkpoint =
-                            serde_json::to_value(Checkpoint::new(root_options, worktree.clone()))
-                                .map_err(|_| "exec checkpoint encoding failed")?;
+                        let checkpoint = serde_json::to_value(Checkpoint::new(
+                            root_options,
+                            worktree.clone(),
+                            kind.limit_id(),
+                        ))
+                        .map_err(|_| "exec checkpoint encoding failed")?;
                         let armed = match exec_grant::arm(
                             &client,
                             &origin,
@@ -590,20 +617,22 @@ mod unix {
                         {
                             Ok(grant) => Some((client.clone(), grant)),
                             Err(_) => match native().await {
-                                Some(reconnected) => exec_grant::reconcile_arm(
+                                Some(reconnected) => exec_grant::reconcile_arm_if_current(
                                     &reconnected,
                                     &origin,
                                     &destination,
                                     &checkpoint,
+                                    || watch.observes(&wall),
                                 )
                                 .await
                                 .ok()
+                                .flatten()
                                 .map(|grant| (reconnected, grant)),
                                 None => None,
                             },
                         };
                         if let Some((client, grant)) = armed {
-                            if !wall.current() {
+                            if !watch.observes(&wall) {
                                 let _ = exec_grant::cancel(&client, &grant.ticket).await;
                                 continue;
                             }
@@ -618,17 +647,26 @@ mod unix {
                                 let _ = exec_grant::cancel(&client, &grant.ticket).await;
                                 continue;
                             }
-                            active.store(true, std::sync::atomic::Ordering::Release);
+                            let drain = codex_core::ExecQuotaDrain::new(
+                                std::sync::Arc::clone(&wall),
+                                std::sync::Arc::clone(&active),
+                            );
                             let suspended = match handle
-                                .suspend_exec_turn(
+                                .suspend_exec_turn_if_observed(
                                     thread,
                                     origin.turn.clone(),
                                     configuration.clone(),
+                                    Some(drain),
                                 )
                                 .await
                             {
-                                Ok(suspended) => suspended,
-                                Err(_) => {
+                                Ok(Some(suspended)) => suspended,
+                                Ok(None) => {
+                                    let _ = exec_grant::cancel(&client, &grant.ticket).await;
+                                    continue;
+                                }
+                                Err(error) => {
+                                    tracing::debug!(target: "codex_alab_exec_handoff", %error, "exec turn suspension failed");
                                     let _ = exec_grant::cancel(&client, &grant.ticket).await;
                                     return Err(
                                         "exec handoff could not stop the original turn".into()
@@ -638,6 +676,7 @@ mod unix {
                             if serde_json::to_value(Checkpoint::new(
                                 suspended.options().clone(),
                                 worktree.clone(),
+                                kind.limit_id(),
                             ))
                             .ok()
                             .as_ref()
@@ -684,11 +723,11 @@ mod unix {
         };
         tokio::time::timeout(wait, async {
             loop {
-                if !wall.current() {
+                if !watch.observes(wall) {
                     return false;
                 }
                 match exec_grant::reserve(client, grant).await {
-                    Ok(exec_grant::Execution::Ready) => return wall.current(),
+                    Ok(exec_grant::Execution::Ready) => return watch.observes(wall),
                     Ok(exec_grant::Execution::Waiting) => {}
                     Err(_) => return false,
                 }

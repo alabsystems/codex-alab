@@ -18,6 +18,7 @@ use codex_alab_core::session::AccountHandoff;
 use codex_alab_core::session::NativePhase;
 use codex_alab_core::session::OwedAct;
 use codex_alab_core::session::RecoveryWall;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_history::RolloutItem;
 
 use codex_alab_aterm::account_recovery::policy_allows as policy_allows_recovery;
@@ -1026,6 +1027,7 @@ impl Autopilot {
                         renewal: Some(AccountHandoff {
                             purpose: codex_alab_core::account_handoff::Purpose::Login,
                             destination: None,
+                            limit: None,
                             openai_scope: true,
                             local: true,
                             account: identity.account,
@@ -1793,6 +1795,41 @@ impl Autopilot {
         }
     }
 
+    /// A model-specific refusal requires a quota binding in the current request owner's
+    /// generation. The refusal retains its kind even when that binding could not be made.
+    fn quota_handoff_limit(
+        &self,
+        rt: &ThreadRt,
+        policy: &codex_alab_aterm::policy::HarnessPolicy,
+    ) -> Result<Option<String>, ()> {
+        match lock(&rt.state)
+            .point
+            .as_ref()
+            .and_then(|point| point.wall.as_ref())
+        {
+            // A restored ordinary intent can predate its in-memory point. A named intent
+            // still needs an exact limit at the final prepare check.
+            None => return Ok(None),
+            Some(Wall::Usage {
+                limit_class: LimitClass::Ordinary,
+                ..
+            }) => return Ok(None),
+            Some(Wall::Usage {
+                limit_class: LimitClass::Model,
+                ..
+            }) => {}
+            _ => return Err(()),
+        }
+        let scope = self.quota_scope(rt).ok_or(())?;
+        if account_broker::leaves_limits(policy)
+            && codex_alab_core::wall_kind::valid_limit_id(&scope.bucket)
+        {
+            Ok(Some(scope.bucket))
+        } else {
+            Err(())
+        }
+    }
+
     /// One pass of [`Self::follow_renewal`]: true while it keeps the point. `asked` is set
     /// as the pass sends the host the ask (`prepare`) for an intent no receipt binds; every
     /// other way out leaves it clear, a kept point included. `checked` is set once the pass
@@ -1894,7 +1931,7 @@ impl Autopilot {
         let (purpose, host) = self.first_recovery_host(preferred, purpose).await;
         // Read after the host's reply, which may have made the purpose a lost login's move.
         let recheck = point_recheck(purpose, existing.as_ref().is_some_and(receipt_bound));
-        let (client, policy) = match host {
+        let (client, policy, remote) = match host {
             RecoveryHost::Permits(permitted) => {
                 if rt.bound_host_unread.swap(false, Ordering::SeqCst) {
                     self.sup.note(format!(
@@ -1902,8 +1939,7 @@ impl Autopilot {
                         rt.key
                     ));
                 }
-                let (client, policy, _) = *permitted;
-                (client, policy)
+                *permitted
             }
             // A BOUND RECEIPT KEEPS THE POINT WHILE THE HOST CANNOT BE READ. `commit`
             // may have been sent for it, so the host may be moving the session to
@@ -2075,6 +2111,14 @@ impl Autopilot {
             if count == 0 {
                 return false;
             }
+            let limit = if purpose == Purpose::WeeklyQuota {
+                let Ok(limit) = self.quota_handoff_limit(rt, &remote) else {
+                    return false;
+                };
+                limit
+            } else {
+                None
+            };
             let goal_id = match self
                 .renewal_goal_for_intent(rt, &thread, &origin.turn_id)
                 .await
@@ -2104,6 +2148,7 @@ impl Autopilot {
                 renewal: Some(AccountHandoff {
                     purpose,
                     destination: None,
+                    limit,
                     openai_scope: true,
                     local: false,
                     account: identity.account,
@@ -2243,18 +2288,31 @@ impl Autopilot {
                 // The ask's span starts with its first ask in this process.
                 self.login_rotation_asked_since(rt, &wall);
             }
-            asked.store(true, Ordering::SeqCst);
-            account_broker::prepare(
-                &client,
-                renewal.purpose,
-                &owed.thread,
-                &wall,
-                &Identity {
-                    account: renewal.account.clone(),
-                    user: renewal.user.clone(),
-                },
-            )
-            .await
+            if !current() || !pass.stands(&self.sup) {
+                self.schedule(rt, clock() + recheck);
+                return true;
+            }
+            let source = Identity {
+                account: renewal.account.clone(),
+                user: renewal.user.clone(),
+            };
+            if renewal.purpose == Purpose::WeeklyQuota
+                && (self.quota_handoff_limit(rt, &remote).as_ref() != Ok(&renewal.limit)
+                    || self.renewal_identity().as_ref() != Some(&source))
+            {
+                Ok(Outcome::NotNeeded)
+            } else {
+                asked.store(true, Ordering::SeqCst);
+                account_broker::prepare_with_limit(
+                    &client,
+                    renewal.purpose,
+                    &owed.thread,
+                    &wall,
+                    &source,
+                    renewal.limit.as_deref(),
+                )
+                .await
+            }
         };
         if !pass.stands(&self.sup) || !current() {
             self.schedule(rt, clock() + recheck);
@@ -2764,6 +2822,85 @@ impl Autopilot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn model_limit_needs_its_current_quota_binding_and_an_advertised_host() {
+        use crate::supervisor::SupervisorOptions;
+        use codex_alab_aterm::policy::PolicyAnswer;
+
+        let sup = Supervisor::new(SupervisorOptions {
+            shared: Box::leak(Box::new(codex_alab_core::session::Shared::new())),
+            endpoint: Arc::new(|| None),
+            client: Default::default(),
+        });
+        let autopilot = Autopilot::new(sup, None, None, Timing::default(), |_| true);
+        let rt = ThreadRt::new(ThreadId::new(), None, false, Duration::ZERO);
+        let mut state = at_usage_wall(clock(), None);
+        let Some(Wall::Usage { limit_class, .. }) =
+            state.point.as_mut().and_then(|point| point.wall.as_mut())
+        else {
+            panic!("expected a usage wall");
+        };
+        *limit_class = LimitClass::Model;
+        rt.with_state(|current| *current = state);
+        let PolicyAnswer::Supported(mut host) = PolicyAnswer::parse(
+            "OK gen=1 effective=on codex_rotation=1 accounts=wall relaunch=true resume_limits=true codex_rotation_limits=1",
+        ) else {
+            panic!("expected a host policy");
+        };
+        let identity = QuotaIdentity {
+            account: "source".into(),
+            user: Some("user".into()),
+            owner: 1,
+        };
+        *lock(&autopilot.quota_test_identity) = Some(identity.clone());
+        let limit = |host: &codex_alab_aterm::policy::HarnessPolicy| {
+            autopilot.quota_handoff_limit(&rt, host)
+        };
+        assert_eq!(limit(&host), Err(()));
+        let scope = codex_alab_core::quota::Scope {
+            account: identity.account.clone(),
+            user: identity.user.clone(),
+            bucket: "codex_other".into(),
+            ..Default::default()
+        };
+        autopilot.restore_quota_scope(&rt, Some(&scope));
+        assert_eq!(limit(&host), Ok(Some(scope.bucket.clone())));
+        host.keys.remove("codex_rotation_limits");
+        assert_eq!(limit(&host), Err(()));
+        host.keys.insert("codex_rotation_limits".into(), "1".into());
+        *lock(&autopilot.quota_test_identity) = Some(QuotaIdentity {
+            owner: 2,
+            ..identity
+        });
+        assert_eq!(limit(&host), Err(()));
+        // Restoring this wait on another login still lets that login's authenticated
+        // measurement wake the named bucket, but it did not receive this refusal.
+        *lock(&autopilot.quota_test_identity) = Some(QuotaIdentity {
+            account: "other".into(),
+            user: Some("other-user".into()),
+            owner: 3,
+        });
+        rt.with_state(|state| assert!(autopilot.restore_quota_wait(&rt, state, Some(&scope))));
+        assert_eq!(limit(&host), Err(()));
+        let rebound = autopilot.quota_scope(&rt).expect("watcher remains bound");
+        assert_eq!(rebound.account, "other");
+        assert_eq!(rebound.bucket, scope.bucket);
+        assert!(matches!(
+            lock(&rt.state)
+                .point
+                .as_ref()
+                .and_then(|point| point.wall.as_ref()),
+            Some(Wall::Usage {
+                limit_class: LimitClass::Unverified,
+                ..
+            })
+        ));
+        rt.with_state(|current| *current = at_usage_wall(clock(), None));
+        assert_eq!(limit(&host), Ok(None));
+        rt.with_state(|current| current.point = None);
+        assert_eq!(limit(&host), Ok(None));
+    }
+
     /// A thread whose point is a usage wall met at `at`, naming `reset_at`.
     fn at_usage_wall(at: Instant, reset_at: Option<Instant>) -> ThreadState {
         let mut state = ThreadState::default();
@@ -2778,6 +2915,7 @@ mod tests {
                 questions: false,
                 worked: Duration::from_secs(5),
                 wall: Some(Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at,
                     reset_label: None,
                 }),
@@ -2802,6 +2940,7 @@ mod tests {
         let due = reset + grace;
         let tick = Duration::from_nanos(1);
         let usage = Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: Some(reset),
             reset_label: None,
         };
@@ -2833,6 +2972,7 @@ mod tests {
             "a bound receipt is never abandoned"
         );
         let unnamed = Wall::Usage {
+            limit_class: LimitClass::Ordinary,
             reset_at: None,
             reset_label: None,
         };
@@ -3025,6 +3165,7 @@ mod tests {
             renewal: Some(AccountHandoff {
                 purpose: codex_alab_core::account_handoff::Purpose::Login,
                 destination: None,
+                limit: None,
                 openai_scope: true,
                 local: false,
                 account: "a".repeat(64),

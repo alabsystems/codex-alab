@@ -45,6 +45,9 @@ use crate::ExecServerRuntimeOptions;
 use crate::ProcessId;
 use crate::StartedExecProcess;
 use crate::network_policy_decisions::network_policy_decider;
+#[path = "../../alab-core/glue/local_shell_output_retirement.rs"] mod local_shell_output_retirement; // ALAB(shell-output): retire the exact local raw readers after a final poll.
+use crate::process::LocalCaptureObserver; // ALAB(shell-output): original raw stream with EOF evidence.
+use crate::process::LocalOutputObserver; // ALAB(shell-output): local raw output tap.
 use crate::process::ExecProcessEventLog;
 use crate::process::sandbox_type_from_protocol;
 use crate::process_sandbox::prepare_exec_request_with_telemetry;
@@ -105,6 +108,7 @@ struct RunningProcess {
     accepted_stdin_write_ids: Arc<Mutex<AcceptedStdinWriteIds>>,
     output: VecDeque<ProcessOutputChunk>,
     retained_bytes: usize,
+    output_observer: Option<LocalCaptureObserver>, // ALAB(shell-output): before replay clipping.
     next_seq: u64,
     exit_code: Option<i32>,
     wake_tx: watch::Sender<u64>,
@@ -177,6 +181,7 @@ pub(crate) struct LocalProcess {
 
 struct LocalExecProcess {
     process_id: ProcessId,
+    started_with_output_observer: bool, // ALAB(shell-output): per-launch custody of the raw output tap.
     backend: LocalProcess,
     wake_tx: watch::Sender<u64>,
     events: ExecProcessEventLog,
@@ -290,6 +295,7 @@ impl LocalProcess {
         &self,
         params: ExecParams,
         mut telemetry: ProcessTelemetry,
+        output_observer: Option<LocalCaptureObserver>, // ALAB(shell-output): in-process start hook.
     ) -> Result<(ExecResponse, watch::Sender<u64>, ExecProcessEventLog), JSONRPCErrorError> {
         telemetry.launch_context = telemetry.launch_context.filter(SpanContext::is_valid);
         let metadata = params.metadata.as_ref();
@@ -491,6 +497,7 @@ impl LocalProcess {
                     ),
                     output: VecDeque::new(),
                     retained_bytes: 0,
+                    output_observer, // ALAB(shell-output): attach before output tasks start.
                     next_seq: 1,
                     exit_code: None,
                     wake_tx: wake_tx.clone(),
@@ -557,7 +564,7 @@ impl LocalProcess {
         params: ExecParams,
         telemetry: ProcessTelemetry,
     ) -> Result<ExecResponse, JSONRPCErrorError> {
-        self.start_process(params, telemetry)
+        self.start_process(params, telemetry, /*output_observer*/ None)
             .await
             .map(|(response, _, _)| response)
     }
@@ -813,9 +820,14 @@ pub(crate) fn shell_environment_policy(env_policy: &ExecEnvPolicy) -> ShellEnvir
 }
 
 impl LocalProcess {
-    async fn start(&self, params: ExecParams) -> Result<StartedExecProcess, ExecServerError> {
+    async fn start(
+        &self,
+        params: ExecParams,
+        output_observer: Option<LocalCaptureObserver>, // ALAB(shell-output): in-process start hook.
+    ) -> Result<StartedExecProcess, ExecServerError> {
+        let started_with_output_observer = output_observer.is_some(); // ALAB(shell-output): the local service installs this tap at start.
         let (response, wake_tx, events) = self
-            .start_process(params, ProcessTelemetry::default())
+            .start_process(params, ProcessTelemetry::default(), output_observer)
             .await
             .map_err(map_handler_error)?;
         let sandbox_type = sandbox_type_from_protocol(response.sandbox_type);
@@ -823,6 +835,7 @@ impl LocalProcess {
             process: Arc::new(LocalExecProcess {
                 process_id: response.process_id,
                 backend: self.clone(),
+                started_with_output_observer, // ALAB(shell-output): retained even if the numeric process ID is later reused.
                 wake_tx,
                 events,
             }),
@@ -833,7 +846,20 @@ impl LocalProcess {
 
 impl ExecBackend for LocalProcess {
     fn start(&self, params: ExecParams) -> ExecBackendFuture<'_> {
-        Box::pin(LocalProcess::start(self, params))
+        Box::pin(LocalProcess::start(self, params, /*output_observer*/ None))
+    }
+
+    // ALAB(shell-output): attach an observer before any raw bytes arrive.
+    fn start_with_local_output_observer(
+        &self,
+        params: ExecParams,
+        observer: LocalOutputObserver,
+    ) -> ExecBackendFuture<'_> {
+        self.start_with_local_capture_observer(params, Arc::new(move |event| observer(match event { crate::LocalOutput::Bytes(bytes) => Some(bytes), crate::LocalOutput::Closed { .. } => None }))) // ALAB(shell-output): preserve the original callback's closure.
+    }
+
+    fn start_with_local_capture_observer(&self, params: ExecParams, observer: LocalCaptureObserver) -> ExecBackendFuture<'_> { // ALAB(shell-output): start with positive EOF provenance.
+        Box::pin(LocalProcess::start(self, params, Some(observer)))
     }
 
     #[cfg(unix)]
@@ -932,6 +958,9 @@ impl ExecProcess for LocalExecProcess {
     fn terminate(&self) -> ExecProcessFuture<'_, ()> {
         Box::pin(LocalExecProcess::terminate(self))
     }
+    fn started_with_local_output_observer(&self) -> bool { self.started_with_output_observer } // ALAB(shell-output): report actual capture installation on this launch.
+    fn dispose_owned_local_capture(&self) -> ExecProcessFuture<'_, bool> { Box::pin(local_shell_output_retirement::dispose(self)) } // ALAB(shell-output): classify and close only this original process at final ownership release.
+    fn stop_local_output_after_exit(&self) -> ExecProcessFuture<'_, ()> { Box::pin(local_shell_output_retirement::stop(self)) } // ALAB(shell-output): stop only readers of the confirmed original invocation.
 }
 
 impl LocalProcess {
@@ -1026,6 +1055,10 @@ async fn stream_output(
             };
             let seq = process.next_seq;
             process.next_seq += 1;
+            // ALAB(shell-output): observe before replay clipping.
+            if let Some(observer) = &process.output_observer {
+                observer(crate::LocalOutput::Bytes(&chunk.0)); // ALAB(shell-output): original bytes.
+            }
             process.retained_bytes += chunk.0.len();
             let output = ProcessOutputChunk { seq, stream, chunk };
             process.output.push_back(output.clone());
@@ -1197,6 +1230,10 @@ async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
             return;
         }
 
+        // ALAB(shell-output): all local output drained.
+        if let Some(observer) = process.output_observer.take() {
+            observer(crate::LocalOutput::Closed { native_eof: process.session.native_output_eof() }); // ALAB(shell-output): verify original native readers reached EOF.
+        }
         process.closed = true;
         if let Some(network_policy_shutdown) = process.network_policy_shutdown.take() {
             network_policy_shutdown.cancel();
@@ -1314,6 +1351,8 @@ mod tests {
                 .map(|arg| std::ffi::OsString::from_vec(arg.to_vec())),
         );
     }
+
+    #[cfg(unix)] include!("../../alab-core/glue/local_shell_output_retirement_tests.rs"); // ALAB(shell-output): verify bounded retirement with an inherited pipe.
 
     fn test_exec_params(env: HashMap<String, String>) -> ExecParams {
         ExecParams {
@@ -1506,7 +1545,7 @@ mod tests {
         params.cwd = cwd;
 
         let result = LocalProcess::default()
-            .start_process(params, ProcessTelemetry::default())
+            .start_process(params, ProcessTelemetry::default(), /*output_observer*/ None)
             .await;
         let Err(error) = result else {
             panic!("non-native cwd should be rejected");
@@ -1534,7 +1573,7 @@ mod tests {
             params.process_id = ProcessId::from(process_id);
             params.network_proxy = Some(proxy.clone());
             let error = LocalProcess::default()
-                .start_process(params, ProcessTelemetry::default())
+                .start_process(params, ProcessTelemetry::default(), /*output_observer*/ None)
                 .await
                 .err()
                 .expect("invalid callback process ID should be rejected");
@@ -1547,7 +1586,7 @@ mod tests {
         boundary.network_proxy = Some(proxy);
         boundary.argv.clear();
         let error = LocalProcess::default()
-            .start_process(boundary, ProcessTelemetry::default())
+            .start_process(boundary, ProcessTelemetry::default(), /*output_observer*/ None)
             .await
             .err()
             .expect("valid boundary process ID should proceed to process preparation");
@@ -1568,7 +1607,7 @@ mod tests {
             ordinary.process_id = ProcessId::from(process_id);
             ordinary.argv.clear();
             let error = LocalProcess::default()
-                .start_process(ordinary, ProcessTelemetry::default())
+                .start_process(ordinary, ProcessTelemetry::default(), /*output_observer*/ None)
                 .await
                 .err()
                 .expect("empty argv should be rejected after ID validation");
@@ -2134,6 +2173,7 @@ mod tests {
                 accepted_stdin_write_ids: Arc::new(Mutex::new(AcceptedStdinWriteIds::default())),
                 output: VecDeque::new(),
                 retained_bytes: 0,
+                output_observer: None,
                 next_seq: 1,
                 exit_code: None,
                 wake_tx: wake_tx.clone(),

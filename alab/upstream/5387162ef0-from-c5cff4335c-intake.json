@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "base": "c5cff4335c1e4675227c8b89520aaf09564b9aa7",
+  "target": "5387162ef03157b27111c82ba5807078a66aa726",
+  "frontier": "c5cff4335c1e4675227c8b89520aaf09564b9aa7",
+  "commits": [
+    {
+      "sha": "513577302a9aacd217b128a701702a54b7e752b6",
+      "subject": "Surface Responses stream errors as soon as they arrive (#62356)",
+      "paths": [
+        "codex-rs/codex-api/src/error.rs",
+        "codex-rs/codex-api/src/sse/responses.rs",
+        "codex-rs/codex-api/src/sse/responses_error.rs",
+        "codex-rs/codex-api/src/sse/responses_error_tests.rs",
+        "codex-rs/core/tests/suite/client_websockets.rs"
+      ],
+      "classes": [
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "provider-recovery",
+        "security-notices"
+      ],
+      "decision": "adapt",
+      "reason": "Use the upstream error classifier so an open provider stream delivers a typed failure and any retry advice promptly. Preserve the fork’s diagnostics and its enhanced-mode treatment of an unclassified provisional failure.",
+      "evidence": [
+        "Upstream covers keep-open SSE and pre-close WebSocket errors. Its parser recognizes statusless error envelopes and prefers valid error-level retry headers over the outer headers. Its SSE tests exercise both event forms.",
+        "The existing fork adapter duplicates upstream overload and capacity classification. The integration can drop those duplicate cases and keep the narrow fork-owned invalid-request adaptation and malformed-input checks.",
+        "Recognized service refusals and content-filter outcomes end the stream immediately in either mode. Only an unclassified failure can await a later completion in enhanced mode. The regression cases exercise contradictory completion and a stream that remains open."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ed9becd2fcf37cd06a1af44e37e3c33d8493128e",
+      "subject": "Report why turn critical path capture is incomplete (#62357)",
+      "paths": [
+        "codex-rs/analytics/src/lib.rs",
+        "codex-rs/analytics/src/tests/suite/turns/events_tests.rs",
+        "codex-rs/analytics/src/turn_critical_path.rs",
+        "codex-rs/core/src/guardian/decision.rs",
+        "codex-rs/core/src/guardian/decision_timing_tests.rs",
+        "codex-rs/core/src/session/elicitation_holders_tests.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/src/tasks/mod_tests.rs",
+        "codex-rs/core/src/tools/parallel.rs",
+        "codex-rs/core/src/tools/registry.rs",
+        "codex-rs/core/src/tools/router_tests.rs",
+        "codex-rs/core/src/tools/spec_plan_tests.rs",
+        "codex-rs/core/src/turn_timing.rs",
+        "codex-rs/core/src/turn_timing/report.rs",
+        "codex-rs/core/src/turn_timing_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "telemetry"
+      ],
+      "features": [
+        "execution-continuity",
+        "goal-storage-recovery"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt typed reasons for incomplete turn timing and distinguish a normally completed task from a forced teardown. Keep the goal accounting that settles transferred work before retiring an interrupted turn.",
+      "evidence": [
+        "Upstream serializes only enum reasons and omits the field for complete or disabled captures. It tests concurrent reason deduplication, name collisions, and tasks that finish at interruption versus those forcibly aborted.",
+        "The existing fork hook is immediately after an unconditional task abort and join. Upstream replaces that operation with a bounded join that inspects its outcome. The hook belongs after that join and before recording pending input."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "5387162ef03157b27111c82ba5807078a66aa726",
+      "subject": "Reserve credential permission tables in Codex configuration (#62358)",
+      "paths": [
+        "codex-rs/config/src/config_requirements.rs",
+        "codex-rs/config/src/loader/local.rs",
+        "codex-rs/config/src/loader/managed_project_discovery_tests.rs",
+        "codex-rs/config/src/permissions_toml.rs",
+        "codex-rs/config/src/requirements_layers/permissions.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/config/config_loader_tests.rs",
+        "codex-rs/core/src/config/config_tests.rs",
+        "codex-rs/core/src/config/permissions.rs",
+        "codex-rs/core/src/config/permissions_tests.rs",
+        "codex-rs/core/src/session/tests.rs"
+      ],
+      "classes": [
+        "security",
+        "feature"
+      ],
+      "features": [
+        "account-isolation",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Reserve the managed credential policy table while keeping normal user permission profiles named credentials valid.",
+      "evidence": [
+        "The new configuration type is empty and refuses unknown keys. An empty managed table cannot bind directly or via inheritance to a same-named writable user profile. The config loader has a native regression for both selections.",
+        "The raw managed-profile reader still enforces network inheritance for legacy managed profiles. The implementation also updates the JSON schema and the construction sites in config and Core. The retained fork sources have no additional permission-struct literal that needs updating."
+      ],
+      "revisit": ""
+    }
+  ]
+}

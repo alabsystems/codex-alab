@@ -77,3 +77,57 @@ These are declarations, not observed executions. Original body hashes cover open
 MCP, metadata and Guardian library modules are under cfg(test). The new interrupt test file also has a file-level cfg(test). Network-skip macros in the two-case interrupt fixture, subagent integration and CodeMode integration can self-skip; a future native run must reject skipped coverage. TestAppServer defaults to the codex-app-server binary and its automatic environment; optional released prefix runs use the explicit supplied CLI with app-server arguments. CodeMode exercises the native V8/host and bounded two-party barrier fixtures. These helper requirements are source observations, not evidence any helper was built or run.
 
 The two dependency commits have no new source test declarations. Qualification still requires the maintained native gate and affected feature observations against the integrated source, exact selected compiler and committed dependencies. The current independent N production compilation result and the application certification blocker remain separate records.
+
+## ALab CLI prompt-prefix comparison on November 19
+
+A source-selected native CLI test build from reviewed integration
+`7aae4c7503449902cdf05631d4d0e9f1b4b39aab` ran the two prompt-prefix tests
+through its real `app-server` command on macOS arm64. The previous executable
+in the version comparison was the installed and verified signed build
+`2026111701`. Both versions used their own bundled resources and the same
+loopback client. The current-side launcher recorded each native CLI invocation.
+
+| Executables | Fresh default model prompt | Saved prompt after restart and changed tool declaration |
+| --- | --- | --- |
+| Candidate CLI on both sides | Passed | Passed |
+| Signed CLI followed by candidate CLI | Failed | Passed |
+
+The fresh-start assertion detected three model-visible changes. The candidate
+exposes shell-output recovery and command identity fields and revised login-shell
+guidance. It also supplies the updated model shortlist and model instructions.
+The bundled catalog for the candidate, managed main at `d39eb44801`, and upstream
+at `15c5444e87` was byte-identical. The signed CLI predates the catalog import
+in `fdb80b2ec2`. The comparison kept its original assertions and exited 101.
+
+The upstream default harness launches a standalone app-server for its current
+side. Its comparison with the signed CLI also reported a delegation-policy
+difference. Only the CLI entry point activates ALab's packaged defaults.
+Comparing both real CLI entry points removed that difference. The candidate CLI
+test binary had SHA-256
+`d1f3489fedd6d0f220589331a7d47c595212d9a049d6bbc7254c80318bf1c976`.
+The version-skew run's libtest result had SHA-256
+`de1478ba6ba1a4866efcdbe6d1a4cd4b1c335f9ec79b75fd33488b91d3e10732`.
+
+## Client attribution across recovery on November 19
+
+All five upstream attribution controls passed on the private integration
+`ce3bf64f91439a62fbe61a8996f591a47262bf6c`. They exercised child metadata
+filtering, legacy and V2 spawning, and a yielded Code Mode cell. The fork's
+own exec-recovery path still needs an adaptation before integration.
+
+Native regression controls on `5f9a26fd5c8235cc1fcd83f0200f57f12cb2c9eb`
+reached three distinct failures.
+
+- The queued child lost its original attribution when decoded from the saved
+  frame. The controls for capturing both accepted and cancelled steering passed.
+- With original admission held, the test interrupted that turn and admitted a
+  separate replacement. The replacement inherited all nine original tool
+  calls and consumed the original's one-use accounting state.
+- The first request to the loopback provider after recovery kept the original
+  turn ID but lost both client metadata values that the provider had observed
+  before recovery.
+
+These results cover the local input queue, the admission race and the real
+provider request. The adaptation must preserve the captured data through
+admission and transfer it to the original registered turn before that turn
+can submit its first request.

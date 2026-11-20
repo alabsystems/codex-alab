@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "base": "081f205f423eb2a4db54318e7ded3b074aeb5532",
+  "target": "daa59ebd298ed6d7ee7dc92af09e5b25c5d63029",
+  "frontier": "081f205f423eb2a4db54318e7ded3b074aeb5532",
+  "commits": [
+    {
+      "sha": "daa59ebd298ed6d7ee7dc92af09e5b25c5d63029",
+      "subject": "Keep authorization evidence local to agent forks (#62314)",
+      "paths": [
+        "codex-rs/core/src/agent/control/sender_context.rs",
+        "codex-rs/core/src/agent/history.rs",
+        "codex-rs/core/src/agent/host/types.rs",
+        "codex-rs/core/src/agent/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/agent_control_tests.rs",
+        "codex-rs/core/tests/suite/guardian_sender_messages_tests.rs"
+      ],
+      "classes": [
+        "fix",
+        "security"
+      ],
+      "features": [
+        "account-isolation",
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adapt",
+      "reason": "Keep the permitted history of a prepared reference fork and the child's own attribution. Remove inherited Guardian approval fragments from the model context before startup and cold resume.",
+      "evidence": [
+        "ThreadManager accepts a host-provided root session ID for a fresh child or a prepared fork with referenced storage. It rejects an ordinary copied-history fork with that override. The child keeps its own thread ID. On a prepared fork it reads the disabled plugin selection before projecting the inherited prefix.",
+        "Startup, cold resume, and the storage fallback for sender evidence use the referenced prefix projection. It marks inherited messages and clears sender metadata and compacted Guardian history. Explicit child settings or a child-owned checkpoint mark the child suffix. The missing-marker fallback can treat an entire retained range as inherited when the stored end ordinal is at or before the original fork cutoff.",
+        "The real Core lifecycle fixtures exercise fresh legacy and paginated children, prepared startup and cold resume, and refusal of the copied-history override. The sender fixture compares a live owner with an independent manager reading the same durable child and requires the one child-local message.",
+        "Preserve ALab's parent account lease, process-wide startup admission and separate fork interruption marker. An inherited session ID groups the conversation. Approval remains bound to the original owner, action and current evidence.",
+        "The normal Guardian allow operation in session/handlers.rs injects a typed GuardianApprovedAction developer fragment. The canonical prepared reference projection passes preserve_fork_prefix=true, causing its envelope predicate to retain that fragment in the original prefix and in compacted replacement history. Clearing approval metadata leaves the model-facing instruction present. The selective ordinary agent fork fixture uses a different predicate.",
+        "Private source adaptation 7e106e72629449dc473c4fb45d679f5d93b7c332 filters typed and legacy approval fragments when projecting the inherited reference prefix, including its compaction replacement history. It keeps ordinary ancestor history, the source rollout and the child-owned suffix. Static checks passed. Runtime qualification remains pending.",
+        "The prepared host child in the current fixture exercises the native reviewer path because it has no agent path. Guardian V3 per-attempt evidence requires an attached reviewer fixture. Older child-owned checkpoints with missing provenance need independent migration evidence before claiming historical cleanup.",
+        "Trust 15698 ran 11 Core integration cases on the clean upstream integration 5cad4f5a94c6c8750c1c66aa671d08e7957bb1ab. Fresh legacy and paginated starts, prepared startup and cold resume, rejection of a copied-history override, six sender delivery variants, and independent storage reconstruction all passed. The child kept the ancestor conversation, inherited disabled plugins and its own local user authorization. The executable SHA-256 was 907c2ced885d1a8234b71724f6205fe2a2fb2f178ebafeb8140cc2f70674c82f. The typed/legacy approval-fragment adaptation requires its separate prepared-fork and compaction checks."
+      ],
+      "revisit": "Run the prepared reference fork from a real parent approval through startup and cold resume. Assert that the source retains its approval, the child retains its own approval and the projected ancestor contributes neither typed nor legacy approval text. Repeat for a compacted ancestor and verify the child-local sender evidence through an independent reader. Recheck the host account and original approval grants during integration."
+    }
+  ]
+}

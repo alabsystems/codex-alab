@@ -36,6 +36,18 @@ class UnreportableInterrupt(RefusingNotes, KeyboardInterrupt):
     pass
 
 
+class ReportedOrdinaryInterrupt(KeyboardInterrupt):
+    @property
+    def __class__(self):
+        return ValueError
+
+
+class RefusingClassInterrupt(KeyboardInterrupt):
+    @property
+    def __class__(self):
+        raise SystemExit(0)
+
+
 class OwnedDescriptors:
     def __init__(self, package, primary, fstat_index, open_index, close_faults):
         self.package = package
@@ -194,6 +206,13 @@ class ArtifactCleanupTests(unittest.TestCase):
         primary = KeyboardInterrupt('first pending cancellation')
         self.assert_primary(primary, close_faults={3: SystemExit(47), 2: self.eio(2)})
 
+    def test_pending_cancellation_uses_native_type_without_reading_reported_class(self):
+        for kind in (KeyboardInterrupt, ReportedOrdinaryInterrupt, RefusingClassInterrupt):
+            with self.subTest(native_type=kind.__name__):
+                self.assert_primary(kind('first pending cancellation'),
+                                    close_faults={3: SystemExit(47), 2: self.eio(2)},
+                                    observation=True)
+
     def test_ordinary_read_error_preserves_identity_across_cleanup_errors(self):
         primary = ValueError('primary metadata refusal')
         faults = {3: self.eio(3), 1: self.eio(1)}
@@ -224,6 +243,16 @@ class ArtifactCleanupTests(unittest.TestCase):
         self.assertIs(caught.exception.__cause__, primary)
         self.assertIn(f'artifact observation failed: {primary!r}', cancellation.__notes__)
         self.assertIn(f'artifact descriptor cleanup failed: {later!r}', cancellation.__notes__)
+
+    def test_cleanup_cancellation_uses_native_type_without_reading_reported_class(self):
+        for kind in (KeyboardInterrupt, ReportedOrdinaryInterrupt, RefusingClassInterrupt):
+            with self.subTest(native_type=kind.__name__):
+                primary, cancellation = ValueError('primary metadata refusal'), kind('cleanup stop')
+                with self.assertRaises(BaseException) as caught:
+                    self.inspect(primary, close_faults={3: cancellation, 2: self.eio(2)},
+                                 observation=True)
+                self.assertIs(caught.exception, cancellation)
+                self.assertIs(caught.exception.__cause__, primary)
 
     def test_successful_body_cleanup_cancellation_survives_later_close_error(self):
         cancellation = SystemExit(47)
@@ -289,6 +318,25 @@ class ArtifactCleanupTests(unittest.TestCase):
             self.inspect(primary, close_faults={3: self.eio(3), 2: self.eio(2)}, observation=True)
         self.assertIs(caught.exception, cancellation)
         self.assertIs(caught.exception.__cause__, primary)
+
+    def test_note_cancellation_uses_native_type_without_reading_reported_class(self):
+        for kind in (KeyboardInterrupt, ReportedOrdinaryInterrupt, RefusingClassInterrupt):
+            with self.subTest(native_type=kind.__name__):
+                cancellation = kind('note stop')
+                primary = UnreportableValueError('primary metadata refusal', cancellation)
+                with self.assertRaises(BaseException) as caught:
+                    self.inspect(primary, close_faults={3: self.eio(3)}, observation=True)
+                self.assertIs(caught.exception, cancellation)
+                self.assertIs(caught.exception.__cause__, primary)
+
+    def test_pending_cancellation_survives_note_stop_despite_reported_class(self):
+        for kind in (KeyboardInterrupt, ReportedOrdinaryInterrupt, RefusingClassInterrupt):
+            with self.subTest(native_type=kind.__name__):
+                class UnreportableClassInterrupt(RefusingNotes, kind):
+                    pass
+
+                primary = UnreportableClassInterrupt('first pending cancellation', SystemExit(47))
+                self.assert_primary(primary, close_faults={3: self.eio(3)}, observation=True)
 
     def test_note_fault_cannot_replace_selected_cleanup_cancellation(self):
         primary = ValueError('primary metadata refusal')

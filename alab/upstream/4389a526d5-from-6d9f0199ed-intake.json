@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "base": "6d9f0199ed0cfdd184754e593e0625917ad0ca28",
+  "target": "4389a526d51a5a7600e0648436a7142a304f0188",
+  "frontier": "6d9f0199ed0cfdd184754e593e0625917ad0ca28",
+  "commits": [
+    {
+      "sha": "4389a526d51a5a7600e0648436a7142a304f0188",
+      "subject": "Derive realtime input receipts from thread history (#62251)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRealtimeItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRealtimeItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadRealtimeItem.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadRealtimeSessionInputReason.ts",
+        "codex-rs/app-server-protocol/schema/typescript/v2/index.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/realtime.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/core/src/observation_clock_tests.rs",
+        "codex-rs/history/src/lib.rs",
+        "codex-rs/history/src/tests.rs",
+        "codex-rs/protocol/src/realtime.rs",
+        "codex-rs/rollout/src/persistence_metrics.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs",
+        "sdk/python/src/openai_codex/generated/v2_all.py"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity",
+        "native-ui"
+      ],
+      "decision": "adapt",
+      "reason": "Derive accepted voice handoffs and saved transcript receipts from the canonical annotated user message. Keep the historical mixed-timeline exclusion and regenerate both protocol bundles with the fork\u2019s retained configured notification.",
+      "evidence": [
+        "Reviewed all 19 paths against 6d9f0199ed. Binary diff SHA-256 8893862f81db6747a1de76072d4e47c2b09d09704a171fbc4391681b47211321.",
+        "The new history projection reads a single user text item with a stable ID and harness provenance, preserving its observation time. The #356 owned accessor moves canonical realtime rows and delegates annotated replies to the official projection. There is no new production input writer in this commit.",
+        "Upstream 5943d7acdf explicitly kept receipts out of both live notifications and mixed history. This change updates the live guard to SessionInputSaved but leaves the mixed timeline SQL filtering only the old session_end_input_saved spelling. Keep the old exclusion and add the current session_input_saved discriminator.",
+        "The experimental app-server protocol now emits sessionInputSaved with chunk or sessionEnd; carry the matching JSON, TypeScript and Python contracts. Its source type is distinct from persisted snake-case rollout data."
+      ],
+      "revisit": "Exercise both derived receipts, the restored observation clock, canonical allocation ownership, separated realtime pagination and omission from mixed history. Regenerate stable/experimental exports from integrated source and verify schema and SDK parity, including retained fork notifications."
+    }
+  ]
+}

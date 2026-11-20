@@ -61,7 +61,7 @@ pub(super) enum MemoryRecord {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub(super) enum MemoryEvent {
-    Ordinary(EventMsg),
+    Ordinary(#[serde(deserialize_with = "deserialize_ordinary_event")] EventMsg),
     Raw(MemoryItem),
     PrivateRecorded {
         thread: ThreadId,
@@ -71,6 +71,25 @@ pub(super) enum MemoryEvent {
         thread: ThreadId,
         event: TurnAbortedEvent,
     },
+}
+
+/// `EventMsg` normally buffers its internally tagged payload before decoding it. With
+/// arbitrary-precision JSON, a buffered decimal is a number object to Serde's f64 reader.
+/// Decode token counts by their concrete type, so usage percentages retain their f64 shape.
+fn deserialize_ordinary_event<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<EventMsg, D::Error> {
+    use serde::de::Error;
+    let value = serde_json::Value::deserialize(de)?;
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("token_count") {
+        return serde_json::from_value(value)
+            .map(EventMsg::TokenCount)
+            .map_err(D::Error::custom);
+    }
+    // Delegate every other event to its ordinary wire decoder. In particular, MCP arguments
+    // and provider payloads can contain numbers outside every machine integer and float.
+    let bytes = serde_json::to_vec(&value).map_err(D::Error::custom)?;
+    serde_json::from_slice(&bytes).map_err(D::Error::custom)
 }
 
 impl MemoryEvent {
@@ -297,6 +316,49 @@ mod tests {
             .unwrap()
             .restore()
             .unwrap()
+    }
+
+    #[test]
+    fn ordinary_event_capsules_preserve_typed_quota_and_arbitrary_tool_numbers() {
+        use codex_protocol::protocol::McpToolCallBeginEvent;
+        use codex_protocol::protocol::TokenCountEvent;
+        let count: TokenCountEvent = serde_json::from_str(
+            r#"{
+            "info": null, "rate_limits": {"limit_id":"codex_other",
+            "primary":{"used_percent":0.0,"window_minutes":300,"resets_at":100},
+            "secondary":{"used_percent":99.25,"window_minutes":10080,"resets_at":200}}
+        }"#,
+        )
+        .unwrap();
+        let raw = r#"{"fraction":0.12345678901234567890123456789,"integer":18446744073709551617,"large":340282366920938463463374607431768211457}"#;
+        let call: McpToolCallBeginEvent = serde_json::from_str(&format!(
+            r#"{{"call_id":"fixture","turn_id":"original","invocation":{{"server":"fixture","tool":"lookup","arguments":{raw}}}}}"#
+        )).unwrap();
+        for event in [
+            EventMsg::TokenCount(count),
+            EventMsg::McpToolCallBegin(call),
+        ] {
+            let item = RolloutItem::EventMsg(event.clone());
+            let RolloutItem::EventMsg(restored) = round_trip(&item) else {
+                panic!("capsule changed the event record")
+            };
+            assert_eq!(
+                serde_json::to_value(restored).unwrap(),
+                serde_json::to_value(&event).unwrap()
+            );
+            let value = serde_json::to_value(MemoryRecord::capture(&item).unwrap()).unwrap();
+            assert_eq!(value["kind"], "event");
+            assert_eq!(value["value"]["kind"], "ordinary");
+            let stored = &value["value"]["value"];
+            if stored["type"] == "mcp_tool_call_begin" {
+                assert_eq!(
+                    serde_json::to_string(&stored["invocation"]["arguments"]).unwrap(),
+                    raw
+                );
+            } else {
+                assert_eq!(stored["rate_limits"]["secondary"]["used_percent"], 99.25);
+            }
+        }
     }
 
     #[test]

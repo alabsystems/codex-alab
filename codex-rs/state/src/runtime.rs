@@ -44,6 +44,7 @@ mod backfill;
 mod external_agent_config_imports;
 mod goals;
 mod guardian_feedback;
+#[path = "../../alab-core/glue/shell_invocation_state.rs"] pub(crate) mod alab_shell_invocations; // ALAB(shell-output): bounded observations of the original shell invocation.
 mod logs;
 mod logs_maintenance;
 mod memories;
@@ -61,6 +62,8 @@ mod thread_metadata;
 mod thread_read_state;
 mod thread_section_order;
 mod thread_sections;
+#[path = "../../alab-core/glue/resume_index_ids.rs"] // ALAB(accounts): compare restored rollout filenames with the complete index.
+mod alab_resume_index;
 mod threads;
 
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;

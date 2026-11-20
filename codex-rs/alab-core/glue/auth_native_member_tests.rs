@@ -211,6 +211,12 @@ fn native_http_text_body_preserves_authorization_and_retires_before_next_request
 }
 
 #[test]
+fn native_credential_output_refuses_staged_and_pending_bytes_after_source_loss_or_policy_withdrawal() {
+    child("export_eof");
+    child("export_policy");
+}
+
+#[test]
 fn native_managed_policy_refusal_revokes_retained_credential_and_request_scope() {
     child("managed_policy");
 }
@@ -852,7 +858,62 @@ async fn constructor_child() {
     native::install(Arc::new(Host(Arc::clone(&peer))));
     let config = config(home.clone(), &case);
 
-    if case == "api_cache_ack_swap" {
+    if matches!(case.as_str(), "export_eof" | "export_policy") {
+        let manager = Arc::new(AuthManager::new_from_auth_config(config, true, None).await);
+        let snapshot = manager.auth_cached().expect("selected managed account");
+        let token = snapshot.get_token().unwrap();
+        let prepare = || {
+            manager
+                .alab_prepare_credential_export(&snapshot, token.clone())
+                .unwrap()
+        };
+        let mut allowed = Vec::new();
+        prepare()
+            .write_with(&mut allowed, |staged, value| {
+                staged.extend_from_slice(value.as_bytes());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(allowed, token.as_bytes());
+
+        let rendering = prepare();
+        let pending = prepare();
+        let (staged_tx, staged_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let mut output = Vec::new();
+            let result = rendering.write_with(&mut output, |staged, value| {
+                staged.extend_from_slice(value.as_bytes());
+                staged_tx.send(()).unwrap();
+                resume_rx.blocking_recv().unwrap();
+                Ok(())
+            });
+            (result, output)
+        });
+        staged_rx.await.expect("writer entered rendering");
+        if case == "export_policy" {
+            manager.restrict_auth_modes(vec![AuthMode::ApiKey]).unwrap();
+            manager.reload().await;
+        } else {
+            peer.live.store(false, Ordering::Release);
+        }
+        assert!(manager.auth_cached().is_none());
+        resume_tx.send(()).unwrap();
+        let (result, output) = worker.await.unwrap();
+        assert!(result.is_err());
+        assert!(
+            output.is_empty(),
+            "staged credential reached the destination"
+        );
+
+        let mut output = Vec::new();
+        assert!(
+            pending
+                .write_with(&mut output, |_, _| panic!("revoked export entered rendering"))
+                .is_err()
+        );
+        assert!(output.is_empty());
+    } else if case == "api_cache_ack_swap" {
         let manager = Arc::new(AuthManager::new_from_auth_config(config.clone(), true, None).await);
         let other = AuthManager::new_from_auth_config(config.clone(), true, None).await;
         let original = manager.alab_source_member.read().unwrap().clone().unwrap();

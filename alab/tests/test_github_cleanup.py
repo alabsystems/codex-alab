@@ -4,12 +4,18 @@
 from contextlib import ExitStack
 import importlib.util
 import json
+import os
 from pathlib import Path
-import tempfile
-from types import SimpleNamespace
+import select
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
+from test_github import disk_fixture_cli
 import test_github_push as publication_tests
 
 SPEC = importlib.util.spec_from_file_location('cleanup_versions',
@@ -42,10 +48,133 @@ class GithubCleanupTests(unittest.TestCase):
         self.empty_releases = self.root / 'empty releases.git'
         publication_tests.git(self.root, 'init', '--quiet', '--bare', str(self.empty_releases))
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX publication cancellation')
+    def test_real_sigterm_retires_staged_publication_before_push(self):
+        import fcntl
+        # Git keeps a fetch of at least 100 objects as a pack in the independent transport.
+        for index in range(128):
+            (self.repo / f'blob-{index}').write_text(f'candidate object {index}\n')
+        publication_tests.git(self.repo, 'add', '--all')
+        publication_tests.git(self.repo, 'commit', '--quiet', '-m', 'packed candidate')
+        scratch = self.root / 'publication'
+        scratch.mkdir()
+        neighbor = scratch / 'unrelated'
+        neighbor.write_bytes(b'keep this')
+        ready, release = self.root / 'ready', self.root / 'release'
+        for path in (ready, release):
+            os.mkfifo(path, 0o600)
+        lock = self.root / 'reader.lock'
+        reader = self.root / 'reader.py'
+        reader.write_text(
+            'import fcntl, sys\n'
+            'from pathlib import Path\n'
+            'root = Path(sys.argv[1])\n'
+            'with (root / "reader.lock").open("a") as lock:\n'
+            '    fcntl.flock(lock, fcntl.LOCK_EX)\n'
+            '    with (root / "ready").open("wb", buffering=0) as ready:\n'
+            '        ready.write(b"r")\n'
+            '    with (root / "release").open("rb", buffering=0) as release:\n'
+            '        release.read(1)\n'
+            '    if not any((root / "publication").glob("*/transport.git/objects/pack/*.pack")):\n'
+            '        (root / "removed-during-read").touch()\n')
+        real_git = shutil.which('git')
+        shim = self.root / 'git'
+        shim.write_text(
+            '#!/bin/sh\nfor arg do\n  if [ "$arg" = ls-remote ]; then\n    '
+            + shlex.join([sys.executable, '-I', '-B', str(reader), str(self.root)])
+            + ' || exit $?\n    break\n  fi\ndone\nexec ' + shlex.quote(real_git) + ' "$@"\n')
+        shim.chmod(0o700)
+        env = {**os.environ, 'TMPDIR': str(scratch),
+               'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        # The first local ls-remote reads the destination after the candidate fetch
+        # and before any push. Its grandchild holds the lifetime of that read.
+        with ExitStack() as stack:
+            incoming, outgoing = [os.open(path, os.O_RDWR | os.O_NONBLOCK)
+                                  for path in (ready, release)]
+            for descriptor in (incoming, outgoing):
+                stack.callback(os.close, descriptor)
+            cli = subprocess.Popen(
+                [sys.executable, '-I', '-B', '-c', disk_fixture_cli(Path(__file__).parents[1] / 'github_push.py', 24),
+                 '--repo', str(self.repo), '--expected', self.before, str(self.remote)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                self.assertTrue(select.select([incoming], [], [], 60)[0], 'remote read never began')
+                self.assertEqual(os.read(incoming, 1), b'r')
+                packs = list(scratch.glob('*/transport.git/objects/pack/*.pack'))
+                size = sum(path.stat().st_size for path in packs)
+                self.assertGreater(size, 0, 'candidate graph was not staged')
+                cli.send_signal(signal.SIGTERM)
+                os.write(outgoing, b'x')
+                _, stderr = cli.communicate(timeout=60)
+            finally:
+                os.write(outgoing, b'x')
+                if cli.poll() is None:
+                    os.killpg(cli.pid, signal.SIGKILL)
+                    cli.communicate()
+            self.assertIn(cli.returncode, (-signal.SIGTERM, 128 + signal.SIGTERM), stderr)
+            self.assertEqual(publication_tests.git(self.remote, 'rev-parse', 'main'), self.before)
+            self.assertEqual(neighbor.read_bytes(), b'keep this')
+            self.assertEqual(list(scratch.iterdir()), [neighbor], f'SIGTERM left a staged {size}-byte pack')
+            with lock.open('rb') as holder:
+                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertFalse((self.root / 'removed-during-read').exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX transport process groups')
+    def test_timeout_retires_writer_holding_stdout_after_git_parent_exits(self):
+        import fcntl
+
+        release = self.root / 'timeout-release'
+        os.mkfifo(release, 0o600)
+        lock = self.root / 'timeout-writer.lock'
+        child = (
+            'import fcntl, os, sys\n'
+            'if os.fork(): os._exit(0)\n'
+            'with open(sys.argv[1], "w") as holder:\n'
+            '    fcntl.flock(holder, fcntl.LOCK_EX)\n'
+            '    print("writer is active", flush=True)\n'
+            '    with open(sys.argv[2], "rb", buffering=0) as gate: gate.read(1)\n')
+        communicate = subprocess.Popen.communicate
+
+        def when_writer_is_ready(process, *args, **kwargs):
+            # Arm the real short timeout only after the grandchild acquired its lock.
+            self.assertTrue(select.select([process.stdout], [], [], 60)[0])
+            return communicate(process, *args, **kwargs)
+
+        rescue = os.open(release, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                with publication_tests.G.temporary_directory(dir=self.root) as scratch:
+                    with patch.object(subprocess.Popen, 'communicate', when_writer_is_ready):
+                        publication_tests.G.run_transport(
+                            [sys.executable, '-I', '-B', '-c', child, str(lock), str(release)],
+                            capture_output=True, timeout=0.1)
+            self.assertIn(b'writer is active', caught.exception.output)
+            self.assertFalse(Path(scratch).exists())
+            with lock.open('rb') as holder:
+                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.write(rescue, b'x')
+            os.close(rescue)
+
+    def test_cleanup_preserves_a_replacement_directory(self):
+        github = publication_tests.G
+        with self.assertRaisesRegex(github.Refused, 'ownership changed'):
+            with github.temporary_directory(dir=self.root) as scratch:
+                original = Path(scratch)
+                saved = self.root / 'renamed'
+                original.rename(saved)
+                original.mkdir()
+                (original / 'neighbor').write_bytes(b'keep this')
+        self.assertEqual((original / 'neighbor').read_bytes(), b'keep this')
+        self.assertTrue(saved.is_dir())
+
     def invoke(self, consumer, primary=None, cleanup_fault=None, creation_fault=None):
         created, cleaned, bodies = [], [], []
 
-        class OwnedDirectory(tempfile.TemporaryDirectory):
+        github = VERSIONS.GITHUB if consumer == 'released' else publication_tests.G
+        original_owner = github._ScratchDirectory
+
+        class OwnedDirectory(original_owner):
             def __init__(self, **keywords):
                 if creation_fault is not None:
                     raise creation_fault
@@ -58,13 +187,8 @@ class GithubCleanupTests(unittest.TestCase):
                 if cleanup_fault is not None:
                     raise cleanup_fault
 
-        proxy = SimpleNamespace(**{**vars(tempfile), 'TemporaryDirectory': OwnedDirectory})
-        github = VERSIONS.GITHUB if consumer == 'released' else publication_tests.G
-        caller = VERSIONS if consumer == 'released' else publication_tests.PUSH
         with ExitStack() as patches:
-            patches.enter_context(patch.object(github, 'tempfile', proxy))
-            if caller is not github:
-                patches.enter_context(patch.object(caller, 'tempfile', proxy, create=True))
+            patches.enter_context(patch.object(github, '_ScratchDirectory', OwnedDirectory))
             if consumer == 'fetch_batch':
                 client = object.__new__(github.Agh)
                 rows = [dict(source='refs/heads/main', into='refs/agh/owned', expected_oid=self.after)]
@@ -111,7 +235,7 @@ class GithubCleanupTests(unittest.TestCase):
                 for owner in created:
                     if Path(owner.name).exists():
                         leaked.append(owner.name)
-                        tempfile.TemporaryDirectory.cleanup(owner)
+                        original_owner.cleanup(owner)
                 self.assertEqual(leaked, [])
                 self.assertEqual(cleaned, [owner.name for owner in created])
                 self.assertEqual(len(created), 0 if creation_fault is not None else 1)

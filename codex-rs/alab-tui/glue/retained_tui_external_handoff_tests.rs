@@ -11,6 +11,16 @@ use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::time::Instant;
 
+fn input_line_modes() -> io::Result<libc::tcflag_t> {
+    let mut mode = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: the child owns this PTY, and tcgetattr initializes mode on success.
+    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, mode.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: tcgetattr succeeded.
+    Ok(unsafe { mode.assume_init() }.c_lflag & (libc::ICANON | libc::ECHO | libc::ISIG))
+}
+
 #[test]
 fn real_original_handoff_retains_tty_boundary_until_actual_resume_or_error() -> io::Result<()> {
     const CASE: &str = "ALAB_EDITOR_HANDOFF_PTY_CASE";
@@ -22,6 +32,7 @@ fn real_original_handoff_retains_tty_boundary_until_actual_resume_or_error() -> 
             .enable_all()
             .build()?;
         let _entered = runtime.enter();
+        let original_modes = input_line_modes()?;
         set_modes()?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         assert!(tui.alab_parent_tty_available());
@@ -29,10 +40,18 @@ fn real_original_handoff_retains_tty_boundary_until_actual_resume_or_error() -> 
             let changes = tui.event_broker.resume_events_rx();
             let output =
                 runtime.block_on(tui.with_restored(TerminalHandoff::KeepScreen, || async {
+                    assert!(
+                        std::process::Command::new("stty")
+                            .arg("sane")
+                            .status()?
+                            .success()
+                    );
+                    assert_eq!(input_line_modes()?, libc::ICANON | libc::ECHO | libc::ISIG);
                     assert!(crossterm::terminal::is_raw_mode_enabled()?);
                     Ok::<_, io::Error>(423)
                 }))?;
             assert_eq!(output, 423);
+            assert_eq!(input_line_modes()?, 0);
             assert!(tui.alab_parent_tty_available());
             assert!(changes.has_changed().map_err(io::Error::other)?);
         } else {
@@ -75,8 +94,9 @@ fn real_original_handoff_retains_tty_boundary_until_actual_resume_or_error() -> 
                 assert!(!tui.alab_parent_tty_available());
             }
         }
-        // This fixture has no external child; restore its real PTY on exit.
+        // Check that exit restores the original shell flags on the private PTY.
         restore_after_exit_with_events(Some(&tui.event_broker))?;
+        assert_eq!(input_line_modes()?, original_modes);
         writeln!(std::io::stdout().lock(), "{SUCCESS}")?;
         return Ok(());
     }

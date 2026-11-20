@@ -8,6 +8,7 @@ use super::upgrade_handoff_tests::native_test;
 use super::*;
 use codex_alab_core::session::Frame;
 use codex_alab_core::session::ProgramState;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_protocol::items::UserMessageItem;
 
 fn need_authority(h: &Harness, rt: &ThreadRt) -> DecisionAuthority {
@@ -882,6 +883,7 @@ fn a_retired_evaluators_act_ack_preserves_replacement_recovery_and_pace() {
                         questions: false,
                         worked: Duration::from_secs(600),
                         wall: Some(Wall::Usage {
+                            limit_class: LimitClass::Ordinary,
                             reset_at: Some(at),
                             reset_label: None,
                         }),

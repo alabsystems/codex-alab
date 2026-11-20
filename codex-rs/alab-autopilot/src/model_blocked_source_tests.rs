@@ -932,6 +932,93 @@ fn a_mode_round_trip_defeats_a_prepared_model_block_resume() {
 }
 
 #[test]
+fn a_mode_round_trip_during_goal_instruction_rejects_only_the_stale_model_block() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let blocked = goal(&h).await;
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+            let runtime = goals
+                .alab_goal_runtime(h.rt.id)
+                .expect("native goal runtime");
+
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, resume) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.goal_instruction) = Some(Box::pin(async move {
+                entered.send(()).expect("instruction observer");
+                resume.await.expect("finish recording the instruction");
+            }));
+            drop(evaluation);
+            due(&h).await;
+            let pilot = Arc::clone(&h.autopilot);
+            let rt = Arc::clone(&h.rt);
+            let recovery = tokio::spawn(async move { pilot.evaluate(rt).await });
+            entry.await.expect("entered the native goal instruction");
+            assert!(runtime.alab_goal_persistence_held());
+            assert!(!codex_alab_core::set_enhanced(false));
+            assert!(codex_alab_core::set_enhanced(true));
+            release.send(()).expect("release instruction");
+            recovery.await.expect("stale recovery settled");
+            let evaluation = h.rt.hold_eval_when_free().await;
+
+            assert!(h.autopilot.supervisor().journal().iter().any(|line| {
+                line.contains("automatic goal provenance changed before SQLite dispatch")
+            }));
+            assert_eq!(goal(&h).await, blocked);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+            assert_eq!(
+                responses::received_responses_requests(&h._server)
+                    .await
+                    .len(),
+                requests
+            );
+            assert!(!runtime.alab_goal_persistence_held());
+
+            mount_model_stop(&h, "blocked").await;
+            host_set(
+                &h,
+                &goals,
+                GoalObjectiveUpdate::Keep,
+                codex_protocol::protocol::ThreadGoalStatus::Active,
+            )
+            .await;
+            completed(&h).await;
+            let fresh = h
+                .autopilot
+                .current_model_goal(&h.rt)
+                .await
+                .expect("read model goal")
+                .expect("new native model block");
+            assert_eq!(fresh.goal_id, blocked.goal_id);
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let fresh_requests = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+            assert_eq!(
+                fresh_requests,
+                requests + 2,
+                "fresh model tool and its reply"
+            );
+            drop(evaluation);
+            due(&h).await;
+            evaluate(&h).await;
+            wait_requests(&h, fresh_requests + 1).await;
+            assert_eq!(goal(&h).await.status, ThreadGoalStatus::Active);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+            finish(&h).await;
+        })
+        .await
+        .expect("instruction and mode round-trip hang detector");
+    });
+}
+
+#[test]
 fn a_fresh_model_block_after_host_activity_establishes_new_epoch_authority() {
     native_test(|| async {
         tokio::time::timeout(HANG, async {
@@ -1115,5 +1202,344 @@ fn a_transient_duplicate_chronology_read_failure_durably_revokes_the_old_source(
         })
         .await
         .expect("transient duplicate chronology read hang detector");
+    });
+}
+
+async fn fresh_stop_with_unread_chronology(host_changed: bool) {
+    use codex_alab_core::model_goal_stops::Custody;
+
+    let gate = Arc::new(SourceGate::new(GateAt::BlockFinish));
+    let goals = Arc::new(GoalService::new());
+    let old = Harness::new_with_accounted_goals_and_tool_observer(
+        Arc::clone(&goals),
+        Arc::clone(&gate) as Arc<dyn ToolLifecycleContributor>,
+    )
+    .await;
+    let (old, goals) = configured_harness(old, goals).await;
+    let old_rt = Arc::clone(&old.rt);
+    let evaluation = old_rt.hold_eval_when_free().await;
+    let writer = Box::leak(Box::new(codex_alab_tui::session::Writer::new(
+        old.shared,
+        codex_alab_tui::record::sessions_dir(old.test.codex_home_path()),
+        Duration::ZERO,
+        None,
+    )));
+    writer
+        .write_now()
+        .expect("write the initial session record");
+    writer.install_write_through();
+    let original = seed(&old, &goals).await;
+    assert_eq!(original.status, ThreadGoalStatus::Active);
+    *lock(&old.autopilot.model_goal_generation_read_failure) =
+        Some("injected unread chronology at first model block".into());
+    mount_model_stop(&old, "blocked").await;
+    {
+        let mut turn = Box::pin(start_and_complete(&old));
+        tokio::select! {
+            () = gate.entered.notified() => {},
+            () = &mut turn => panic!("the original tool completion must reach the observer"),
+        }
+        assert_eq!(
+            *lock(&gate.outcome),
+            Some(ToolCallOutcome::Completed { success: true })
+        );
+        assert!(lock(&old.autopilot.model_goal_generation_read_failure).is_none());
+        assert!(lock(&old.rt.model_blocked_goal).is_none());
+        assert_eq!(goal(&old).await.status, ThreadGoalStatus::Blocked);
+        let pending = lock(&old.rt.model_goal_import)
+            .goal
+            .clone()
+            .expect("own the original stop while chronology is unread");
+        {
+            let calls = lock(&gate.calls);
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, codex_goal_extension::UPDATE_GOAL_TOOL_NAME);
+            assert_eq!(pending.turn, calls[0].2);
+        }
+        assert_eq!(pending.goal_id, original.goal_id);
+        assert_eq!(pending.objective, original.objective);
+        assert_eq!(pending.token_budget, original.token_budget);
+        let Some(Custody::Known(custody)) = old.shared.model_goal_custody(old.rt.key()) else {
+            panic!("awaiting chronology must keep the exact native owner");
+        };
+        assert_eq!(custody.goal, pending);
+        assert_eq!(Some(custody.epoch), goals.alab_model_goal_epoch(old.rt.id));
+        assert_eq!(Some(custody.mode_epoch), codex_alab_core::mode_epoch());
+        assert_eq!(recorded_source(&old), Some(pending.clone()));
+        let durable = durable_source(&old).expect("persist passive evidence before tool output");
+        assert_eq!(durable, pending);
+        assert_eq!(
+            responses::received_responses_requests(&old._server)
+                .await
+                .len(),
+            1
+        );
+        if host_changed {
+            for status in [
+                codex_protocol::protocol::ThreadGoalStatus::Paused,
+                codex_protocol::protocol::ThreadGoalStatus::Blocked,
+            ] {
+                host_set(&old, &goals, GoalObjectiveUpdate::Keep, status).await;
+            }
+        }
+        gate.release.notify_one();
+        turn.await;
+        assert_eq!(old.rt.accepted_turns.load(Ordering::SeqCst), 1);
+        assert_eq!(goal(&old).await.status, ThreadGoalStatus::Blocked);
+        // Use the source already on disk when the original tool was completing.
+        // No subsequent model tool call can recreate this source.
+        let h = fresh_image(old, goals).await;
+        drop(evaluation);
+        verify_import(&h, durable, &original, !host_changed).await;
+        finish(&h).await;
+    }
+}
+
+#[test]
+fn an_unread_first_stop_persists_only_passive_provenance() {
+    native_test(|| async {
+        for host_changed in [false, true] {
+            tokio::time::timeout(HANG, fresh_stop_with_unread_chronology(host_changed))
+                .await
+                .expect("fresh stop must remain passive until restart validation");
+        }
+    });
+}
+
+// Read contention is missing evidence, not a newer acknowledged model stop.
+// Hold the real stable journal lock without rotating its durable generation.
+fn chronology_bytes(h: &Harness) -> Option<Vec<u8>> {
+    let path =
+        codex_alab_core::goal_chronology_fence::marker_path(h.test.codex_home_path(), h.rt.key())
+            .expect("original chronology marker path");
+    match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("could not inspect the original chronology bytes: {error}"),
+    }
+}
+
+async fn continue_original_after_chronology_wait(
+    h: &Harness,
+    original: &codex_state::ThreadGoal,
+    stopped: &codex_state::ThreadGoal,
+    accepted: u64,
+    requests_before: usize,
+) {
+    due(h).await;
+    evaluate(h).await;
+    wait_requests(h, requests_before + 1).await;
+    let resumed = goal(h).await;
+    assert_eq!(resumed.goal_id, original.goal_id);
+    assert_eq!(resumed.objective, original.objective);
+    assert_eq!(resumed.token_budget, original.token_budget);
+    assert_eq!(resumed.tokens_used, stopped.tokens_used);
+    assert_eq!(resumed.status, ThreadGoalStatus::Active);
+    assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted + 1);
+    let started = core_test_support::wait_for_event_with_timeout(
+        &h.test.codex,
+        |event| matches!(event, EventMsg::TurnStarted(_)),
+        HANG,
+    )
+    .await;
+    assert_eq!(
+        serde_json::to_value(started).expect("original goal attribution")["turn_attribution"]["turn_trigger"],
+        "goal"
+    );
+    let requests = responses::received_responses_requests(&h._server).await;
+    assert_eq!(requests.len(), requests_before + 1);
+    let request = requests
+        .last()
+        .expect("one original-goal continuation request");
+    assert!(request.body_contains_text(OBJECTIVE));
+    assert!(request.body_contains_text(words::MODEL_BLOCKED_GOAL_CONTINUE));
+}
+
+#[test]
+fn a_busy_live_chronology_keeps_the_original_model_source_until_recovery() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (h, goals) = harness().await;
+            let evaluation = h.rt.hold_eval_when_free().await;
+            let original = seed(&h, &goals).await;
+            model_stop(&h, "blocked").await;
+            let bound = lock(&h.rt.model_blocked_goal)
+                .clone()
+                .expect("the actual model stop owns live recovery");
+            let saved = saved_source(&h);
+            let custody = h.shared.model_goal_custody(h.rt.key());
+            let stopped = goal(&h).await;
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests_before = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+            let journal = chronology_bytes(&h);
+            let held = codex_alab_core::goal_chronology_fence::lock_current(
+                h.test.codex_home_path(),
+                h.rt.key(),
+            )
+            .expect("hold the actual stable chronology lock");
+            let generation = held.generation();
+            assert_eq!(generation, bound.goal.chronology_fence_generation);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key(),
+                )
+                .unwrap_err()
+                .kind(),
+                std::io::ErrorKind::WouldBlock,
+            );
+            for _ in 0..2 {
+                assert!(h.autopilot.current_model_goal(&h.rt).await.is_err());
+                assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&bound));
+                assert_eq!(recorded_source(&h), Some(saved.clone()));
+                assert_eq!(h.shared.model_goal_custody(h.rt.key()), custody);
+            }
+            drop(evaluation);
+            for _ in 0..2 {
+                due(&h).await;
+                evaluate(&h).await;
+                assert_eq!(lock(&h.rt.model_blocked_goal).as_ref(), Some(&bound));
+                assert_eq!(recorded_source(&h), Some(saved.clone()));
+                assert_eq!(h.shared.model_goal_custody(h.rt.key()), custody);
+                assert_eq!(goal(&h).await, stopped);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+                assert_eq!(
+                    responses::received_responses_requests(&h._server)
+                        .await
+                        .len(),
+                    requests_before,
+                );
+            }
+            let evaluation = h.rt.hold_eval_when_free().await;
+            assert_eq!(chronology_bytes(&h), journal);
+            drop(held);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key(),
+                )
+                .unwrap(),
+                generation,
+            );
+            assert_eq!(
+                h.autopilot.current_model_goal(&h.rt).await.unwrap(),
+                Some(bound),
+                "release restores readability of the SAME original source",
+            );
+            drop(evaluation);
+            continue_original_after_chronology_wait(
+                &h,
+                &original,
+                &stopped,
+                accepted,
+                requests_before,
+            )
+            .await;
+            finish(&h).await;
+        })
+        .await
+        .expect("live chronology read contention hang detector");
+    });
+}
+
+#[test]
+fn a_busy_restart_chronology_keeps_pending_original_provenance_until_import() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let (old, goals) = harness().await;
+            let old_rt = Arc::clone(&old.rt);
+            let old_evaluation = old_rt.hold_eval_when_free().await;
+            let original = seed(&old, &goals).await;
+            model_stop(&old, "blocked").await;
+            let saved = saved_source(&old);
+            let h = fresh_image(old, goals).await;
+            drop(old_evaluation);
+            let resumed_rt = Arc::clone(&h.rt);
+            let evaluation = resumed_rt.hold_eval_when_free().await;
+            h.shared.carry_model_goal(h.rt.key(), Some(saved.clone()));
+            h.autopilot.stage_model_goal_stop(&h.rt);
+            assert_eq!(lock(&h.rt.model_goal_import).goal.as_ref(), Some(&saved));
+            let custody = h.shared.model_goal_custody(h.rt.key());
+            let native = h
+                .autopilot
+                .goals
+                .as_ref()
+                .unwrap()
+                .alab_goal_runtime(h.rt.id)
+                .expect("resumed original goal runtime");
+            let epoch = native.alab_goal_mutation_epoch();
+            let stopped = goal(&h).await;
+            let accepted = h.rt.accepted_turns.load(Ordering::SeqCst);
+            let requests_before = responses::received_responses_requests(&h._server)
+                .await
+                .len();
+            assert_eq!(requests_before, 0);
+            let journal = chronology_bytes(&h);
+            let held = codex_alab_core::goal_chronology_fence::lock_current(
+                h.test.codex_home_path(),
+                h.rt.key(),
+            )
+            .expect("hold the resumed original chronology lock");
+            let generation = held.generation();
+            assert_eq!(generation, saved.chronology_fence_generation);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key(),
+                )
+                .unwrap_err()
+                .kind(),
+                std::io::ErrorKind::WouldBlock,
+            );
+            for _ in 0..2 {
+                assert!(h.autopilot.current_model_goal(&h.rt).await.is_err());
+                assert_eq!(lock(&h.rt.model_goal_import).goal.as_ref(), Some(&saved));
+                assert_eq!(h.shared.carried_model_goal(h.rt.key()), Some(saved.clone()));
+                assert_eq!(h.shared.model_goal_custody(h.rt.key()), custody);
+                assert!(lock(&h.rt.model_blocked_goal).is_none());
+                assert_eq!(native.alab_goal_mutation_epoch(), epoch);
+                assert_eq!(goal(&h).await, stopped);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), accepted);
+                assert_eq!(
+                    responses::received_responses_requests(&h._server)
+                        .await
+                        .len(),
+                    0
+                );
+            }
+            assert_eq!(chronology_bytes(&h), journal);
+            drop(held);
+            assert_eq!(
+                codex_alab_core::goal_chronology_fence::read_current(
+                    h.test.codex_home_path(),
+                    h.rt.key(),
+                )
+                .unwrap(),
+                generation,
+            );
+            let imported = h
+                .autopilot
+                .current_model_goal(&h.rt)
+                .await
+                .expect("the same pending original source becomes readable")
+                .expect("the original source imports after lock release");
+            assert_eq!(imported.goal, saved);
+            assert_eq!(native.alab_goal_mutation_epoch(), epoch);
+            drop(evaluation);
+            wait_for_supervisor(|| h.rt.scanned.load(Ordering::SeqCst)).await;
+            continue_original_after_chronology_wait(
+                &h,
+                &original,
+                &stopped,
+                accepted,
+                requests_before,
+            )
+            .await;
+            finish(&h).await;
+        })
+        .await
+        .expect("restart chronology read contention hang detector");
     });
 }

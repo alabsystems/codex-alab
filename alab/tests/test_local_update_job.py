@@ -41,7 +41,7 @@ class LocalUpdateJobTests(unittest.TestCase):
         FIXTURES.LocalUpdateTests.setUp(self)
         tooling = self.repo / "alab"
         tooling.mkdir()
-        for name in ("local_update.py", "promote.py", "cli_status.py", "lib.sh", "command_guard.py", "retention.py", "package_source.py", "source_content.py",
+        for name in ("local_update.py", "promote.py", "github.py", "cli_status.py", "file_hash.py", "lib.sh", "command_guard.py", "retention.py", "package_source.py", "source_content.py",
                      "package_cache.py"):
             shutil.copyfile(ROOT / "alab" / name, tooling / name)
         self.cache = self.home / "cache"
@@ -191,6 +191,219 @@ with Path({str(self.journal)!r}).open("a") as stream:
                 raise
             raise
         return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+
+    def prepare_recording_transport(self, *, github=True):
+        self.select(self.new)
+        self.git("update-ref", "refs/remotes/origin/main", self.old_source)
+        if github:
+            self.git("remote", "set-url", "origin", "https://github.com/fixture/codex.git")
+        self.transport_log = self.home / "transport.jsonl"
+        real_git = shutil.which("git")
+        tools = self.home / "recording transport"
+        tools.mkdir()
+        git = tools / "git"
+        git.write_text(PYTHON_ENTRY + f'''import json, os, subprocess, sys
+from pathlib import Path
+args = sys.argv[1:]
+operation = next((value for value in ("fetch", "ls-remote", "push", "clone", "submodule") if value in args), None)
+allowed = operation is None
+if operation in ("fetch", "ls-remote"):
+    allowed = {str(self.origin)!r} in args
+    if "origin" in args:
+        repo = args[args.index("-C") + 1]
+        url = subprocess.check_output([{real_git!r}, "-C", repo, "config", "--get", "remote.origin.url"], text=True).strip()
+        allowed = url == {str(self.origin)!r}
+with Path({str(self.transport_log)!r}).open("a") as stream:
+    stream.write(json.dumps(dict(client="git", argv=args, transport=operation, allowed=allowed)) + "\\n")
+if not allowed:
+    print("fixture refuses raw Git network before execution", file=sys.stderr)
+    raise SystemExit(87)
+os.execv({real_git!r}, [{real_git!r}, *args])
+''')
+        git.chmod(0o700)
+        agh = tools / 'agh & <selected> "client"'
+        agh.write_text(PYTHON_ENTRY + f'''import json, os, subprocess, sys
+from pathlib import Path
+args = sys.argv[1:]
+row = dict(client="agh", argv=args)
+if args[:3] == ["repo", "fetch", "fixture/codex"]:
+    row["rows"] = json.loads(Path(args[args.index("--input") + 1]).read_text())
+with Path({str(self.transport_log)!r}).open("a") as stream:
+    stream.write(json.dumps(row) + "\\n")
+if args == ["help", "repo", "fetch"]:
+    print("--ref --into --input --anonymous")
+elif args == ["api", "/repos/fixture/codex/git/matching-refs/heads/main", "--all"]:
+    if os.environ.get("ALAB_FIXTURE_AGH_REFUSE"):
+        print("controlled Agh refusal", file=sys.stderr)
+        raise SystemExit(47)
+    print(json.dumps([dict(ref="refs/heads/main", object=dict(sha={self.source!r}))]))
+elif args[:3] == ["repo", "fetch", "fixture/codex"]:
+    assert args[3] == {str(self.repo)!r}
+    if os.environ.get("ALAB_FIXTURE_AGH_FETCH_FAILURE"):
+        (Path(os.environ["TMPDIR"]) / "owned.pack").touch()
+        if ready := os.environ.get("ALAB_TEST_LOW_AFTER"):
+            import fcntl, signal, time
+            signal.alarm(60)
+            with Path(ready).with_suffix(".lock").open("wb") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                Path(ready).touch()
+                while not Path(ready).with_suffix(".release").exists():
+                    time.sleep(0.02)
+        raise SystemExit(47)
+    for ref in row["rows"]:
+        assert ref["source"] == {self.source!r}
+        actual = subprocess.check_output([{real_git!r}, "-C", {str(self.origin)!r}, "rev-parse", ref["source"]], text=True).strip()
+        assert ref["expected_oid"] == actual == {self.source!r}
+        assert ref["into"].startswith("refs/agh/codex-release-")
+    subprocess.run([{real_git!r}, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                    "-C", args[3], "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+                    {str(self.origin)!r}, *["+" + ref["source"] + ":" + ref["into"] for ref in row["rows"]]], check=True)
+else:
+    raise SystemExit("unexpected inert Agh request")
+''')
+        agh.chmod(0o700)
+        self.environment.update(PATH=str(tools) + os.pathsep + "/usr/bin:/bin", ALAB_AGH=str(agh))
+        return agh
+
+    def transport_calls(self):
+        return ([json.loads(line) for line in self.transport_log.read_text().splitlines()]
+                if self.transport_log.exists() else [])
+
+    def test_public_bootstrap_reads_github_through_the_selected_agh_client(self):
+        self.prepare_recording_transport()
+        marker = self.marker.read_bytes()
+        done = self.run_job()
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        self.assertIn("already matches origin/main", done.stdout)
+        calls = self.transport_calls()
+        self.assertFalse([call for call in calls if call["client"] == "git" and call["transport"]])
+        native = [call for call in calls if call["client"] == "agh"]
+        self.assertEqual([call["argv"][:3] for call in native],
+                         [["help", "repo", "fetch"],
+                          ["api", "/repos/fixture/codex/git/matching-refs/heads/main", "--all"],
+                          ["repo", "fetch", "fixture/codex"]])
+        self.assertEqual(native[-1]["rows"][0]["expected_oid"], self.source)
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.source)
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertFalse(self.cache.exists())
+        self.assertFalse(self.journal.exists())
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.registered_controller_paths(), [])
+
+    def test_public_bootstrap_never_falls_back_when_agh_is_unavailable_or_refuses(self):
+        agh = self.prepare_recording_transport()
+        marker = self.marker.read_bytes()
+        for case, selected in (("missing", str(self.home / "missing Agh")),
+                               ("relative", "relative/agh"), ("refused", str(agh))):
+            with self.subTest(case=case):
+                self.environment.update(ALAB_AGH=selected, ALAB_FIXTURE_AGH_REFUSE="1")
+                done = self.run_job()
+                self.assertEqual(done.returncode, 1, done.stderr + done.stdout)
+                status = json.loads((self.repo / ".git/alab-local-update.status.json").read_text())
+                self.assertEqual(status["exit"], 1)
+                self.assertTrue(status["complete"])
+                self.assertIn("agh", status["reason"].lower())
+                self.assertFalse([call for call in self.transport_calls()
+                                  if call["client"] == "git" and call["transport"]])
+                self.assertFalse([call for call in self.transport_calls()
+                                  if call["client"] == "agh" and "rows" in call])
+                self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.old_source)
+                self.assertEqual(self.marker.read_bytes(), marker)
+                self.assertFalse(self.cache.exists())
+                self.assertFalse(self.journal.exists())
+                self.assertFalse(self.calls.exists())
+                self.assertEqual(self.registered_controller_paths(), [])
+
+    def test_inherited_ignored_sigchld_still_stops_a_fetch_at_the_disk_floor(self):
+        agh = self.prepare_recording_transport()
+        ready = self.home / "native writer ready"
+        run = self.run_command
+
+        def from_ignoring_parent(command, environment):
+            # Exec the same Python fixture with SIGCHLD ignored by its launcher.
+            launch = ("import os, signal, sys; signal.signal(signal.SIGCHLD, signal.SIG_IGN); "
+                      "os.execv(sys.executable, [sys.executable, '-IB', *sys.argv[1:]])")
+            return run([sys.executable, "-IB", "-c", launch, *command], environment)
+
+        try:
+            with mock.patch.object(self, "run_command", side_effect=from_ignoring_parent):
+                done = self.disk_poll(self.repo / ".git", fetch_client=agh)
+            self.assertEqual(done.returncode, 1, done.stderr + done.stdout)
+            self.assertIn("19.00 GiB", done.stdout + done.stderr)
+            with ready.with_suffix(".lock").open("rb") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.old_source)
+        finally:
+            # Let even an uninterruptible-by-the-caller fixture finish on RED.
+            ready.with_suffix(".release").touch()
+            if ready.with_suffix(".lock").is_file():
+                with ready.with_suffix(".lock").open("rb") as writer:
+                    fcntl.flock(writer, fcntl.LOCK_EX)
+
+    def test_public_fetch_journals_retained_scratch_after_native_or_resource_failure(self):
+        agh = self.prepare_recording_transport()
+        temporary = self.home / "native staging"
+        temporary.mkdir()
+        self.environment.update(ALAB_FIXTURE_AGH_FETCH_FAILURE="1", TMPDIR=str(temporary))
+        for case, reason in (("native", "Agh request failed (exit 47)"), ("disk", "19.00 GiB")):
+            with self.subTest(case=case):
+                if case == "native":
+                    done = self.run_job()
+                else:
+                    done = self.disk_poll(self.repo / ".git", fetch_client=agh)
+                self.assertEqual(done.returncode, 1, done.stderr + done.stdout)
+                fetch = [row["argv"] for row in self.transport_calls() if "rows" in row][-1]
+                scratch = Path(fetch[fetch.index("--input") + 1]).parent
+                self.assertTrue((scratch / "owned.pack").is_file())
+                status = json.loads((self.repo / ".git/alab-local-update.status.json").read_bytes())
+                self.assertEqual((status["complete"], status["exit"]), (True, 1))
+                for detail in (status["reason"], done.stdout + done.stderr):
+                    self.assertIn(reason, detail)
+                    self.assertIn(str(scratch), detail)
+                display = (self.out / "codex/.alab-local-update-status.json").read_text()
+                public = json.loads(display)
+                self.assertEqual(public["exit"], 1)
+                self.assertNotIn("reason", public)
+                self.assertNotIn(str(scratch), display)
+                self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.old_source)
+
+    def test_public_bootstrap_reads_a_local_bare_origin_without_agh(self):
+        self.prepare_recording_transport(github=False)
+        self.environment["ALAB_AGH"] = str(self.home / "missing Agh")
+        marker = self.marker.read_bytes()
+        done = self.run_job()
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        calls = self.transport_calls()
+        self.assertFalse([call for call in calls if call["client"] == "agh"])
+        self.assertTrue(any(call["client"] == "git" and call["transport"] == "fetch" for call in calls))
+        self.assertTrue(all(call.get("allowed", True) for call in calls))
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.source)
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertFalse(self.cache.exists())
+        self.assertFalse(self.journal.exists())
+
+    def test_invalid_bootstrap_channel_never_loads_or_calls_a_transport(self):
+        self.prepare_recording_transport()
+        loaded = self.home / "transport-helper-was-loaded"
+        (self.repo / "alab/github.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(loaded)!r}).write_text('unexpected helper load')\n"
+            "raise AssertionError('invalid channel must precede transport loading')\n")
+        outside = self.home / "outside selected channel"
+        outside.mkdir()
+        self.select(outside)
+        marker = self.marker.read_bytes()
+        done = self.run_job()
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        self.assertIn("no selected local artifact channel", done.stdout)
+        self.assertFalse(loaded.exists())
+        self.assertFalse([call for call in self.transport_calls()
+                          if call["client"] == "agh" or call["transport"]])
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.old_source)
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertFalse(self.cache.exists())
+        self.assertFalse(self.journal.exists())
+        self.assertFalse(self.calls.exists())
 
     def test_prepared_job_preserves_explicit_modern_builder_on_cache_miss(self):
         # Run this control under an older controller with ALAB_PYTHON bound to a
@@ -530,13 +743,16 @@ with Path({str(self.journal)!r}).open("a") as stream:
     @unittest.skipUnless(Path("/usr/sbin/lsof").is_file(), "requires macOS cache-owner inspection")
     def test_cache_lock_owner_sigterm_cannot_unlock_before_its_writer_stops(self):
         def terminate_owner(child, controller):
+            ps_executable = shutil.which("ps")
+            if ps_executable is None:
+                raise RuntimeError("process inspection requires ps on PATH")
             lock = self.cache / ".alab-package.lockf"
             owners = subprocess.run(["/usr/sbin/lsof", "-t", str(lock)],
                                     check=True, capture_output=True, text=True, timeout=60)
             pids = {int(line) for line in owners.stdout.splitlines()}
 
             def parent(pid):
-                observed = subprocess.run(["/bin/ps", "-o", "ppid=", "-p", str(pid)],
+                observed = subprocess.run([ps_executable, "-o", "ppid=", "-p", str(pid)],
                                           check=True, capture_output=True, text=True, timeout=60)
                 return int(observed.stdout.strip())
 
@@ -557,6 +773,83 @@ with Path({str(self.journal)!r}).open("a") as stream:
 
     def test_job_group_sigterm_cannot_unlock_before_its_private_writer_stops(self):
         self.cache_termination(lambda child, _controller: os.killpg(child.pid, signal.SIGTERM))
+
+    def wait_for_builder_start(self, child, started):
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if started.exists():
+                return
+            # Keep the original leader unreaped until finally cancels its group.
+            observed = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+            if observed is not None:
+                reason = ""
+                try:
+                    status = json.loads(FIXTURES.UPDATE.PROMOTE.regular_bytes(
+                        self.repo / ".git/alab-local-update.status.json"))
+                    if isinstance(status, dict) and isinstance(status.get("reason"), str):
+                        reason = ": " + status["reason"][:1024]
+                except (OSError, ValueError, TypeError):
+                    pass
+                self.fail("public updater exited before builder startup "
+                          f"(si_code={observed.si_code}, si_status={observed.si_status}){reason}")
+            time.sleep(0.01)
+        self.fail("cache-termination fixture exceeded the one-minute hang detector")
+
+    def test_builder_start_wait_reports_an_exited_leader_without_reaping(self):
+        started = self.home / "builder-must-not-start"
+        status = self.repo / ".git/alab-local-update.status.json"
+        status.write_text(json.dumps({"reason": "controlled startup refusal " + "x" * 2048}))
+        child = subprocess.Popen([sys.executable, "-I", "-B", "-c", "raise SystemExit(23)"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 start_new_session=True)
+        began = time.monotonic()
+        cleanup_error = None
+        try:
+            with self.assertRaises(AssertionError) as caught:
+                self.wait_for_builder_start(child, started)
+            self.assertLess(time.monotonic() - began, 5)
+            self.assertIn("si_status=23", str(caught.exception))
+            self.assertIn("controlled startup refusal", str(caught.exception))
+            self.assertLess(len(str(caught.exception)), 1200)
+            self.assertIsNone(child.returncode)
+            first = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+            second = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+            self.assertEqual((first.si_pid, first.si_status), (child.pid, 23))
+            self.assertEqual(second, first)
+            self.assertFalse(started.exists())
+        finally:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError) as error:
+                cleanup_error = type(error).__name__
+            stdout, stderr = child.communicate(timeout=5)
+        self.assertEqual((child.returncode, stdout, stderr), (23, b"", b""))
+        print(json.dumps({"startup_control": "exited", "pid": child.pid,
+                          "si_code": first.si_code, "si_status": first.si_status,
+                          "returncode": child.returncode, "cleanup_signal_error": cleanup_error}))
+
+    def test_builder_start_wait_accepts_a_live_leaders_witness_without_reaping(self):
+        started = self.home / "controlled-builder-started"
+        child = subprocess.Popen([
+            sys.executable, "-I", "-B", "-c",
+            'from pathlib import Path; import sys; Path(sys.argv[1]).write_text("ready"); '
+            'sys.stdin.buffer.read(1)', str(started)], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            self.wait_for_builder_start(child, started)
+            self.assertEqual(started.read_text(), "ready")
+            self.assertIsNone(child.returncode)
+            self.assertIsNone(os.waitid(os.P_PID, child.pid,
+                                      os.WEXITED | os.WNOWAIT | os.WNOHANG))
+        finally:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = child.communicate(timeout=5)
+        self.assertEqual((child.returncode, stdout, stderr), (-signal.SIGTERM, b"", b""))
+        print(json.dumps({"startup_control": "live_witness", "pid": child.pid,
+                          "returncode": child.returncode}))
 
     def cache_termination(self, terminate):
         self.keep_scratch = True
@@ -608,7 +901,7 @@ while True:
                 return True
 
         try:
-            until(started.exists)
+            self.wait_for_builder_start(child, started)
             info = json.loads(started.read_text())
             controller = int(controller_file.read_text())
             self.assertGreater(controller, 1)
@@ -1008,7 +1301,9 @@ assert nested.returncode == 75, (nested.returncode, nested.stdout, nested.stderr
             original.write_bytes(path.read_bytes())
             path.write_bytes(original.read_bytes() +
                              f"\nprintf changed > {shlex.quote(str(executed))}\n".encode())
-            (self.repo / ".git/info/attributes").write_text("alab/lib.sh filter=controller-clean\n")
+            attributes = self.repo / ".git/info/attributes"
+            attributes.parent.mkdir(exist_ok=True)
+            attributes.write_text("alab/lib.sh filter=controller-clean\n")
             self.git("config", "filter.controller-clean.clean",
                      shlex.join([sys.executable, "-I", "-B", str(filter_script)]))
             self.git("config", "filter.controller-clean.required", "true")
@@ -1351,7 +1646,8 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
         wrapper.chmod(0o755)
         return str(tools) + os.pathsep + "/usr/bin:/bin:/usr/sbin:/sbin"
 
-    def disk_poll(self, low_path, *, unreadable=False, temporary=None):
+    def disk_poll(self, low_path, *, unreadable=False, temporary=None, temporary_variable="TMPDIR",
+                  fetch_client=None):
         # The bootstrap and real fetched guardian share only a simulated space
         # measurement. All Git worktree, handoff and refusal paths remain real.
         self.keep_scratch = True
@@ -1367,6 +1663,8 @@ def space(path):
     os.stat(path)  # Preserve nearest-existing-ancestor behavior.
     path = Path(path).resolve()
     low = path == Path(os.environ["ALAB_TEST_LOW_DISK"]).resolve()
+    if ready := os.environ.get("ALAB_TEST_LOW_AFTER"):
+        low = low and Path(ready).exists()
     with open(os.environ["ALAB_TEST_DISK_LOG"], "a") as log:
         print(json.dumps({{"path": str(path), "low": low}}), file=log)
     if low and os.environ["ALAB_TEST_UNREADABLE_DISK"] == "1":
@@ -1390,10 +1688,14 @@ else:
         environment.update(PATH=self.minimal_path_with_git(), ALAB_PYTHON=str(launcher),
                            ALAB_CARGO_HOME=self.environment.get("ALAB_CARGO_HOME",
                                                                str(self.home / "cargo home")),
-                           TMPDIR=str(self.disk_temporary),
                            ALAB_TEST_LOW_DISK=str(low_path),
                            ALAB_TEST_DISK_LOG=str(self.home / "disk-measurements.jsonl"),
                            ALAB_TEST_UNREADABLE_DISK="1" if unreadable else "0")
+        if fetch_client is not None:
+            environment.update(PATH=self.environment["PATH"], ALAB_AGH=str(fetch_client),
+                               ALAB_FIXTURE_AGH_FETCH_FAILURE="1",
+                               ALAB_TEST_LOW_AFTER=str(self.home / "native writer ready"))
+        environment[temporary_variable] = str(self.disk_temporary)
         return self.run_command([
             str(launcher), "-I", str(self.repo / "alab/local_update.py"),
             "--repo", str(self.repo), "--out", str(self.out), "--prefix", str(self.prefix),
@@ -1402,7 +1704,7 @@ else:
     def test_repeated_low_disk_polls_allocate_no_controller_worktrees(self):
         self.keep_scratch = True
         print(f"retained low-disk poll fixture: {self.home}", flush=True)
-        fresh = self.publish_next_source()
+        self.publish_next_source()
         before = self.git("worktree", "list", "--porcelain")
         marker = self.marker.read_bytes()
         observations = []
@@ -1415,8 +1717,9 @@ else:
             self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
             self.assertIn("19.00 GiB", done.stderr + done.stdout)
         (self.home / "low-disk-result.json").write_text(json.dumps(observations, indent=2) + "\n")
-        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), fresh,
-                         "the ordinary single fetch still observes the newer source")
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.old_source)
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)", "refs/agh/"), "",
+                         "a low common volume must refuse before importing objects or refs")
         self.assertEqual(self.marker.read_bytes(), marker)
         self.assertFalse(self.journal.exists())
         self.assertFalse(self.calls.exists())
@@ -1428,17 +1731,37 @@ else:
         self.assertEqual(status["exit"], 1)
         self.assertIn("19.00 GiB", status["reason"])
 
+    def test_low_pack_volume_refuses_before_fetch_updates_refs(self):
+        self.publish_next_source()
+        refs = self.git("for-each-ref", "--format=%(refname) %(objectname)")
+        pack = self.repo / ".git" / "objects" / "pack"
+        self.assertTrue(pack.is_dir())
+        done = self.disk_poll(pack)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(f"19.00 GiB free for {pack}", done.stdout + done.stderr)
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname) %(objectname)"), refs)
+        self.assertEqual(self.allocated_disk_controller_paths(), [])
+
+    def test_unchanged_source_can_be_observed_on_a_low_git_volume(self):
+        self.select(self.new)
+        done = self.disk_poll(self.repo / ".git")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("already matches", done.stdout)
+        self.assertFalse((self.home / "disk-measurements.jsonl").exists())
+        self.assertEqual(self.allocated_disk_controller_paths(), [])
+
     def test_each_other_build_volume_refuses_before_source_allocation(self):
         self.keep_scratch = True
         self.publish_next_source()
         cargo = self.home / "cargo volume"
         temporary = self.home / "temporary volume"
         self.environment.update(ALAB_CARGO_HOME=str(cargo), TMPDIR=str(temporary))
-        for path in (self.cache, self.home / "Developer", cargo, temporary):
+        parent = temporary / ".ubd"
+        for path in (self.cache, self.home / "Developer", cargo, temporary, parent):
             path.mkdir()
         before = self.git("worktree", "list", "--porcelain")
         marker = self.marker.read_bytes()
-        for path in (self.cache, self.out, self.home / "Developer", cargo, Path("/tmp"), temporary):
+        for path in (self.cache, self.out, self.home / "Developer", cargo, Path("/tmp"), temporary, parent):
             with self.subTest(low=path):
                 done = self.disk_poll(path, temporary=temporary)
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
@@ -1447,6 +1770,37 @@ else:
                 self.assertFalse(self.journal.exists())
                 self.assertFalse(self.calls.exists())
                 self.assertEqual(self.registered_controller_paths(), [])
+                self.assertEqual(self.allocated_disk_controller_paths(), [])
+                self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
+
+    def test_controller_temporary_fallback_refuses_before_source_allocation(self):
+        self.publish_next_source()
+        temporary = self.home / "controller fallback"
+        before = self.git("worktree", "list", "--porcelain")
+        done = self.disk_poll(temporary, temporary=temporary, temporary_variable="TEMP")
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("20 GiB controller floor", done.stdout + done.stderr)
+        self.assertFalse((temporary / ".ubd").exists())
+        self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
+        self.assertFalse(self.journal.exists())
+        self.assertFalse(self.calls.exists())
+
+    def test_linked_dependency_caches_refuse_before_source_allocation(self):
+        self.publish_next_source()
+        self.cache.mkdir()
+        before = self.git("worktree", "list", "--porcelain")
+        marker = self.marker.read_bytes()
+        for child in ("v8", "cargo-home"):
+            with self.subTest(child=child):
+                destination = self.home / f"{child} volume"
+                destination.mkdir()
+                (self.cache / child).symlink_to(destination, target_is_directory=True)
+                done = self.disk_poll(destination)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("20 GiB controller floor", done.stdout + done.stderr)
+                self.assertEqual(self.marker.read_bytes(), marker)
+                self.assertFalse(self.journal.exists())
+                self.assertFalse(self.calls.exists())
                 self.assertEqual(self.allocated_disk_controller_paths(), [])
                 self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
 
@@ -1782,6 +2136,26 @@ else:
         self.assertEqual(self.selected(), self.old)
         self.assertEqual([json.loads(line) for line in self.calls.read_text().splitlines()],
                          [["pkg", "link", "--help"]])
+
+    def test_prepared_job_keeps_the_selected_agh_without_running_it(self):
+        agh = self.prepare_recording_transport()
+        marker = self.marker.read_bytes()
+        prepared = self.run_job("--launchd-plist")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        job = plistlib.loads(prepared.stdout.encode())
+        self.assertEqual(job["EnvironmentVariables"].get("ALAB_AGH"), str(agh))
+        self.assertFalse([call for call in self.transport_calls() if call["client"] == "agh"])
+        self.assertEqual(self.marker.read_bytes(), marker)
+        done = self.run_command(job["ProgramArguments"], job["EnvironmentVariables"])
+        self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+        self.assertTrue(any(call["client"] == "agh" and "rows" in call
+                            for call in self.transport_calls()))
+        self.assertFalse([call for call in self.transport_calls()
+                          if call["client"] == "git" and call["transport"]])
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main"), self.source)
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertFalse(self.cache.exists())
+        self.assertFalse(self.journal.exists())
 
 
 if __name__ == "__main__":

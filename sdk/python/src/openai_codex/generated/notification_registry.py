@@ -51,6 +51,7 @@ from .v2_all import ReasoningSummaryPartAddedNotification
 from .v2_all import ReasoningSummaryTextDeltaNotification
 from .v2_all import ReasoningTextDeltaNotification
 from .v2_all import RemoteControlStatusChangedNotification
+from .v2_all import RetainedConfiguredNotification
 from .v2_all import RetainedFrontierNotification
 from .v2_all import ServerRequestResolvedNotification
 from .v2_all import SkillsChangedNotification
@@ -139,6 +140,7 @@ KnownNotificationPayload: TypeAlias = (
     | ReasoningSummaryTextDeltaNotification
     | ReasoningTextDeltaNotification
     | RemoteControlStatusChangedNotification
+    | RetainedConfiguredNotification
     | RetainedFrontierNotification
     | ServerRequestResolvedNotification
     | SkillsChangedNotification
@@ -188,6 +190,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "account/login/completed": AccountLoginCompletedNotification,
     "account/rateLimits/updated": AccountRateLimitsUpdatedNotification,
     "account/updated": AccountUpdatedNotification,
+    "alab/retainedConfigured": RetainedConfiguredNotification,
     "alab/retainedFrontier": RetainedFrontierNotification,
     "alab/thread/goal/runtimeUpdated": AlabGoalRuntimeUpdatedNotification,
     "app/list/updated": AppListUpdatedNotification,

@@ -505,12 +505,14 @@ impl<'a> ExecCommandInput<'a> {
     }
 }
 
-struct ExecCommandResult {
+pub(crate) struct ExecCommandResult {
     aggregated_output: String,
-    exit_code: i32,
-    duration: Duration,
+    exit_code: Option<i32>, // ALAB(shell-output): a tool failure may have no process result.
+    duration: Option<Duration>, // ALAB(shell-output): only output-bearing command results report a measurement.
     status: ExecCommandStatus,
 }
+
+include!("../../../alab-core/glue/measured_process_completion.rs"); // ALAB(shell-output): carry the backend outcome independently from tool response conventions.
 
 async fn emit_exec_stage(
     ctx: ToolEventCtx<'_>,
@@ -523,24 +525,20 @@ async fn emit_exec_stage(
         }
         ToolEventStage::Success { output, .. }
         | ToolEventStage::Failure(ToolEventFailure::Output(output)) => {
-            let exec_result = ExecCommandResult {
-                aggregated_output: output.aggregated_output.text,
-                exit_code: output.exit_code,
-                duration: output.duration,
-                status: if output.exit_code == 0 {
-                    ExecCommandStatus::Completed
-                } else {
-                    ExecCommandStatus::Failed
-                },
-            };
+            let exec_result = ExecCommandResult::measured(
+                output.aggregated_output.text,
+                Some(output.exit_code),
+                output.duration,
+                /*failed*/ false,
+            );
             emit_exec_end(ctx, exec_input, exec_result).await;
         }
         ToolEventStage::Failure(ToolEventFailure::Message(message)) => {
             let text = message.to_string();
             let exec_result = ExecCommandResult {
                 aggregated_output: text,
-                exit_code: -1,
-                duration: Duration::ZERO,
+                exit_code: None, // ALAB(shell-output): a setup error carries a message without a process result.
+                duration: None,
                 status: ExecCommandStatus::Failed,
             };
             emit_exec_end(ctx, exec_input, exec_result).await;
@@ -549,8 +547,8 @@ async fn emit_exec_stage(
             let text = message.to_string();
             let exec_result = ExecCommandResult {
                 aggregated_output: text,
-                exit_code: -1,
-                duration: Duration::ZERO,
+                exit_code: None, // ALAB(shell-output): rejection carries a disposition without an exit code.
+                duration: None,
                 status: ExecCommandStatus::Declined,
             };
             emit_exec_end(ctx, exec_input, exec_result).await;
@@ -581,8 +579,8 @@ async fn emit_exec_end(
                 interaction_input: None,
                 status: exec_result.status.into(),
                 aggregated_output: Some(exec_result.aggregated_output),
-                exit_code: Some(exec_result.exit_code),
-                duration: Some(exec_result.duration),
+                exit_code: exec_result.exit_code, // ALAB(shell-output): forward the optional observation to session history.
+                duration: exec_result.duration,
             }),
         )
         .await;
@@ -665,6 +663,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::Mutex;
+
+    include!("../../../alab-core/glue/shell_command_exit_event_tests.rs"); // ALAB(shell-output): check real and absent exits at the session event boundary.
 
     async fn assert_failed_apply_patch_tracks_committed_delta(
         out: Result<ExecToolCallOutput, ToolError>,

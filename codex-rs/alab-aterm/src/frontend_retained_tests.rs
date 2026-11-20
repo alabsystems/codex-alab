@@ -29,6 +29,8 @@ enum Behavior {
     ChangedService,
     ExtraField,
     BusySettings,
+    StartupField(&'static str, Option<&'static str>),
+    StartupRefusal(&'static str),
 }
 
 struct Fixture {
@@ -104,6 +106,29 @@ impl Fixture {
                 match action {
                     "member-peer" => frame["member"] = serde_json::Value::Null,
                     "controller-open" => {}
+                    "controller-startup-mode" => {
+                        assert_eq!(words[0], format!("@{sid}"));
+                        assert_eq!(words[1], "codex-auth");
+                        assert_eq!(words.len(), 8);
+                        assert_eq!(fields["schema"], "1");
+                        assert_eq!(fields["member"], MEMBER);
+                        assert_eq!(fields["controller_operation"], CONTROLLER);
+                        assert!(valid_hex(fields["operation"], 32));
+                        assert_ne!(fields["operation"], CONTROLLER);
+                        assert_ne!(fields["operation"], OPERATION);
+                        if let Behavior::StartupRefusal(status) = behavior {
+                            writer.write_all(status.as_bytes()).await.unwrap();
+                            continue;
+                        }
+                        frame["mode"] = serde_json::json!("retained");
+                        if let Behavior::StartupField(field, value) = behavior {
+                            if let Some(json) = value {
+                                frame[field] = serde_json::from_str(json).unwrap();
+                            } else {
+                                frame.as_object_mut().unwrap().remove(field);
+                            }
+                        }
+                    }
                     "controller-service-start" => {
                         assert_eq!(fields["operation"], OPERATION);
                         assert_eq!(fields["controller_operation"], CONTROLLER);
@@ -192,6 +217,15 @@ impl Fixture {
             delivered,
             release,
         }
+    }
+
+    fn assert_routes(&self, expected: &[&str]) {
+        let requests = self.requests.lock().unwrap();
+        let routes = requests
+            .iter()
+            .map(|line| line.split_ascii_whitespace().nth(2).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(routes, expected);
     }
 }
 impl Drop for Fixture {
@@ -328,11 +362,65 @@ async fn failed_attachment_waiter_preserves_actual_custody_without_a_reply_or_re
 }
 
 #[tokio::test]
+async fn bound_controller_reports_embedded_startup_mode() {
+    let fixture = Fixture::open(Behavior::StartupField("mode", Some(r#""embedded""#))).await;
+    assert_eq!(
+        fixture.controller.startup_mode().await.unwrap(),
+        StartupMode::Embedded
+    );
+    fixture.assert_routes(&["member-peer", "controller-open", "controller-startup-mode"]);
+}
+
+#[tokio::test]
+async fn fresh_start_refuses_embedded_invalid_and_unavailable_policy_before_service_io() {
+    use io::ErrorKind::InvalidInput;
+    use io::ErrorKind::Other;
+    use io::ErrorKind::PermissionDenied;
+    use io::ErrorKind::Unsupported;
+
+    for (behavior, expected) in [
+        (
+            Behavior::StartupField("mode", Some(r#""embedded""#)),
+            Unsupported,
+        ),
+        (Behavior::StartupField("mode", Some(r#""future""#)), Other),
+        (
+            Behavior::StartupField("mode", Some(r#"{"retained":null}"#)),
+            Other,
+        ),
+        (Behavior::StartupField("mode", None), Other),
+        (Behavior::StartupField("sdk_ready", Some("true")), Other),
+        (
+            Behavior::StartupField("member", Some(r#""cccccccccccccccccccccccccccccccc""#)),
+            Other,
+        ),
+        (
+            Behavior::StartupField("operation", Some(r#""aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#)),
+            Other,
+        ),
+        (
+            Behavior::StartupRefusal("ERR codex-auth denied\n"),
+            PermissionDenied,
+        ),
+        (
+            Behavior::StartupRefusal("ERR codex-auth invalid request\n"),
+            InvalidInput,
+        ),
+    ] {
+        let fixture = Fixture::open(behavior).await;
+        let result =
+            retained_service::prepare_start(&fixture.controller, OPERATION, settings()).await;
+        assert_eq!(result.err().expect("fresh start accepted").kind(), expected);
+        fixture.assert_routes(&["member-peer", "controller-open", "controller-startup-mode"]);
+        assert!(fixture.frames.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn startup_observations_keep_the_same_operation_and_complete_native_settings() {
     let fixture = Fixture::open(Behavior::Healthy).await;
-    let mut start = fixture
-        .controller
-        .prepare_retained_start(OPERATION, settings())
+    let mut start = retained_service::prepare_start(&fixture.controller, OPERATION, settings())
+        .await
         .unwrap();
     assert_eq!(start.operation(), OPERATION);
     assert_eq!(
@@ -356,6 +444,13 @@ async fn startup_observations_keep_the_same_operation_and_complete_native_settin
         b"ALABSET1\0\0\0\x17\0\0\0\x01\0\0\0\x01x\0\0\0\x01\0\0\0\x01K\0\0\0\x01\xff"
     );
     assert_eq!(frames[0], frames[1]);
+    fixture.assert_routes(&[
+        "member-peer",
+        "controller-open",
+        "controller-startup-mode",
+        "controller-service-start",
+        "controller-service-start",
+    ]);
 }
 
 #[tokio::test]

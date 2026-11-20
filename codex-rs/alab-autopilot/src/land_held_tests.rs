@@ -13,6 +13,7 @@
 use codex_alab_aterm::LandLeg;
 use codex_alab_aterm::LandRead;
 use codex_alab_aterm::LandReport;
+use codex_alab_core::wall_kind::LimitClass;
 use pretty_assertions::assert_eq;
 
 use super::*;
@@ -449,6 +450,7 @@ fn a_usage_resume_under_land_begins_the_hold() {
     let t = Timing::default();
     let now = Instant::now();
     let usage = Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: None,
         reset_label: None,
     };
@@ -595,6 +597,7 @@ fn a_hold_the_record_carries_stands_after_a_re_exec() {
             ..walled(
                 at,
                 Wall::Usage {
+                    limit_class: LimitClass::Ordinary,
                     reset_at: None,
                     reset_label: None,
                 },

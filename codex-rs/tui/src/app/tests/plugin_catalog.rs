@@ -11,8 +11,9 @@ async fn successful_plugin_uninstall_dispatches_plugin_list_refresh() -> Result<
     while app_event_rx.try_recv().is_ok() {}
 
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+    let mut app_server = Box::pin(crate::alab_plugin_fixture::start_server( // ALAB(test): real plugin/list runs with no public marketplace sources.
         app.chat_widget.config_ref(),
+        /*repository*/ None,
     ))
     .await?;
     let control = Box::pin(app.handle_event(

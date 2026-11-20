@@ -308,7 +308,7 @@ impl TranscriptView {
             } else {
                 layout.text().len()
             };
-            ranges.push((layout, begin..finish));
+            ranges.push(layout.launch_card_copy(cells.get(index), begin..finish)?); // ALAB(banner): copy visible artwork cells as blanks.
         }
         Some(ranges)
     }

@@ -18,7 +18,7 @@ import tempfile
 if __name__ == '__main__':
     sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from upstream_intake import git, git_environment
+from upstream_intake import git, git_environment, integrated_upstream, upstream_target
 
 validate_ident = runpy.run_path(str(Path(__file__).resolve().with_name('source_content.py')))['validate_ident']
 successful_exit = runpy.run_path(str(Path(__file__).with_name('cli_status.py')))['successful_exit']
@@ -28,6 +28,18 @@ LIMITS = ('Local gate execution and Git-state observation; not authenticated att
           'a replacement gate, artifact promotion or live entitlement.')
 SCHEMA = 5
 MAX_FILTER_CONFIG_BYTES = 64 * 1024
+
+
+class GateObservationError(OSError):
+    """A completed gate failed and its observation could not be retained."""
+
+    def __new__(cls, gate_status, original_error):
+        return super().__new__(cls)
+
+    def __init__(self, gate_status, original_error):
+        super().__init__('qualification observation failed after a completed gate')
+        self.gate_status = gate_status
+        self.original_error = original_error
 
 
 def checked_root(repo):
@@ -115,7 +127,7 @@ def snapshot(repo):
     clean = worktree_clean(repo, source)
     return {'source': source, 'tree': git(repo, 'rev-parse', source + '^{tree}'),
             'base': git(repo, 'rev-parse', '--verify', 'origin/main^{commit}'),
-            'upstream': git(repo, 'merge-base', source, 'upstream/main'),
+            'upstream': integrated_upstream(repo, source),
             'clean': clean}
 
 
@@ -197,6 +209,41 @@ def _cleanup_process(process, primary):
     return _cleanup_failure(primary, failures)
 
 
+def write_record(directory, record):
+    temporary = None
+    primary = None
+    try:
+        with _closing(tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=directory,
+                prefix='.qualification-record-', suffix='.json', delete=False),
+                'qualification final record') as out:
+            temporary = Path(out.name)
+            json.dump(record, out, indent=2)
+            out.write('\n')
+        # Completed critical I/O precedes publication. An existing final name
+        # is never replaced, even if it appeared while the gate was running.
+        os.link(temporary, directory / 'record.json')
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except BaseException as error:
+                if primary is not None:
+                    selected = _cleanup_failure(
+                        primary, [('qualification record temporary cleanup', error)])
+                    if selected is not primary:
+                        raise selected from primary
+                elif isinstance(error, OSError):
+                    # The record is already committed; ordinary cleanup I/O
+                    # cannot invalidate it or replace its completed gate result.
+                    _report_failure(error, prefix='qualification record temporary cleanup: ')
+                else:
+                    raise
+
+
 def run(repo, directory=None, stream=None):
     repo = Path(repo).resolve(strict=True)
     before = snapshot(repo)
@@ -228,54 +275,58 @@ def run(repo, directory=None, stream=None):
         stream = sys.stdout.buffer
     stream.write(('qualification log: ' + str(directory / 'gate.log') + '\n').encode())
     stream.flush()
-    with _closing((directory / 'gate.log').open('xb'), 'qualification log') as log:
-        environment = os.environ.copy()
-        for name in list(environment):
-            if name.startswith('GIT_'):
-                environment.pop(name)
-        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
-                           GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1',
-                           GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
-        for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'):
-            environment.pop(name, None)
-        process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, env=environment)
-        try:
-            while True:
-                chunk = process.stdout.read1(65536)
-                if not chunk:
-                    break
-                log.write(chunk)
-                log.flush()
-                stream.write(chunk)
-                stream.flush()
-            status = process.wait()
-        except BaseException as primary:
-            selected = _cleanup_process(process, primary)
-            if selected is not primary:
-                raise selected from primary
-            raise
-        else:
-            process.stdout.close()
-    after = snapshot(repo)
-    qualified = status == 0 and before == after and after['clean']
-    record = {'schema': SCHEMA, 'kind': 'native-check-execution-observation',
-              'before': before, 'after': after, 'command': command,
-              'status': status, 'qualified_source': before['source'] if qualified else None,
-              'started_at': started, 'completed_at': now(), 'log': 'gate.log',
-              'log_sha256': FILE_HASH['file_sha256'](directory / 'gate.log'),
-              'limits': LIMITS}
-    with _closing((directory / 'record.json').open('x'), 'qualification final record') as out:
-        json.dump(record, out, indent=2)
-        out.write('\n')
-    stream.write(('qualification record: ' + str(directory / 'record.json') + '\n').encode())
-    stream.flush()
-    if status:
-        return 128 - status if status < 0 else status
-    if not qualified:
-        stream.write(b'qualification inputs changed; no source qualified\n')
+    status = None
+    try:
+        with _closing((directory / 'gate.log').open('xb'), 'qualification log') as log:
+            environment = os.environ.copy()
+            for name in list(environment):
+                if name.startswith('GIT_'):
+                    environment.pop(name)
+            environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+                               GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1',
+                               GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
+            for name in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'):
+                environment.pop(name, None)
+            process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, env=environment)
+            try:
+                while True:
+                    chunk = process.stdout.read1(65536)
+                    if not chunk:
+                        break
+                    log.write(chunk)
+                    log.flush()
+                    stream.write(chunk)
+                    stream.flush()
+                status = process.wait()
+            except BaseException as primary:
+                selected = _cleanup_process(process, primary)
+                if selected is not primary:
+                    raise selected from primary
+                raise
+            else:
+                process.stdout.close()
+        after = snapshot(repo)
+        qualified = status == 0 and before == after and after['clean']
+        record = {'schema': SCHEMA, 'kind': 'native-check-execution-observation',
+                  'before': before, 'after': after, 'command': command,
+                  'status': status, 'qualified_source': before['source'] if qualified else None,
+                  'started_at': started, 'completed_at': now(), 'log': 'gate.log',
+                  'log_sha256': FILE_HASH['file_sha256'](directory / 'gate.log'),
+                  'limits': LIMITS}
+        write_record(directory, record)
+        stream.write(('qualification record: ' + str(directory / 'record.json') + '\n').encode())
         stream.flush()
-    return 0 if qualified else 1
+        if status:
+            return 128 - status if status < 0 else status
+        if not qualified:
+            stream.write(b'qualification inputs changed; no source qualified\n')
+            stream.flush()
+        return 0 if qualified else 1
+    except OSError as error:
+        if status is not None and status != 0:
+            raise GateObservationError(status, error) from error
+        raise
 
 
 def inspect(repo, path):
@@ -307,6 +358,7 @@ def inspect(repo, path):
     upstream = record['before'].get('upstream')
     if not isinstance(upstream, str) or git(repo, 'merge-base', source, upstream) != upstream:
         raise ValueError('qualification upstream differs from the source frontier')
+    upstream_target(repo, source, upstream)
     if FILE_HASH['file_sha256'](path.parent / 'gate.log') != record.get('log_sha256'):
         raise ValueError('qualification log hash changed')
     return {'source': source, 'upstream': record['before'].get('upstream'),
@@ -314,12 +366,12 @@ def inspect(repo, path):
             'limits': LIMITS}
 
 
-def _report_failure(error, *, incomplete=False):
+def _report_failure(error, *, incomplete=False, prefix='qualification observation: '):
     try:
         if incomplete:
             message = 'qualification observation incomplete: observer requested a successful exit'
         else:
-            message = 'qualification observation: ' + str(error)
+            message = prefix + str(error)
         print(message, file=sys.stderr)
         for note in getattr(error, '__notes__', ()):
             print('qualification observation note: ' + str(note), file=sys.stderr)
@@ -338,6 +390,9 @@ def main():
     args = parser.parse_args()
     try:
         return run(args.repo, args.directory)
+    except GateObservationError as error:
+        _report_failure(error.original_error)
+        return 128 - error.gate_status if error.gate_status < 0 else error.gate_status
     except SystemExit as error:
         if successful_exit(error):
             return _report_failure(error, incomplete=True)
@@ -346,5 +401,75 @@ def main():
         return _report_failure(error)
 
 
+def _quiesce_broken_output(stream):
+    descriptor = stream.fileno()
+    null = os.open(os.devnull, os.O_WRONLY)
+    if null == descriptor:
+        return  # The output descriptor itself now owns the null device.
+    try:
+        os.dup2(null, descriptor)
+    except BaseException as primary:
+        failures = []
+        try:
+            os.close(null)
+        except BaseException as error:
+            failures.append(('qualification null output cleanup', error))
+        selected = _cleanup_failure(primary, failures)
+        if selected is not primary:
+            raise selected from primary
+        raise
+    else:
+        os.close(null)
+
+
+def cli():
+    """Finish CLI-owned output before Python can replace the selected exit."""
+    status = None
+    primary = None
+    try:
+        status = main()
+    except BaseException as error:
+        primary = error
+    failures = []
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name)
+        try:
+            stream.flush()
+        except BaseException as error:
+            failures.append(('qualification ' + name + ' flush', error))
+            if isinstance(error, BrokenPipeError):
+                try:
+                    _quiesce_broken_output(stream)
+                except BaseException as cleanup:
+                    failures.append(('qualification ' + name + ' quiescence', cleanup))
+                    # The failed CLI sink must not retry buffered writes at
+                    # interpreter shutdown when a null device is unavailable.
+                    try:
+                        stream.close()
+                    except BaseException as close_error:
+                        failures.append(('qualification ' + name + ' close', close_error))
+    if (primary is not None and failures and type(primary) is SystemExit
+            and successful_exit(primary)):
+        # A successful parser exit still requires its help output to finish.
+        primary = None
+        status = 0
+    if primary is not None:
+        selected = _cleanup_failure(primary, failures)
+        if (selected is not primary and type(selected) is SystemExit
+                and successful_exit(selected)):
+            return 1
+        if selected is not primary:
+            raise selected from primary
+        raise primary
+    if failures:
+        selected = _cleanup_failure(failures[0][1], failures[1:])
+        if type(selected) is SystemExit and successful_exit(selected):
+            return status or 1
+        if not isinstance(selected, Exception):
+            raise selected
+        return status or 1
+    return status
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(cli())

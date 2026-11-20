@@ -32,6 +32,13 @@ use ratatui::widgets::Widget;
 use ratatui::widgets::Wrap;
 use std::cell::Cell;
 
+struct NavigationAction {
+    key: ListAction,
+    label: &'static str,
+    available: Box<dyn Fn() -> bool>,
+    activate: Box<dyn Fn()>,
+}
+
 pub(super) struct DetailsView {
     view_id: &'static str,
     title: &'static str,
@@ -40,6 +47,7 @@ pub(super) struct DetailsView {
     accept_label: &'static str,
     on_accept: Option<Box<dyn FnOnce()>>,
     on_refresh: Option<Box<dyn Fn()>>,
+    navigation: Vec<NavigationAction>,
     keymap: ListKeymap,
     offset: Cell<usize>,
     page_size: Cell<usize>,
@@ -64,6 +72,7 @@ impl DetailsView {
             accept_label,
             on_accept,
             on_refresh: None,
+            navigation: Vec::new(),
             keymap,
             offset: Cell::new(0),
             page_size: Cell::new(1),
@@ -75,6 +84,22 @@ impl DetailsView {
     /// Refresh the current view without completing it or resetting its scroll state.
     pub(super) fn with_refresh(mut self, refresh: impl Fn() + 'static) -> Self {
         self.on_refresh = Some(Box::new(refresh));
+        self
+    }
+
+    pub(super) fn with_navigation_action(
+        mut self,
+        key: ListAction,
+        label: &'static str,
+        available: impl Fn() -> bool + 'static,
+        activate: impl Fn() + 'static,
+    ) -> Self {
+        self.navigation.push(NavigationAction {
+            key,
+            label,
+            available: Box::new(available),
+            activate: Box::new(activate),
+        });
         self
     }
 
@@ -95,12 +120,19 @@ impl DetailsView {
 
     fn footer(&self) -> Paragraph<'static> {
         let mut spans = Vec::new();
-        for (action, label) in [
+        let scroll = [
             (ListAction::MoveDown, "scroll"),
             (ListAction::PageDown, "page"),
+        ];
+        let navigation = self
+            .navigation
+            .iter()
+            .filter(|action| (action.available)())
+            .map(|action| (action.key, action.label));
+        for (action, label) in scroll.into_iter().chain(navigation).chain([
             (ListAction::Accept, self.accept_label),
             (ListAction::Cancel, "back"),
-        ] {
+        ]) {
             if let Some(hint) = self.keymap.primary_hint(action) {
                 if !spans.is_empty() {
                     spans.push(" · ".dim());
@@ -142,6 +174,16 @@ impl BottomPaneView for DetailsView {
             Some(ListAction::PageDown) => offset.saturating_add(self.page_size.get()),
             Some(ListAction::JumpTop) => 0,
             Some(ListAction::JumpBottom) => self.max_offset.get(),
+            Some(key @ (ListAction::MoveLeft | ListAction::MoveRight)) => {
+                if let Some(action) = self
+                    .navigation
+                    .iter()
+                    .find(|action| action.key == key && (action.available)())
+                {
+                    (action.activate)();
+                }
+                offset
+            }
             Some(ListAction::Accept) => {
                 if let Some(refresh) = &self.on_refresh {
                     refresh();

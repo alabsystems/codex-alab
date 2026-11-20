@@ -28,7 +28,9 @@ impl Build {
         repo: &Path,
         release: &Release,
         compiler: &product::Compiler,
+        campaign: &Path,
     ) -> Result<()> {
+        check_attempt(campaign, &self.target, &self.binary)?;
         if self.intent != release.id()?
             || self.version != crate::assembly::ripgrep_version(repo, release)?
             || &self.compiler != compiler
@@ -42,6 +44,25 @@ impl Build {
         }
         Ok(())
     }
+}
+
+fn check_attempt(campaign: &Path, target: &Path, binary: &Path) -> Result<()> {
+    let attempt = target.parent().ok_or("missing ripgrep build attempt")?;
+    if attempt.parent() != Some(campaign)
+        || !attempt
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("ripgrep-"))
+        || target != attempt.join("target.noindex")
+        || binary != attempt.join("install.noindex/bin/rg")
+        || target.canonicalize()? != target
+        || binary.canonicalize()? != binary
+    {
+        return Err("ripgrep outputs are outside their original campaign build attempt".into());
+    }
+    crate::source::owned(attempt)?;
+    crate::source::owned(target)?;
+    Ok(())
 }
 
 pub fn arguments(version: &str, target: &Path, root: &Path) -> Vec<std::ffi::OsString> {

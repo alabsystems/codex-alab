@@ -29,7 +29,7 @@ pub(crate) struct ImagePlacement {
     pub(crate) image: Arc<TranscriptImage>,
     pub(crate) area: Rect,
     pub(crate) first_row: usize,
-    pub(crate) file: Option<tempfile::NamedTempFile>,
+    pub(crate) file: Option<crate::retained_tui_images::ImageFile>, // ALAB(retained-ui): placement aliases the same original unlink owner as the Tui book.
 }
 
 impl ImagePlacement {
@@ -130,7 +130,7 @@ impl TranscriptImage {
         area: Rect,
         first_row: usize,
         placement: KittyPlacement,
-    ) -> Result<Option<tempfile::NamedTempFile>> {
+    ) -> Result<Option<crate::retained_tui_images::ImageFile>> { // ALAB(retained-ui): keep the original file observable without duplicating its owner.
         let (top, bottom) = match self.protocol {
             ImageProtocol::Sixel => (
                 first_row as u32 * self.cell_height,
@@ -189,3 +189,6 @@ impl TranscriptImage {
 // ALAB(retained-ui): retain the original decoded raster, never reload its path.
 #[path = "../../alab-tui/glue/retained_text_image.rs"]
 pub(crate) mod alab_retained_image;
+
+#[path = "../../alab-tui/glue/user_images.rs"] mod alab_user_images; // ALAB(image-history): render the attachments retained in submitted prompts.
+pub(crate) use alab_user_images::{user_image_pixels, user_images}; // ALAB(image-history): share attachment decoding across the two transcript renderers.

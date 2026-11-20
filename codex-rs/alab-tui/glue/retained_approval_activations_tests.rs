@@ -55,12 +55,13 @@ fn native(
 fn key(view: &mut ApprovalOverlay, key: KeyCode) {
     view.handle_key_event(KeyEvent::new(key, KeyModifiers::NONE));
 }
-fn normalized() -> io::Result<(
+type NormalizedFixture = (
     ApprovalOverlay,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     Arc<Item>,
     Arc<Item>,
-)> {
+);
+fn normalized() -> io::Result<NormalizedFixture> {
     let a = item(101, "a")?;
     let b = item(102, "b")?;
     let (mut view, rx) = native(&b, "b");

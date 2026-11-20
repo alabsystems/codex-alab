@@ -144,6 +144,24 @@ fn the_latch_tells_once_per_wall_and_again_for_a_new_wall() {
 }
 
 #[test]
+fn named_buckets_have_distinct_reports_and_share_only_permanent_source_facts() {
+    let wall = Wall::new(login("account"), Some("turn".into()));
+    let a = wall.clone().with_limit(Some("model_a"));
+    let b = wall.clone().with_limit(Some("model_b"));
+    let mut latch = Latch::default();
+    assert!(latch.note(&a, &NoRoute::NotNeeded).is_some());
+    assert!(latch.note(&a, &NoRoute::NotNeeded).is_none());
+    for different in [&b, &wall] {
+        assert!(!latch.settled(different));
+        assert!(latch.note(different, &NoRoute::NotNeeded).is_some());
+    }
+    latch.note(&a, &NoRoute::NotInTab);
+    for same_source in [&a, &b, &wall] {
+        assert!(latch.settled(same_source));
+    }
+}
+
+#[test]
 fn a_definite_route_settles_its_wall_only() {
     let wall = Wall::new(login("fixture-account"), Some("root-turn".into()));
     let mut latch = Latch::default();
@@ -589,8 +607,8 @@ async fn a_leader_claims_and_prepares_its_move_as_before() {
 /// A WALL THE HOST'S POLICY DOES NOT LEAVE SENDS NO CLAIM (gap 4, step S3): the policy read
 /// already rules the move out, so the tab's claim is not taken for a wall nothing moves. Today's
 /// aterm prints no `codex_rotation_refusal=1`, so a leader at a workspace's wall reads the policy
-/// and claims nothing; with the word it claims as at an ordinary wall; a model's own limit
-/// claims under no policy.
+/// and claims nothing; with the word it claims as at an ordinary wall. A model's own limit
+/// requires both model rotation words.
 #[tokio::test]
 async fn a_leader_claims_only_at_a_wall_its_hosts_policy_leaves() {
     use codex_alab_core::wall_kind::Workspace;
@@ -618,11 +636,25 @@ async fn a_leader_claims_only_at_a_wall_its_hosts_policy_leaves() {
     let refused = admit(host.endpoint(), true, options(), &model).await;
     assert_eq!(refused.err(), Some(Miss::Route(NoRoute::RotationOff)));
     assert_eq!(claims(&host), 0);
-    let client = admit(host.endpoint(), true, options(), &credits)
+    host.set_policy_key("codex_rotation_limits", "1");
+    assert!(
+        admit(host.endpoint(), true, options(), &model)
+            .await
+            .is_err()
+    );
+    assert_eq!(claims(&host), 0);
+    host.set_policy_key("codex_exec_rotation_limits", "1");
+    let client = admit(host.endpoint(), true, options(), &model)
         .await
         .unwrap();
     assert!(client.holds_claim());
     assert_eq!(claims(&host), 1);
+    client.release().await.unwrap();
+    let client = admit(host.endpoint(), true, options(), &credits)
+        .await
+        .unwrap();
+    assert!(client.holds_claim());
+    assert_eq!(claims(&host), 2);
 }
 
 #[tokio::test]

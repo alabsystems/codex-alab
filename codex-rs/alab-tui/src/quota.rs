@@ -37,18 +37,24 @@ pub fn reset_notice_visible(message: &str) -> bool {
 }
 
 fn reset_notice_visible_when_active(active: bool, message: &str) -> bool {
-    active && message.starts_with("[codex-alab reset] ")
+    active && codex_alab_core::quota::is_recovery_notice(message)
 }
 
 #[cfg(test)]
 #[test]
 fn only_active_reset_decisions_are_visible_in_the_conversation() {
-    let decision = "[codex-alab reset] Considering 1 reset; expires tomorrow.";
-    assert!(reset_notice_visible_when_active(true, decision));
-    assert!(!reset_notice_visible_when_active(false, decision));
+    for decision in [
+        "[codex-alab reset] Considering 1 reset; expires tomorrow.",
+        "[codex-alab credits] Retrying this request once with usage credits.",
+    ] {
+        assert!(reset_notice_visible_when_active(true, decision));
+        assert!(!reset_notice_visible_when_active(false, decision));
+    }
     for diagnostic in [
         "Ordinary warning",
         "[codex-alab reset]",
+        "[codex-alab credits]",
+        "unrelated [codex-alab credits] warning",
         "unrelated [codex-alab reset] warning",
     ] {
         assert!(!reset_notice_visible_when_active(true, diagnostic));

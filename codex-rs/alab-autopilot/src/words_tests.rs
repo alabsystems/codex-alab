@@ -518,3 +518,117 @@ fn a_fact_rides_whole_or_not_at_all() {
         "a two-unit character"
     );
 }
+
+#[test]
+fn automated_dependencies_are_progress_reports() {
+    for report in [
+        "The newer release is still blocked on Trust compiler certification.",
+        "The release is still blocked on compiler checks.",
+        "- The release is blocked on CI checks.",
+        "The release is blocked on CI checks. Still 90 GiB below the build target.",
+        "Bringing recovered space to 20 GiB. The release is blocked on CI checks.",
+        "The release is blocked on **CI checks**.",
+        "1. The release is blocked on `CI checks`.",
+        "- Local tests passed\n- The release is blocked on CI checks.",
+        "The deployment is blocked on automated tests.",
+        "The release is blocked on CI checks. The release notes are ready.",
+        "The release notes are ready. The release is blocked on CI checks.",
+        "This build is blocked on CI. It stops the job, but it resumes automatically.",
+        "Our production releases remain blocked on the CI checks.",
+        "The package is blocked on CI. The deployment remains blocked on integration tests.",
+        "The release is blocked on CI checks, pending completion. I recovered disk space.",
+        "The release is blocked on CI checks.\nNEEDS YOU: approval to publish.",
+    ] {
+        assert_eq!(classify_said(Some(report)), Said::Plain, "{report}");
+    }
+    assert!(!says_done(Some(
+        "No jobs are running. The release is blocked on CI checks."
+    )));
+}
+
+#[test]
+fn a_machine_dependency_does_not_clear_a_separate_request() {
+    let report = "The release is blocked on CI checks.";
+    for ask in [
+        "Give me permission to publish.",
+        "Give me the green light for production.",
+        "Say yes to the production rollout.",
+        "Wait for the owner before rolling out.",
+        "The owner asked us to hold the rollout.",
+        "Pending the board vote.",
+        "Waiting for Alicia to respond.",
+        "Still awaiting the board decision.",
+        "During the decision meeting.",
+        "Waiting would require clearance.",
+        "Only the operator can lift this hold.",
+        "Click the launch button.",
+        "Re-enable failed systems.",
+        "The team instructed us to pause until the tests passed.",
+        "A moratorium is in effect.",
+        "The reviewer instructed us to keep the rollout suspended.",
+        "[Build log](url) Wait for Alicia. [Test log](url)",
+        "[Click now](path)",
+        "Local tests passed, then activate production.",
+        "The tests passed and activate production.",
+        "Authorize me to delete the production version.",
+        "Sign the production release.",
+        "Approve it.",
+        "Authorize it now.",
+        "Do it now.",
+        "Push it now.",
+        "Move it to production once CI passes.",
+        "The release notes are ready. Push it when green.",
+        "Should I force-push the fix?",
+        "Can I do that?",
+        "The signing key is blocked on your approval.",
+        "The next deployment is blocked on a decision.",
+    ] {
+        for text in [format!("{report} {ask}"), format!("{ask}\n{report}")] {
+            assert!(
+                matches!(classify_said(Some(&text)), Said::Irreversible(_)),
+                "{text}"
+            );
+        }
+    }
+    for text in [
+        "The release is blocked on CI checks: authorize its deletion.",
+        "The release is blocked on your compiler certification.",
+        "The release is blocked on the next milestone.",
+        "We are blocked on compiler checks for the release.",
+        "You are blocked on CI. The release is next.",
+        "Is the release blocked on compiler certification?",
+        "The request to delete the release is blocked on CI checks.",
+    ] {
+        assert!(
+            matches!(classify_said(Some(text)), Said::Irreversible(_)),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn usage_deadlines_show_the_local_day_when_the_wait_crosses_midnight() {
+    let stamp = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap();
+    for (now, deadline, expected) in [
+        (
+            "2026-03-08T01:50:00-08:00",
+            "2026-03-08T03:15:00-07:00",
+            "03:15",
+        ),
+        (
+            "2026-10-31T23:50:00-07:00",
+            "2026-11-01T01:05:00-08:00",
+            "01:05 on 2026-11-01",
+        ),
+        (
+            "2026-12-31T23:59:00-08:00",
+            "2027-01-01T00:01:00-08:00",
+            "00:01 on 2027-01-01",
+        ),
+    ] {
+        assert_eq!(
+            crate::words::usage_clock(stamp(deadline), stamp(now)),
+            expected
+        );
+    }
+}

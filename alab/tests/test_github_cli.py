@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import signal
 import sys
 
 path, case, witness_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
@@ -36,8 +38,12 @@ if case == 'ordinary' or case.startswith('report_'):
     faults[case] = (module.GITHUB.Refused if tool == 'github_push' else module.Refused)('controlled refusal')
 primary = faults.get(case)
 witness = {'operation_called': False, 'operation_returned': False}
+if case == 'inherited_sigchld':
+    witness['ignored_after_import'] = signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
 
 def operation(*arguments, **keywords):
+    if case == 'inherited_sigchld':
+        witness['default_at_operation'] = signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
     witness['operation_called'] = True
     if primary is not None:
         raise primary
@@ -139,14 +145,26 @@ class GithubCliTests(unittest.TestCase):
         script = self.directory / 'child.py'
         script.write_text(CHILD)
         witness = self.directory / (Path(module.__file__).stem + '-' + case + '.json')
-        done = subprocess.run([
-            sys.executable, '-I', '-B', str(script), str(Path(module.__file__)), case, str(witness),
-        ], cwd=self.directory, capture_output=True, text=True, timeout=10)
+        command = [sys.executable, '-I', '-B', str(script), str(Path(module.__file__)), case, str(witness)]
+        if case == 'inherited_sigchld':
+            launcher = ('import os, signal, sys; signal.signal(signal.SIGCHLD, signal.SIG_IGN); '
+                        'os.execv(sys.argv[1], sys.argv[1:])')
+            command = [sys.executable, '-IB', '-c', launcher, *command]
+        done = subprocess.run(command, cwd=self.directory, capture_output=True, text=True, timeout=10)
         observed = json.loads(witness.read_text())
         self.child_observations.append(dict(tool=Path(module.__file__).stem, case=case,
                                             actual_exit=done.returncode, witness=observed,
                                             stdout=done.stdout, stderr=done.stderr))
         return done, observed
+
+    @unittest.skipUnless(hasattr(signal, 'SIGCHLD'), 'POSIX child exit signals')
+    def test_entry_restores_inherited_child_exit_observation_after_import(self):
+        for tool, module in self.tools():
+            with self.subTest(tool=tool):
+                done, witness = self.child(module, 'inherited_sigchld')
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertTrue(witness['ignored_after_import'])
+                self.assertTrue(witness['default_at_operation'])
 
     def test_main_refuses_success_shaped_system_exit_from_incomplete_operation(self):
         for tool, module in self.tools():

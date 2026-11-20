@@ -37,11 +37,7 @@ case "${1:-all}" in
       "${CARGO_TARGET_DIR:-${repo}/codex-rs/target}")"
     export CARGO_TARGET_DIR="${target}" CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" RUST_TEST_THREADS=1
-    nofile_want="$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo 10240)"
-    (( nofile_want > 65536 )) && nofile_want=65536
-    if (( $(ulimit -n) < nofile_want )) && ! ulimit -n "${nofile_want}" 2>/dev/null; then
-      alab_say "open-file limit stays $(ulimit -n) (could not raise it to ${nofile_want})"
-    fi
+    alab_native_test_nofile
     "${ALAB_PYTHON}" -I -B "${repo}/alab/retention.py" --repo "${repo}" \
       || alab_die "the existing preservation policy prevents a scratch-cleanup probe"
     state="$(mktemp -d "${target}/alab-native-diagnostics-probe.XXXXXX")"

@@ -13,9 +13,11 @@ use crate::decide::Questions;
 use crate::decide::Texts;
 use crate::decide::ThreadState;
 use crate::decide::Timing;
+use crate::decide::Wall;
 use crate::decide::decide;
 use codex_alab_core::session::Recovery;
 use codex_alab_core::session::RecoveryWall;
+use codex_alab_core::wall_kind::LimitClass;
 use codex_history::RolloutItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -387,7 +389,7 @@ fn a_late_retired_abort_preserves_the_current_failed_turn_and_recovery() {
             items.push(complete);
         }
         assert!(
-            matches!(latest(&items).point, NativePoint::Complete(complete) if complete.turn_id == CURRENT),
+            matches!(latest(&items).point, NativePoint::Complete(complete) if complete.event.turn_id == CURRENT),
             "a late terminal belongs to its retired native attempt"
         );
         let mut state = ThreadState::default();
@@ -427,6 +429,307 @@ fn a_late_retired_abort_preserves_the_current_failed_turn_and_recovery() {
         assert_eq!(decision.not_before, Some(now + Duration::from_secs(80)));
         assert_eq!(state.point_turn_id.as_deref(), Some(CURRENT));
     }
+}
+
+#[test]
+fn sparse_duplicate_completion_keeps_cruise_stopped_at_the_misalignment_finding() {
+    let mut items = vec![
+        started(OLD),
+        regular_input(),
+        completed(OLD, CodexErrorInfo::MisalignmentPolicyViolation),
+        event(json!({"type": "task_complete", "turn_id": OLD, "duration_ms": 321})),
+    ];
+    let now = Instant::now();
+    let mut state = ThreadState::default();
+    assert!(crate::extension::resume_into(
+        &mut state, &items, true, None, 0, now,
+    ));
+    assert!(matches!(
+        decide(&state, &policy(), &Timing::default(), now, Duration::ZERO).act,
+        Act::Attention { .. }
+    ));
+    assert!(!state.carry_on);
+    assert!(super::served(&items, OLD).is_none());
+    let NativePoint::Complete(duplicate) = latest(&items).point else {
+        panic!("expected the repeated terminal");
+    };
+    assert_eq!(duplicate.event.duration_ms, Some(321));
+
+    items.push(completed(OLD, CodexErrorInfo::ServerOverloaded));
+    let NativePoint::Complete(overload) = latest(&items).point else {
+        panic!("expected the later overload report");
+    };
+    assert_eq!(
+        overload
+            .error
+            .and_then(|error| error.codex_error_info.as_ref()),
+        Some(&CodexErrorInfo::MisalignmentPolicyViolation)
+    );
+    let mut after_overload = ThreadState::default();
+    assert!(crate::extension::resume_into(
+        &mut after_overload,
+        &items,
+        true,
+        None,
+        0,
+        now,
+    ));
+    assert!(matches!(
+        decide(
+            &after_overload,
+            &policy(),
+            &Timing::default(),
+            now,
+            Duration::ZERO
+        )
+        .act,
+        Act::Attention { .. }
+    ));
+    items.push(event(json!({
+        "type": "task_complete",
+        "turn_id": OLD,
+        "error": {
+            "message": "Updated finding",
+            "codex_error_info": CodexErrorInfo::MisalignmentPolicyViolation
+        }
+    })));
+    let NativePoint::Complete(updated) = latest(&items).point else {
+        panic!("expected the updated terminal");
+    };
+    assert_eq!(
+        updated.error.map(|error| error.message.as_str()),
+        Some("Updated finding")
+    );
+
+    items.extend([
+        started(CURRENT),
+        regular_input(),
+        event(json!({"type": "task_complete", "turn_id": CURRENT})),
+    ]);
+    assert!(super::served(&items, CURRENT).is_some());
+}
+
+#[test]
+fn a_duplicate_start_cannot_reopen_a_terminal_misalignment_refusal() {
+    let now = Instant::now();
+    for repeated in [CURRENT, OLD] {
+        let mut items = vec![
+            started(OLD),
+            regular_input(),
+            done(OLD),
+            started(CURRENT),
+            regular_input(),
+            completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation),
+            started(repeated),
+        ];
+        for sparse in [false, true] {
+            if sparse {
+                items.push(event(json!({"type":"task_complete", "turn_id":repeated})));
+            }
+            for autopilot in [Mode::Cruise, Mode::Land] {
+                let policy = Policy {
+                    autopilot,
+                    ..policy()
+                };
+                let mut state = ThreadState::default();
+                crate::extension::resume_into(
+                    &mut state,
+                    &items,
+                    ResumeSource::Crash,
+                    None,
+                    0,
+                    now,
+                );
+                let act = decide(&state, &policy, &Timing::default(), now, Duration::ZERO).act;
+                assert!(
+                    matches!(act, Act::Attention { .. }),
+                    "{autopilot:?} after repeated {repeated}, sparse completion={sparse}: {act:?}"
+                );
+                assert_eq!(state.point_turn_id.as_deref(), Some(CURRENT));
+            }
+            assert!(super::served(&items, repeated).is_none());
+        }
+
+        items.extend([started("corrected"), regular_input(), done("corrected")]);
+        assert!(super::served(&items, "corrected").is_some());
+        for autopilot in [Mode::Cruise, Mode::Land] {
+            let policy = Policy {
+                autopilot,
+                ..policy()
+            };
+            let mut state = ThreadState::default();
+            crate::extension::resume_into(&mut state, &items, ResumeSource::Crash, None, 0, now);
+            assert!(matches!(
+                decide(&state, &policy, &Timing::default(), now, Duration::ZERO).act,
+                Act::Type {
+                    rule: crate::words::RULE_HOST_TURN,
+                    ..
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn history_only_usage_restores_the_wait_without_classifying_its_bucket() {
+    let items = [
+        started(CURRENT),
+        regular_input(),
+        completed(CURRENT, CodexErrorInfo::UsageLimitExceeded),
+    ];
+    let now = Instant::now();
+    let mut state = ThreadState::default();
+    assert!(crate::extension::rewatch_bound(&mut state, &items, 0, now));
+    assert!(matches!(
+        state.point.as_ref().and_then(|point| point.wall.as_ref()),
+        Some(Wall::Usage {
+            limit_class: LimitClass::Unverified,
+            ..
+        })
+    ));
+    let wait = decide(&state, &policy(), &Timing::default(), now, Duration::ZERO);
+    assert!(matches!(wait.act, Act::ResumeLimit { .. }), "{wait:?}");
+    assert!(wait.not_before.is_some_and(|deadline| deadline > now));
+
+    let mut restarted = ThreadState::default();
+    super::restore_terminal(&mut restarted, &items, ResumeSource::Crash, now);
+    assert!(restarted.point.is_none());
+}
+
+#[test]
+fn rolled_back_finding_restores_the_surviving_native_end() {
+    for previous in [done(OLD), aborted(Some(OLD))] {
+        let mut items = vec![started(OLD), regular_input(), previous];
+        let previous_was_aborted = matches!(latest(&items).point, NativePoint::Aborted(_));
+        items.extend([
+            started(CURRENT),
+            regular_input(),
+            completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation),
+            event(json!({"type":"thread_rolled_back","num_turns":1})),
+        ]);
+        assert!(codex_core::pending_misalignment_review(&items).is_none());
+        let surviving = latest(&items);
+        assert_eq!(surviving.turn_id, Some(OLD));
+        let mut state = ThreadState::default();
+        assert!(super::restore_end(&mut state, &items, Instant::now()));
+        let point = state.point.expect("the surviving native end");
+        assert!(point.wall.is_none());
+        assert_eq!(point.aborted, previous_was_aborted);
+    }
+}
+
+#[test]
+fn rolling_back_the_only_refused_turn_leaves_no_crash_continuation() {
+    let items = [
+        started(CURRENT),
+        regular_input(),
+        completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation),
+        event(json!({"type":"thread_rolled_back","num_turns":1})),
+    ];
+    let now = Instant::now();
+    let mut state = ThreadState::default();
+    crate::extension::resume_into(&mut state, &items, ResumeSource::Crash, None, 0, now);
+    assert_eq!(
+        decide(&state, &policy(), &Timing::default(), now, Duration::ZERO).act,
+        Act::Nothing
+    );
+}
+
+#[test]
+fn a_new_automatic_turn_cannot_restore_recovery_over_a_pending_review() {
+    let items = [
+        started(OLD),
+        regular_input(),
+        completed(OLD, CodexErrorInfo::MisalignmentPolicyViolation),
+        ours(CURRENT),
+        regular_input(),
+        done(CURRENT),
+    ];
+    let now = Instant::now();
+    let mut state = ThreadState::default();
+    crate::extension::resume_bound_with(
+        &mut state,
+        &items,
+        ResumeSource::Crash,
+        None,
+        0,
+        now,
+        |_| panic!("stored recovery cannot supersede a live review obligation"),
+    );
+    assert_eq!(state.point_turn_id.as_deref(), Some(OLD));
+    assert!(matches!(
+        state.point.as_ref().and_then(|p| p.wall.as_ref()),
+        Some(crate::decide::Wall::Fatal { .. })
+    ));
+    assert!(matches!(
+        decide(&state, &policy(), &Timing::default(), now, Duration::ZERO).act,
+        Act::Attention { .. }
+    ));
+}
+
+#[test]
+fn misalignment_replay_requires_a_new_turn_even_when_the_start_is_missing() {
+    let refused = completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation);
+    for stale in [
+        started(CURRENT),
+        started(" "),
+        done(OLD),
+        aborted(Some(CURRENT)),
+        regular_input(),
+    ] {
+        let items = [refused.clone(), stale];
+        let history = latest(&items);
+        assert!(
+            matches!(history.point, NativePoint::Complete(terminal) if terminal.error
+                .and_then(|error| error.codex_error_info.as_ref())
+                == Some(&CodexErrorInfo::MisalignmentPolicyViolation)),
+            "only a new turn can supersede the finding: {:?}",
+            items[1],
+        );
+        assert_eq!(history.turn_id, Some(CURRENT));
+    }
+}
+
+#[test]
+fn a_named_terminal_retires_an_older_turn_even_when_its_start_is_missing() {
+    let finding = completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation);
+    for terminal in [aborted(Some(OLD)), done(OLD)] {
+        for mut items in [
+            vec![terminal.clone(), started(CURRENT), finding.clone()],
+            vec![finding.clone(), terminal.clone()],
+        ] {
+            items.extend([started(OLD), done(OLD)]);
+            let history = latest(&items);
+            assert_eq!(history.turn_id, Some(CURRENT), "{items:?}");
+            assert!(
+                matches!(history.point, NativePoint::Complete(current)
+                    if current.error.and_then(|error| error.codex_error_info.as_ref())
+                        == Some(&CodexErrorInfo::MisalignmentPolicyViolation)),
+                "{items:?}"
+            );
+            assert!(super::served(&items, OLD).is_none());
+        }
+    }
+}
+
+#[test]
+fn a_retired_duplicate_start_cannot_displace_a_running_turn_before_its_finding() {
+    let items = [
+        started(OLD),
+        done(OLD),
+        started(CURRENT),
+        regular_input(),
+        started(OLD),
+        done(OLD),
+        completed(CURRENT, CodexErrorInfo::MisalignmentPolicyViolation),
+    ];
+    let history = latest(&items);
+    assert_eq!(history.turn_id, Some(CURRENT));
+    assert!(
+        matches!(history.point, NativePoint::Complete(terminal) if terminal.error
+        .and_then(|error| error.codex_error_info.as_ref())
+        == Some(&CodexErrorInfo::MisalignmentPolicyViolation))
+    );
 }
 
 #[test]
@@ -895,6 +1198,25 @@ fn exec_recovery_accepts_only_turn_bound_agent_input() {
         ],
         "original"
     ));
+}
+
+#[test]
+fn exec_recovery_keeps_the_accepted_input_across_a_delayed_retired_start() {
+    for (retry, same_attribution) in [(started(CURRENT), true), (ours(CURRENT), false)] {
+        let items = [
+            started(OLD),
+            done(OLD),
+            started(CURRENT),
+            regular_input(),
+            started(OLD),
+            retry,
+        ];
+        assert_eq!(
+            super::unfinished_recovery_turn(&items, CURRENT),
+            same_attribution
+        );
+        assert!(!super::unfinished_recovery_turn(&items, OLD));
+    }
 }
 
 #[test]

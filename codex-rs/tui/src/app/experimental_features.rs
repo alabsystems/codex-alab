@@ -68,7 +68,7 @@ impl App {
     ) {
         let lock = self.feature_write_lock.clone();
         let handle = app_server.request_handle();
-        tokio::spawn(async move {
+        app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the same popup discovery root through original lock wait and child admission.
             // A reopened popup must discover values after the outstanding save.
             tokio::select! {
                 _ = response_tx.closed() => {},
@@ -95,7 +95,7 @@ impl App {
         };
         let request_handle = app_server.request_handle();
         let tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
+        app_server.alab_spawn_original_work(async move { // ALAB(retained-ui): retain the same accepted feature save through original readback/result publication.
             let result =
                 crate::experimental_features::write(request_handle, thread_id, updates).await;
             drop(guard);

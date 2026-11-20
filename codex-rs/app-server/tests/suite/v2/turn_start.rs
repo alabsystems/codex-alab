@@ -5561,6 +5561,7 @@ async fn run_turn_start_file_change_approval_rejection_v2(
 #[cfg_attr(not(windows), test_case(None; "started"))]
 #[test_case(Some(json!({"cmd": "echo unreachable", "workdir": "missing-work-directory", "tty": false})); "pipe_launch_failure")]
 #[test_case(Some(json!({"cmd": "echo unreachable\u{0}", "tty": true, "login": false})); "pty_launch_failure")]
+#[test_case(Some(json!({"cmd": "echo unreachable", "workdir": "missing-work-directory", "tty": true, "login": false})); "pty_missing_workdir")] // ALAB(shell-invocation): a failed PTY chdir has no process ID.
 #[tokio::test]
 async fn command_execution_notifications_include_process_id(
     launch_failure_args: Option<Value>,
@@ -5677,7 +5678,7 @@ async fn command_execution_notifications_include_process_id(
     if launch_failed {
         assert_eq!(
             (completed_status, exit_code, duration_ms),
-            (CommandExecutionStatus::Failed, Some(-1), Some(0))
+            (CommandExecutionStatus::Failed, None, None)
         );
         assert!(
             aggregated_output

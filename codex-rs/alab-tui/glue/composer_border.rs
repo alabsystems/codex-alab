@@ -33,6 +33,10 @@ fn palette(background: Option<Color>) -> (Depth, Theme) {
 }
 
 pub(super) fn render(composer: Rect, buf: &mut Buffer) {
+    render_overline(composer, buf, cfg!(windows));
+}
+
+fn render_overline(composer: Rect, buf: &mut Buffer, windows: bool) {
     if interface::available() {
         // Keep the recovery switch reachable even while enhancements are off.
         // The native composer tints its fill before this hook runs. Use that
@@ -40,6 +44,12 @@ pub(super) fn render(composer: Rect, buf: &mut Buffer) {
         let visible = composer.intersection(buf.area);
         let background = buf.cell((visible.x, visible.y)).map(|cell| cell.bg);
         let (depth, theme) = palette(background);
+        // A named surface belongs to the configured palette even when its RGB is unknown.
+        let theme = if windows && matches!(background, None | Some(Color::Reset)) {
+            theme.with_terminal_foreground_if_unreported()
+        } else {
+            theme
+        };
         interface::render(composer, buf, depth, theme);
     }
 }
@@ -103,6 +113,371 @@ mod tests {
         let mut buf = Buffer::empty(area);
         composer.render(area, &mut buf);
         buf
+    }
+
+    #[test]
+    fn windows_terminal_respects_explicit_monochrome() {
+        const PROBE: &str = "ALAB_TEST_WINDOWS_TERMINAL_DEPTH";
+        if let Ok(expected) = std::env::var(PROBE) {
+            let native = terminal_palette::effective_stdout_color_level();
+            let depth = match expected.as_str() {
+                "mono" => Depth::Mono,
+                "ansi16" => Depth::Ansi16,
+                "truecolor" => Depth::TrueColor,
+                _ => panic!("unknown test case {expected}"),
+            };
+            codex_alab_core::activate();
+            assert_eq!(palette(None).0, depth);
+            if depth == Depth::Mono {
+                assert_eq!(native, StdoutColorLevel::TrueColor);
+                assert_eq!(
+                    terminal_palette::effective_stdout_color_level(),
+                    StdoutColorLevel::Unknown
+                );
+                terminal_palette::with_test_default_colors(None, || {
+                    assert_eq!(palette(None).0, Depth::TrueColor)
+                });
+            }
+            return;
+        }
+
+        // The native color detector caches stdout, so give each case a fresh process.
+        let thread = std::thread::current();
+        for (term, no_color, force_color, expected) in [
+            ("xterm", "1", None, "mono"),
+            ("dumb", "0", None, "mono"),
+            ("xterm", "0", None, "truecolor"),
+            ("dumb", "1", Some("1"), "ansi16"),
+        ] {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test binary"));
+            command
+                .args(["--exact", thread.name().expect("test name")])
+                .env(PROBE, expected)
+                .env("WT_SESSION", "test")
+                .env("TERM", term)
+                .env("NO_COLOR", no_color)
+                .env("IGNORE_IS_TERMINAL", "1")
+                .env_remove("CLICOLOR_FORCE")
+                .env_remove("FORCE_COLOR");
+            if let Some(value) = force_color {
+                command.env("FORCE_COLOR", value);
+            }
+            let output = command.output().expect("run fresh palette probe");
+            let report = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && report.contains("1 passed"),
+                "{expected}: {report}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_monochrome_composer_marks_the_selected_mode_in_plain_text() {
+        use codex_alab_tui::session::HarnessWord;
+        use codex_alab_tui::session::Shared;
+        use ratatui::style::Modifier;
+        use unicode_width::UnicodeWidthStr;
+
+        const CHILD: &str = "ALAB_TEST_MONO_COMPOSER_MODES";
+        if std::env::var_os(CHILD).is_none() {
+            // The cached stdout detector must see each terminal configuration at startup.
+            for (term, program, mux) in [
+                ("xterm-256color", "aterm", false),
+                ("xterm-256color", "aterm", true),
+                ("dumb", "Apple_Terminal", false),
+            ] {
+                let mut command =
+                    std::process::Command::new(std::env::current_exe().expect("test binary"));
+                command
+                    .args(["--exact", std::thread::current().name().expect("test name")])
+                    .env(
+                        CHILD,
+                        if program == "aterm" && !mux {
+                            "clock"
+                        } else {
+                            "glyph"
+                        },
+                    )
+                    .env("TERM_PROGRAM", program)
+                    .env("TERM", term)
+                    .env("IGNORE_IS_TERMINAL", "1")
+                    .env_remove("NO_COLOR")
+                    .env_remove("COLORTERM")
+                    .env_remove("CLICOLOR_FORCE")
+                    .env_remove("FORCE_COLOR")
+                    .env_remove("WT_SESSION");
+                for key in [
+                    "TMUX",
+                    "TMUX_PANE",
+                    "STY",
+                    "ZELLIJ",
+                    "ZELLIJ_SESSION_NAME",
+                    "ZELLIJ_VERSION",
+                ] {
+                    command.env_remove(key);
+                }
+                if mux {
+                    command.env("TMUX_PANE", "%1");
+                }
+                if term == "xterm-256color" {
+                    command.env("NO_COLOR", "1");
+                }
+                let output = command.output().expect("run native monochrome composer");
+                let report = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success() && report.contains("1 passed"),
+                    "{term}: {report}"
+                );
+            }
+            return;
+        }
+        assert_eq!(palette(None).0, Depth::Mono);
+        let state = Box::leak(Box::new(interface::State::new()));
+        let _scope = interface::scoped(state);
+        let shared = Box::leak(Box::new(Shared::new()));
+        let _automation = codex_alab_tui::boxes::scoped(shared);
+        interface::configure(true);
+        let release = interface::session_title().expect("edition title");
+        let pair_width = release.last().expect("release pair").width() as u16;
+        let (composer, _rx) = new_test_composer();
+        let modes = [
+            (HarnessWord::Cruise, "Cruise"),
+            (HarnessWord::Land, "Land"),
+            (HarnessWord::Off, "Off"),
+        ];
+
+        let compact = [
+            "[Cruise]Land│Off▕",
+            "▏Cruise[Land]Off▕",
+            "▏Cruise│Land[Off]",
+        ];
+        let padded = [
+            "[ Cruise ] Land │ Off ▕",
+            "▏ Cruise [ Land ] Off ▕",
+            "▏ Cruise │ Land [ Off ]",
+        ];
+        for (extra_width, padding, tracks) in [(29, 0, compact), (40, 0, compact), (46, 2, padded)]
+        {
+            let width = pair_width + extra_width;
+            for ((selected, _), track) in modes.into_iter().zip(tracks) {
+                shared.set_harness_word(selected);
+                shared.set_land_at(Some(1_811_898_000));
+                let area = Rect::new(5, 3, width, composer.desired_height(width));
+                let mut buf = Buffer::empty(area);
+                composer.render(area, &mut buf);
+                let y = composer
+                    .layout_with_options(area, ComposerRenderOptions::default())
+                    .composer
+                    .y;
+                let row: String = (area.x..area.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect();
+                let compact_clock = selected == HarnessWord::Cruise
+                    && extra_width == 29
+                    && cfg!(target_os = "macos")
+                    && std::env::var(CHILD).as_deref() == Ok("clock");
+                assert_eq!(row.contains('◷'), compact_clock, "{row}");
+                if selected == HarnessWord::Cruise {
+                    let symbol = if compact_clock { '◷' } else { '∞' };
+                    let (before, _) = row.split_once(symbol).expect("Cruise status face");
+                    let x = area.x + before.width() as u16;
+                    assert_eq!(interface::mode_mouse_hit(x, y), Some(HarnessWord::Land));
+                    assert!(interface::autopilot_menu_hit(x, y));
+                    assert_eq!(row.contains("∞ ⤓"), extra_width >= 40, "{row}");
+                }
+                if selected == HarnessWord::Off {
+                    assert_eq!(row.contains("○ off"), extra_width >= 40, "{row}");
+                }
+                let (prefix, _) = row
+                    .split_once(track)
+                    .unwrap_or_else(|| panic!("missing {track:?} in {row:?}"));
+                let mut x = area.x + prefix.width() as u16;
+                let check_separator = |x| {
+                    assert!(interface::autopilot_menu_hit(x, y));
+                    assert_eq!(interface::mode_mouse_hit(x, y), None);
+                    assert!(!interface::autopilot_words_hit(x, y));
+                    assert!(!interface::build_mouse_hit(x, y));
+                    assert!(!interface::mouse_hit(x, y));
+                };
+                for (mode, word) in modes {
+                    check_separator(x);
+                    x += 1;
+                    let end = x + word.width() as u16 + padding;
+                    for column in x..end {
+                        assert_eq!(interface::mode_mouse_hit(column, y), Some(mode));
+                        let cell = &buf[(column, y)];
+                        assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset));
+                        assert!(!cell.modifier.contains(Modifier::DIM));
+                        assert_eq!(cell.modifier.contains(Modifier::BOLD), selected == mode);
+                        assert_eq!(cell.modifier.contains(Modifier::REVERSED), selected == mode);
+                    }
+                    x = end;
+                }
+                check_separator(x);
+            }
+        }
+    }
+
+    #[test]
+    fn native_ansi16_composer_preserves_label_ink_and_surface() {
+        const CHILD: &str = "ALAB_TEST_ANSI16_COMPOSER_LABELS";
+        if std::env::var_os(CHILD).is_none() {
+            // Stdout depth is process-cached; the scoped default-color fixture forces truecolor.
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", std::thread::current().name().expect("test name")])
+                .env(CHILD, "1")
+                .env("FORCE_COLOR", "1")
+                .env("TERM", "dumb")
+                .env_remove("COLORTERM")
+                .output()
+                .expect("run fresh ANSI16 composer probe");
+            let report = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && report.contains("1 passed"),
+                "{report}"
+            );
+            return;
+        }
+
+        assert_eq!(
+            terminal_palette::effective_stdout_color_level(),
+            StdoutColorLevel::Ansi16
+        );
+        let state = Box::leak(Box::new(interface::State::new()));
+        let _scope = interface::scoped(state);
+        interface::configure(true);
+        let area = Rect::new(5, 3, 100, 3);
+        codex_alab_tui::upgrade::update_pending("Update available");
+        let light = terminal_palette::indexed_color(255);
+        let dark = terminal_palette::indexed_color(235);
+        // Named slots have no known RGB value; the terminal owns their palette.
+        for (on, surface, ink) in [
+            (true, light, Color::Reset),
+            (true, dark, Color::Reset),
+            (true, Color::Blue, Color::Reset),
+            (false, light, Color::Reset),
+            (false, dark, Color::LightCyan),
+            (false, Color::Blue, Color::LightCyan),
+        ] {
+            interface::set_enabled(on);
+            let mut buf = Buffer::empty(area);
+            buf.set_style(
+                area,
+                ratatui::style::Style::default()
+                    .fg(Color::Yellow)
+                    .bg(surface),
+            );
+            render(area, &mut buf);
+            let mut build = String::new();
+            let mut switch = String::new();
+            for x in area.x..area.right() {
+                let cell = &buf[(x, area.y)];
+                if interface::build_mouse_hit(x, area.y) {
+                    build.push_str(cell.symbol());
+                } else if interface::mouse_hit(x, area.y) {
+                    switch.push_str(cell.symbol());
+                } else {
+                    continue;
+                }
+                assert_eq!(cell.fg, ink, "column {x} on {surface:?}");
+                assert_eq!(cell.bg, surface, "column {x}");
+                assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+            }
+            assert_eq!(switch, if on { "[ALab on]" } else { "[ALab off]" });
+            if on {
+                assert!(build.contains(" on Codex "), "{build}");
+                assert!(build.ends_with(" ↑ update"), "{build}");
+            } else {
+                assert!(build.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_unreported_windows_default_surface_uses_terminal_ink_for_composer_labels() {
+        use codex_alab_tui::session::HarnessWord;
+        use codex_alab_tui::session::Shared;
+        use ratatui::style::Modifier;
+        use ratatui::style::Style;
+
+        let state = Box::leak(Box::new(interface::State::new()));
+        let _scope = interface::scoped(state);
+        let shared = Box::leak(Box::new(Shared::new()));
+        let _automation = codex_alab_tui::boxes::scoped(shared);
+        interface::configure(true);
+        let draw = |area: Rect, surface, windows| {
+            let mut buf = Buffer::empty(area);
+            buf.set_style(
+                area,
+                Style::default()
+                    .fg(Color::Green)
+                    .bg(surface)
+                    .add_modifier(Modifier::DIM),
+            );
+            render_overline(area, &mut buf, windows);
+            buf
+        };
+        for reported in [None, Some((255, 255, 255)), Some((16, 20, 24))] {
+            let colors = reported.map(|bg| crate::terminal_probe::DefaultColors {
+                fg: (32, 33, 36),
+                bg,
+            });
+            terminal_palette::with_test_default_colors(colors, || {
+                for surface in [
+                    Color::Reset,
+                    Color::Blue,
+                    terminal_palette::indexed_color(5),
+                    terminal_palette::indexed_color(254),
+                    terminal_palette::rgb_color((235, 240, 245)),
+                ] {
+                    for (width, enabled, word) in [
+                        (80, true, HarnessWord::Land),
+                        (28, true, HarnessWord::Off),
+                        (80, false, HarnessWord::Land),
+                    ] {
+                        interface::set_enabled(enabled);
+                        shared.set_harness_word(word);
+                        let area = Rect::new(5, 3, width, 3);
+                        let mut expected = draw(area, surface, false);
+                        let actual = draw(area, surface, true);
+                        if reported.is_none() && surface == Color::Reset {
+                            let mut labels = 0;
+                            let mut compact_controls = String::new();
+                            for x in area.x..area.right() {
+                                let cell = &mut expected[(x, area.y)];
+                                if interface::build_mouse_hit(x, area.y)
+                                    || interface::mouse_hit(x, area.y)
+                                {
+                                    labels += 1;
+                                    assert!(cell.modifier.contains(Modifier::BOLD));
+                                } else if interface::autopilot_menu_hit(x, area.y)
+                                    && cell.bg == Color::Reset
+                                {
+                                    // The face and its arrow sit on the terminal surface. The track paints its own.
+                                    if width == 28 {
+                                        compact_controls.push_str(cell.symbol());
+                                    }
+                                } else {
+                                    continue;
+                                }
+                                assert_ne!(cell.fg, Color::Reset);
+                                cell.set_fg(Color::Reset);
+                                cell.modifier.remove(Modifier::DIM);
+                            }
+                            assert!(labels > 0);
+                            if width == 28 {
+                                assert_eq!(compact_controls, "○▾");
+                            }
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "{reported:?} {surface:?} enabled={enabled} width={width}"
+                        );
+                    }
+                }
+            });
+        }
     }
 
     #[test]
@@ -175,7 +550,10 @@ mod tests {
         });
         let on = buffer(&composer);
         let rendered: String = on.content.iter().map(Cell::symbol).collect();
-        assert!(rendered.contains("codex-alab"));
+        let title = interface::session_title().expect("enhanced session title");
+        let release = title.last().expect("release pair").content.as_ref();
+        assert!(release.contains(" on Codex "));
+        assert!(rendered.contains(release));
         assert!(rendered.contains("selected@example.test"));
         assert!(rendered.contains("weekly 82% left"));
         interface::set_enabled(false);
@@ -184,7 +562,7 @@ mod tests {
         let text: String = off.content.iter().map(Cell::symbol).collect();
         assert!(text.contains("[ALab off]"));
         assert!(!text.contains("selected@example.test"));
-        assert!(!text.contains("codex-alab"));
+        assert!(!text.contains(release));
         for y in native.area.y..native.area.bottom() {
             for x in native.area.x..native.area.right() {
                 if !button.contains((x, y).into()) {

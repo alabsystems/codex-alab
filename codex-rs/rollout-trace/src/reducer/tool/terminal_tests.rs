@@ -706,3 +706,5 @@ fn append_followup_with_tool_output(writer: &TraceWriter) -> anyhow::Result<()> 
     })?;
     Ok(())
 }
+
+include!("../../../../alab-core/glue/command_exit_trace_tests.rs"); // ALAB(shell-output): round-trip native raw ends through trace writing and reduction.

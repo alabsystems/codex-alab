@@ -397,6 +397,8 @@ async fn misalignment_policy_in_parent_stops_active_side_conversation() -> Resul
 #[tokio::test]
 async fn passive_misalignment_in_parent_does_not_interrupt_side_conversation() -> Result<()> {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    app.chat_widget
+        .set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.primary_thread_id = Some(parent_thread_id);

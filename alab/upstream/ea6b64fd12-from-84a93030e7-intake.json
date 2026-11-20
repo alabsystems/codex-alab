@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "base": "84a93030e7399b25c694263f904963443a50f6e6",
+  "target": "ea6b64fd12b804ca1fbce54f772df6ac44d538ad",
+  "frontier": "84a93030e7399b25c694263f904963443a50f6e6",
+  "commits": [
+    {
+      "sha": "4e51bfbacc2d1fd9b479350859c6bba652f1e853",
+      "subject": "Refresh tool hashes in core scenario snapshots (#62124)",
+      "paths": [
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__cached_stdio_stays_dormant_in_a_new_chat_until_first_use.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__command_sessions__command_sessions_world_state.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__dynamic_tools__dynamic_tools_update_preserves_pending_calls_and_survives_resume.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__incremental_tools__prediction_fork_inherited_tools.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__indirect_namespace_prefixes__catalog_indirect_namespace_prefixes.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_sharing__shared_mcp_keeps_tools_and_model_requested_input_per_chat.snap",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_tool_discovery_CodeModeOnly.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Refresh the upstream tool-list snapshots so scenario assertions follow the current tool declarations. This change is confined to expected test output.",
+      "evidence": [
+        "Compared all seven snapshot blobs with their parents after normalizing the 16 hexadecimal digits following hash=. Every remaining byte matched, including the tool counts, names, order and descriptions.",
+        "Reviewed git diff --full-index --binary of this commit against its parent, SHA256 bc8316ec223ece2591e8cc3654f041741cddd99493fd8683cfd2c44f887efc28."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "9c60cb0a27a93e6e3c21d06d63625a53109d8726",
+      "subject": "Include classifier turn IDs in Guardian v2 analytics (#62125)",
+      "paths": [
+        "codex-rs/analytics/src/guardian_v2.rs",
+        "codex-rs/app-server/tests/suite/v2/guardian_v2.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/classification.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler.rs",
+        "codex-rs/ext/guardian-v2/src/async_scorer/sampler_tests.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry the Guardian v2 classifier correlation field under the existing analytics policy. ALab disables analytics by default and honors explicit configuration.",
+      "evidence": [
+        "Reviewed classification.rs and sampler.rs. A classification allocates one UUID, passes it into request preparation for reuse across retries, and records the optional classifier_turn_id only after preparation succeeds.",
+        "The existing AnalyticsEventsClient record_fact path sends to an existing queue. Reviewed guardian_v2_routes_scoped_tool_approvals, which compares the emitted classifier_turn_id with the classifier request's client_metadata.turn_id, and codex-rs/alab-core/defaults.toml [analytics].",
+        "Reviewed git diff --full-index --binary of this commit against its parent, SHA256 9b9ac66aafc3e902fe95ff8ac04222866f9fb2bf2492d1ecf5871cb6157e4378."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "7d7af7b903a82123ce9362f8ac5a7048d924918d",
+      "subject": "Share picker setup for the TUI status line and terminal title (#62126)",
+      "paths": [
+        "codex-rs/tui/src/bottom_pane/mod.rs",
+        "codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+        "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+        "codex-rs/tui/src/bottom_pane/status_surface_preview.rs",
+        "codex-rs/tui/src/bottom_pane/title_setup.rs",
+        "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/status_controls.rs"
+      ],
+      "classes": [
+        "refactor",
+        "fix"
+      ],
+      "features": [
+        "native-ui",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Use upstream's shared picker for status-line and terminal-title configuration. It retains configured order and live rate-limit labels while deduplicating aliases. Keep the fork's packaged item lists and custom status rendering.",
+      "evidence": [
+        "Reviewed StatusSurfacePreviewData::picker_items, which parses known items in configured order, deduplicates on the canonical ID and obtains live copy for the five-hour and weekly limits. Reviewed configured_aliases_keep_their_first_position.",
+        "Reviewed terminal_title_setup's preview, confirmation, cancellation and disconnected-input behavior. The shared MultiSelectPicker defaults disconnected input off. Checked the ALAB(interface) refresh hook in chatwidget/status_controls.rs and the status_line and terminal_title entries in codex-rs/alab-core/defaults.toml.",
+        "Reviewed git diff --full-index --binary of this commit against its parent, SHA256 5260c425338759f935548041442dda755367ee4a58654bb948f88e1d9013a9fd."
+      ],
+      "revisit": ""
+    },
+    {
+      "sha": "ea6b64fd12b804ca1fbce54f772df6ac44d538ad",
+      "subject": "Use the local session index in the multi-backend resume picker (#62127)",
+      "paths": [
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/resume_picker/sources.rs",
+        "codex-rs/tui/src/resume_picker/sources_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "native-ui"
+      ],
+      "decision": "adopt",
+      "reason": "Use the local state index on the initial page of a mixed-backend resume listing. Remote sources keep their store listing and each source retains its own cursor and fallback mode. The change helps users find existing threads. Model selection on thread resume and running-binary replacement use separate ALab code.",
+      "evidence": [
+        "Reviewed spawn_app_server_source's uses_remote_workspace branch and sources::spawn's first-page condition on cursor, listing token, request token and requested mode. Subsequent pagination uses the catalog's mode for that backend and an explicit recovery request retains its supplied mode.",
+        "Reviewed mixed_sources_keep_indexed_and_recovery_modes_separate and the recovery assertion in single_source_initial_failure_preserves_fallback_error. The three changed paths implement or test picker listing. The patch does not modify thread resume requests, saved model preferences, catalog promotion or package adoption.",
+        "Reviewed git diff --full-index --binary of this commit against its parent, SHA256 08733f2fc4d273ab852df12c0c66f943e9917773bd564c219fcf1d888e9c2c37."
+      ],
+      "revisit": ""
+    }
+  ]
+}

@@ -26,10 +26,13 @@ class PolicyReadTests(unittest.TestCase):
             root = Path(temporary)
             actions = root / "actions"
             definitions = '\n'.join(function(name) for name in (
-                "specs", "apply_removed_paths", "keep_owned_paths", "note_watched_paths", "merges_unattended"))
+                "specs", "apply_removed_paths", "keep_owned_paths", "note_watched_paths",
+                "sync_merge_probe", "merges_unattended"))
             script = ('set -euo pipefail\n. ' + shlex.quote(str(ROOT / "alab/lib.sh"))) + '\n' + definitions + r'''
 common_dir="${SCRATCH}"
+wt="${SCRATCH}"
 merge_cfg=(-c fixture=yes)
+sync_disk_write() { "$@"; }
 record() { printf '%s\n' "$1" >>"${ACTIONS}"; }
 state_path() { printf '%s/state-%s\n' "${SCRATCH}" "$1"; }
 unmerged() { record inspect-owned; }
@@ -58,13 +61,13 @@ git() {
     *) exit 97 ;;
   esac
 }
-''' + body
+''' + 'export -f git record\n' + body
             env = dict(os.environ, SCRATCH=str(root), ACTIONS=str(actions), POLICY_NAME=policy,
                        POLICY_RC=str(status), POLICY_OUT=output)
             result = subprocess.run(["/bin/bash", "-c", script], env=env,
                                     text=True, capture_output=True, timeout=15)
             observed = actions.read_text().splitlines() if actions.exists() else []
-            self.assertEqual(list(root.glob("alab-probe.*.index")), [])
+            self.assertEqual(list(root.glob("alab-probe.*")), [])
             return result, observed
 
     def test_failed_or_partial_policy_reads_reach_no_sync_actions(self):

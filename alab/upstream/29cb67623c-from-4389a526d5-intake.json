@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "base": "4389a526d51a5a7600e0648436a7142a304f0188",
+  "target": "29cb67623c6c4360b29d09e66010ac71cef1a693",
+  "frontier": "4389a526d51a5a7600e0648436a7142a304f0188",
+  "commits": [
+    {
+      "sha": "29cb67623c6c4360b29d09e66010ac71cef1a693",
+      "subject": "Gate local realtime frame history on paginated storage (#62271)",
+      "paths": [
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRealtimeItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRealtimeItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+        "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadRealtimeFrameChannels.ts",
+        "codex-rs/app-server-protocol/src/protocol/v2/realtime.rs",
+        "codex-rs/app-server/src/request_processors/config_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/realtime_conversation.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/realtime_history.rs",
+        "codex-rs/core/src/session/realtime_history.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/src/thread_store_builder.rs",
+        "codex-rs/core/tests/suite/realtime_conversation.rs",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/protocol/src/realtime.rs",
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/realtime_input_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history.rs",
+        "codex-rs/thread-store/src/local/thread_history/read_tests.rs",
+        "codex-rs/thread-store/src/local/thread_history/realtime.rs",
+        "codex-rs/thread-store/src/local/thread_history/realtime_stream.rs",
+        "codex-rs/thread-store/src/local/thread_history_materialization_tests.rs",
+        "codex-rs/thread-store/src/store.rs"
+      ],
+      "classes": [
+        "feature",
+        "fix",
+        "protocol"
+      ],
+      "features": [
+        "history-pagination",
+        "execution-continuity",
+        "native-ui"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry upstream\u2019s paginated-only local realtime enrollment, durable input seal and cold-resume clock recovery. Keep initial enrollment off by default and retire the fork\u2019s mixed-timeline filter now that upstream excludes the current receipt type.",
+      "evidence": [
+        "Reviewed all 29 paths against 4389a526d5. Binary diff SHA-256 30fa858fd83b0df754c1a965bf290e74c81125efdeab30896b85ab89c95e78b6.",
+        "The live writer must have a state database and paginated history. A durable observed start keeps the enrolled thread on after a feature toggle. The local input writer owns its pending flush and committed IDs for that live recorder, and the cold-resume history reads remain bounded by the child\u2019s own rollout segment.",
+        "The upstream mixed timeline now excludes session_input_saved. Its previous session_end_input_saved label had no producer in the evaluated upstream source or published fork. Keep the independent two-reason store regression and accept the official predicate.",
+        "The optional final frame sequence belongs to the durable close record. The public close notification continues to expose the outcome. Regenerate both protocol bundles with the fork\u2019s retained notification and verify the config and SDK fixtures."
+      ],
+      "revisit": "Exercise default-disabled, legacy refusal, paginated enrollment retained after disabling, and retry after an uncertain original directory sync. Recheck both receipt reasons and the repaired fallback-facing renderer against the cumulative source."
+    }
+  ]
+}

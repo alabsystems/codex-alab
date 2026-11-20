@@ -33,7 +33,7 @@ class CheckResultsPreflightTests(unittest.TestCase):
         self.repo = self.scratch / "repo"
         (self.repo / "alab").mkdir(parents=True)
         (self.repo / "codex-rs").mkdir()
-        for name in ("check.sh", "lib.sh", "retention.py"):
+        for name in ("check.sh", "lib.sh", "retention.py", "upstream_intake.py"):
             shutil.copyfile(ROOT / "alab" / name, self.repo / "alab" / name)
         self.marker = self.scratch / "compiler-called"
         self.environment = {

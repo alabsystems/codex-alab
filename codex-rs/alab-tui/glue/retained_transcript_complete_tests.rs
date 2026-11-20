@@ -107,7 +107,7 @@ fn original_native_whole_view_decoder_refuses_omitted_fields_and_noncanonical_di
             "{field}"
         );
     }
-    let mut bad = wire.clone();
+    let mut bad = wire;
     bad["body"]["core"]["disclosure"]
         .as_object_mut()
         .ok_or_else(|| invalid("native disclosure absent"))?

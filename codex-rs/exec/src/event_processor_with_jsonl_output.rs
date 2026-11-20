@@ -457,6 +457,7 @@ impl EventProcessorWithJsonOutput {
                     }
                     _ => notification.error.message,
                 };
+                if codex_alab_core::active() && notification.will_retry { return self.collect_warning(message); } // ALAB(capacity): a scheduled retry is advisory to JSON stream consumers.
                 let error = ThreadErrorEvent { message };
                 self.last_critical_error = Some(error.clone());
                 events.push(ThreadEvent::Error(error));

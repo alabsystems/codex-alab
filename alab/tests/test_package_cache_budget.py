@@ -399,7 +399,8 @@ class PackageCacheBudgetTests(unittest.TestCase):
                     return True
                 except BlockingIOError:
                     return False
-        with (self.fixture / "cancel-stdout").open("wb") as out, (self.fixture / "cancel-stderr").open("wb") as err:
+        stderr = self.fixture / f"cancel-{signum.name}.stderr"
+        with (self.fixture / f"cancel-{signum.name}.stdout").open("wb") as out, stderr.open("wb") as err:
             child = subprocess.Popen(["/bin/bash", "-c", body], cwd=self.fixture,
                                      env={**case["env"], "FIXTURE_CANCEL_WRITER": str(writer),
                                           "ALAB_PACKAGE_CACHE": str(case["cache"])},
@@ -407,7 +408,9 @@ class PackageCacheBudgetTests(unittest.TestCase):
             try:
                 deadline = time.monotonic() + 10
                 while not ready.exists():
-                    self.assertIsNone(child.poll(), "controller exited before writer startup")
+                    if (status := child.poll()) is not None:
+                        self.fail(f"controller exited {status} before writer startup ({stderr}): "
+                                  f"{stderr.read_text(errors='replace').rstrip()}")
                     self.assertLess(time.monotonic(), deadline, "writer startup hung")
                     time.sleep(.01)
                 child.send_signal(signum)  # Only our own unreaped root, as the native front does.

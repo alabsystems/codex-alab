@@ -120,7 +120,9 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
     } else {
         Some(payload.aggregated_output.clone())
     };
-    let duration_ms = i64::try_from(payload.duration.as_millis()).unwrap_or(i64::MAX);
+    let duration_ms = payload
+        .observed_duration() // ALAB(shell-output): convert only a duration the producer recorded.
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX));
     let presentation =
         CommandExecutionPresentation::from_raw(&payload.command, &payload.parsed_cmd, &payload.cwd);
 
@@ -137,8 +139,8 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
         status: (&payload.status).into(),
         command_actions: presentation.command_actions,
         aggregated_output,
-        exit_code: Some(payload.exit_code),
-        duration_ms: Some(duration_ms),
+        exit_code: payload.observed_exit_code(), // ALAB(shell-output): keep an absent process exit distinct from old integer records.
+        duration_ms,
     }
 }
 

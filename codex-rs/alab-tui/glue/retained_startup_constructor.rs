@@ -4,10 +4,18 @@
 //! The original constructor's initial-message DATA owner. This retains the SAME
 //! decoded E1/PreparedMessages; no re-decode, applied flag or Native permission.
 use super::*;
+use crate::app_server_session::AppServerSession;
+use crate::app_server_session::AppServerStartedThread;
+use crate::backend_id::BackendId;
+use crate::chatwidget::ChatWidget;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::alab_retained_transfer::PreparedMessages;
+use crate::owned_local_frontend::OwnedLocalTarget;
 use crate::owned_local_ui_transfer::NativeSection;
+use crate::owned_local_ui_transfer::SelectionData;
 use crate::owned_local_ui_transfer::UiData;
+use crate::resume_picker::SessionSelection;
+use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -62,13 +70,15 @@ impl InitialMessageData {
             })
             .transpose()
     }
-    fn decode(actual: &serde_json::value::RawValue) -> io::Result<Self> {
-        let data: Self = serde_json::from_str(actual.get()).map_err(io::Error::other)?;
+    fn decode_messages(actual: &serde_json::value::RawValue) -> io::Result<Messages> {
+        let data: Self = serde_json::from_str(actual.get()).map_err(invalid)?;
         if data.schema != 2 {
             return Err(invalid("retained initial-message schema differs"));
         }
-        drop(data.prepared_widget()?);
-        Ok(data)
+        Ok(Messages {
+            initial: data.message(),
+            prepared: Mutex::new(MessageGraph::new(data.prepared_widget()?)),
+        })
     }
     pub(crate) fn message_for_capture(&self) -> Option<UserMessage> {
         self.message()
@@ -85,20 +95,132 @@ impl InitialMessageData {
         ))
     }
 }
-struct MessageGraph {
+pub(crate) struct MessageGraph {
     prepared: Option<PreparedMessages>,
     installed: bool,
 }
-enum Messages {
-    Original,
-    Selected {
-        initial: Option<UserMessage>,
-        prepared: Mutex<MessageGraph>,
-    },
-    NoPrimary {
-        data: InitialMessageData,
-        prepared: Mutex<MessageGraph>,
-    },
+
+#[derive(Clone, Copy)]
+pub(crate) enum StartupThread {
+    Resumed(ThreadId),
+    Viewed(ThreadId),
+}
+
+pub(crate) fn validate_primary_startup_choice(
+    selection: &SelectionData,
+    entered_target: &OwnedLocalTarget,
+    session_target: Option<&OwnedLocalTarget>,
+    backend: BackendId,
+    choice: &SessionSelection,
+) -> io::Result<()> {
+    let thread = match choice {
+        SessionSelection::Resume(target) if target.backend_id == backend => Some(target.thread_id),
+        _ => None,
+    };
+    validate_primary_destination(selection, entered_target, session_target, thread)
+}
+
+fn validate_primary_destination(
+    selection: &SelectionData,
+    entered_target: &OwnedLocalTarget,
+    session_target: Option<&OwnedLocalTarget>,
+    thread: Option<ThreadId>,
+) -> io::Result<()> {
+    let SelectionData::Selected {
+        primary, displayed, ..
+    } = selection
+    else {
+        return Ok(());
+    };
+    if session_target != Some(entered_target) {
+        return Err(invalid(
+            "selected messages belong to another retained backend",
+        ));
+    }
+    if thread.is_none_or(|thread| thread != *primary && thread != *displayed) {
+        return Err(invalid(
+            "startup did not resume the captured primary thread",
+        ));
+    }
+    if primary != displayed {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "selected messages require the original side-thread display",
+        ));
+    }
+    Ok(())
+}
+
+impl MessageGraph {
+    pub(crate) fn new(prepared: Option<PreparedMessages>) -> Self {
+        Self {
+            prepared,
+            installed: false,
+        }
+    }
+
+    pub(crate) fn install_for_startup(
+        &mut self,
+        selection: &SelectionData,
+        entered_target: &OwnedLocalTarget,
+        session_target: Option<&OwnedLocalTarget>,
+        startup: Option<StartupThread>,
+        widget: &mut ChatWidget,
+        cancel_confirmation: bool,
+    ) -> io::Result<()> {
+        let thread = startup.map(|source| match source {
+            StartupThread::Resumed(thread) | StartupThread::Viewed(thread) => thread,
+        });
+        validate_primary_destination(selection, entered_target, session_target, thread)?;
+        if matches!(selection, SelectionData::Selected { .. })
+            && matches!(startup, Some(StartupThread::Viewed(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the captured primary thread was only opened for viewing",
+            ));
+        }
+        if self.installed {
+            return Err(invalid(
+                "original message graph was already moved into its actual widget",
+            ));
+        }
+        let Some(actual) = self.prepared.as_ref() else {
+            return Ok(()); // Actual pre-App source has no widget graph.
+        };
+        // The original constructor's post-filter value is authoritative.
+        actual.validate_original_policy_destination(widget)?;
+        let actual = self
+            .prepared
+            .take()
+            .ok_or_else(|| invalid("original message graph lost before synchronous install"))?;
+        actual.install_after_original_policy(widget, cancel_confirmation)?;
+        self.installed = true;
+        Ok(())
+    }
+}
+/// The original constructor borrows the initial value from its reader. Only
+/// installation into the actual widget consumes the prepared graph.
+pub(crate) struct Messages {
+    initial: Option<UserMessage>,
+    prepared: Mutex<MessageGraph>,
+}
+
+impl Messages {
+    pub(crate) fn from_ui(ui: &UiData) -> io::Result<Self> {
+        match ui {
+            UiData::Selected { messages, .. } => {
+                let prepared = PreparedMessages::decode(messages.body())?;
+                Ok(Self {
+                    initial: prepared.initial_message_for_constructor(),
+                    prepared: Mutex::new(MessageGraph::new(Some(prepared))),
+                })
+            }
+            UiData::NoPrimary {
+                initial_message, ..
+            } => InitialMessageData::decode_messages(initial_message.body()),
+        }
+    }
 }
 struct Current {
     data: InitialMessageData,
@@ -109,7 +231,6 @@ pub(crate) struct Constructor {
     // The original reader owns SAME actual Arc<DecodedUiTransfer>/Entry/whole
     // E1. This is not a second read and does not mark any native graph installed.
     _actual: Option<Arc<RetainedFrontendReaders>>,
-    messages: Messages,
     current: Mutex<Current>,
     early_startup: Mutex<Option<crate::startup_draft::alab_retained_transfer::early::Installed>>,
     configured_begin: Mutex<Option<Arc<configured_begin::Begin>>>,
@@ -120,39 +241,12 @@ impl Constructor {
     /// evaluates its unchanged original CLI-message builder.
     pub(crate) fn prepare(original: impl FnOnce() -> Option<UserMessage>) -> io::Result<Arc<Self>> {
         let actual = active()?;
-        let messages = if let Some(actual) = &actual {
-            match actual.decoded().ui_data() {
-                UiData::Selected { .. } => {
-                    let prepared = actual.decoded().prepare_selected_messages()?;
-                    Messages::Selected {
-                        initial: prepared.initial_message_for_constructor(),
-                        prepared: Mutex::new(MessageGraph {
-                            prepared: Some(prepared),
-                            installed: false,
-                        }),
-                    }
-                }
-                UiData::NoPrimary {
-                    initial_message, ..
-                } => {
-                    let data = InitialMessageData::decode(initial_message.body())?;
-                    let prepared = data.prepared_widget()?;
-                    Messages::NoPrimary {
-                        data,
-                        prepared: Mutex::new(MessageGraph {
-                            prepared,
-                            installed: false,
-                        }),
-                    }
-                }
-            }
-        } else {
-            Messages::Original
-        };
-        let initial = choose(&messages, original);
+        let initial = choose(
+            actual.as_ref().map(|readers| readers.decoded().messages()),
+            original,
+        );
         let owner = Arc::new(Self {
             _actual: actual.clone(),
-            messages,
             early_startup: Mutex::new(None),
             configured_begin: Mutex::new(None),
             reply_owner: Mutex::new(None),
@@ -178,7 +272,6 @@ impl Constructor {
         let initial = original();
         Ok(Arc::new(Self {
             _actual: None,
-            messages: Messages::Original,
             early_startup: Mutex::new(None),
             configured_begin: Mutex::new(None),
             reply_owner: Mutex::new(None),
@@ -211,43 +304,75 @@ impl Constructor {
         {
             return Ok(None);
         }
-        Ok(choose(&self.messages, original))
+        Ok(choose(
+            self._actual
+                .as_ref()
+                .map(|readers| readers.decoded().messages()),
+            original,
+        ))
+    }
+    /// Only a selected E1 binds the ordinary startup primary route to an existing thread.
+    pub(crate) fn validate_primary_startup(
+        &self,
+        server: &AppServerSession,
+        choice: &SessionSelection,
+    ) -> io::Result<()> {
+        let Some(entered) = &self._actual else {
+            return Ok(());
+        };
+        if matches!(
+            entered.decoded().selection_data(),
+            SelectionData::NoPrimary { .. }
+        ) {
+            return Ok(());
+        }
+        self.check_current_scope()?;
+        validate_primary_startup_choice(
+            entered.decoded().selection_data(),
+            &entered.target,
+            server.retained_frontend().map(|tenure| &tenure.target),
+            server.backend_id(),
+            choice,
+        )
     }
     /// Install the complete actual message graph before configured hold or
     /// session-event drain. Borrowing the initial value did not install it.
     pub(crate) fn install_original_messages(
         &self,
-        widget: &mut crate::chatwidget::ChatWidget,
+        widget: &mut ChatWidget,
+        server: &AppServerSession,
+        started: Option<&AppServerStartedThread>,
+        read_only_thread: bool,
     ) -> io::Result<()> {
         self.check_current_scope()?;
-        let prepared = match &self.messages {
-            Messages::Original => return Ok(()),
-            Messages::Selected { prepared, .. } | Messages::NoPrimary { prepared, .. } => prepared,
-        };
-        let mut slot = prepared.lock().unwrap_or_else(PoisonError::into_inner);
-        if slot.installed {
-            return Err(invalid(
-                "original message graph was already moved into its actual widget",
-            ));
-        }
-        let Some(actual) = slot.prepared.as_ref() else {
+        let Some(entered) = &self._actual else {
             return Ok(());
-        }; // Actual pre-App source has no widget graph.
+        };
         let cancel_confirmation = self
             .current
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .confirmation_cancelled_by_original_policy;
-        // The original constructor's post-filter value is authoritative. It
-        // may be None without a separate explicit cancel callback.
-        actual.validate_original_policy_destination(widget)?;
-        let actual = slot
+        entered
+            .decoded()
+            .messages()
             .prepared
-            .take()
-            .ok_or_else(|| invalid("original message graph lost before synchronous install"))?;
-        actual.install_after_original_policy(widget, cancel_confirmation)?;
-        slot.installed = true;
-        Ok(())
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .install_for_startup(
+                entered.decoded().selection_data(),
+                &entered.target,
+                server.retained_frontend().map(|tenure| &tenure.target),
+                started.map(|started| {
+                    if read_only_thread {
+                        StartupThread::Viewed(started.session.thread_id)
+                    } else {
+                        StartupThread::Resumed(started.session.thread_id)
+                    }
+                }),
+                widget,
+                cancel_confirmation,
+            )
     }
     /// Only an original startup cancellation/edit/policy branch records this.
     /// The flag can remove confirmation DATA; it cannot authorize submission.
@@ -287,13 +412,12 @@ impl Constructor {
     }
 }
 fn choose(
-    messages: &Messages,
+    messages: Option<&Messages>,
     original: impl FnOnce() -> Option<UserMessage>,
 ) -> Option<UserMessage> {
     match messages {
-        Messages::Original => original(),
-        Messages::Selected { initial, .. } => initial.clone(),
-        Messages::NoPrimary { data, .. } => data.message(),
+        None => original(),
+        Some(messages) => messages.initial.clone(),
     }
 }
 #[cfg(test)]
@@ -320,13 +444,7 @@ pub(crate) fn no_primary_message_for_tests(
     original: impl FnOnce() -> Option<UserMessage>,
 ) -> io::Result<Option<UserMessage>> {
     Ok(choose(
-        &Messages::NoPrimary {
-            data: InitialMessageData::decode(raw)?,
-            prepared: Mutex::new(MessageGraph {
-                prepared: None,
-                installed: false,
-            }),
-        },
+        Some(&InitialMessageData::decode_messages(raw)?),
         original,
     ))
 }
@@ -334,7 +452,7 @@ pub(crate) fn no_primary_message_for_tests(
 pub(crate) fn original_message_for_tests(
     original: impl FnOnce() -> Option<UserMessage>,
 ) -> Option<UserMessage> {
-    choose(&Messages::Original, original)
+    choose(None, original)
 }
 
 #[path = "retained_callback_constructor.rs"]

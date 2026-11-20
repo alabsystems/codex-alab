@@ -1448,12 +1448,13 @@ mod tests {
             .build()
             .await
             .unwrap();
+        let (config, cli_overrides) = crate::alab_plugin_fixture::isolate(config, Vec::new()); // ALAB(test): the direct auth fixture also starts an embedded server.
         let mut auth_config = config.auth_config();
         let client = InProcessAppServerClient::start(InProcessClientStartArgs {
             required_human_approval: true,
             arg0_paths: Arg0DispatchPaths::default(),
             config: Arc::new(config),
-            cli_overrides: Vec::new(),
+            cli_overrides, // ALAB(test): account changes reload the same plugin settings.
             loader_overrides,
             strict_config: false,
             cloud_config_bundle: CloudConfigBundleLoader::default(),

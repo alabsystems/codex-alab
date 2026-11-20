@@ -1113,6 +1113,7 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if self.alab_stale_lifecycle(thread_id, &notification, None).await { return Ok(()); } // ALAB(misalignment-review): also check deferred delivery before side effects or widget dispatch.
         self.deliver_background_voice_notification(thread_id, &notification);
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
@@ -1891,8 +1892,7 @@ impl App {
         }
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
-        self.chat_widget
-            .set_queue_autosend_suppressed(/*suppressed*/ true);
+        self.chat_widget.alab_hold_snapshot_input(); // ALAB(retained-ui): suppress initial and queued work throughout replay independently of other input owners.
         let has_resumed_collaboration_mode = snapshot
             .session
             .as_ref()
@@ -1970,13 +1970,8 @@ impl App {
             retained_assistant_captions,
         );
         self.restore_voice_owner_after_replay();
-        self.chat_widget
-            .set_queue_autosend_suppressed(/*suppressed*/ false);
-        self.chat_widget
-            .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
-        self.chat_widget.submit_initial_user_message_if_pending();
         if resume_restored_queue {
-            self.chat_widget.maybe_send_next_queued_input();
+            self.chat_widget.alab_resume_snapshot_input(); // ALAB(retained-ui): only a writable restored display can submit its own retained inputs.
         }
         self.refresh_status_line();
     }

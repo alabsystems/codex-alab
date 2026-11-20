@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "base": "f2d3086682a848e9121c5f688cf1d77ad5d2a114",
+  "target": "0ba514837d1ed6bee7a9c5729ad1942ef0b3573c",
+  "frontier": "f2d3086682a848e9121c5f688cf1d77ad5d2a114",
+  "commits": [
+    {
+      "sha": "c1ed51ca2cd71cbbd4e6734f21cc3c9a9136d5d2",
+      "subject": "Accept inbound Noise connections in remote exec-server (#62325)",
+      "paths": [
+        "codex-rs/cli/tests/exec_server.rs",
+        "codex-rs/core/tests/suite/remote_env.rs",
+        "codex-rs/exec-server-cli/src/command.rs",
+        "codex-rs/exec-server-cli/src/exec_server_args_tests.rs",
+        "codex-rs/exec-server/src/client_api.rs",
+        "codex-rs/exec-server/src/client_refresh_tests.rs",
+        "codex-rs/exec-server/src/client_transport.rs",
+        "codex-rs/exec-server/src/client_transport_tests.rs",
+        "codex-rs/exec-server/src/noise_relay/admission.rs",
+        "codex-rs/exec-server/src/noise_relay/executor_stream.rs",
+        "codex-rs/exec-server/src/noise_relay/executor_stream_tests.rs",
+        "codex-rs/exec-server/src/noise_relay/forward_stream_tests.rs",
+        "codex-rs/exec-server/src/noise_relay/mod.rs",
+        "codex-rs/exec-server/src/relay.rs",
+        "codex-rs/exec-server/src/relay_noise_tests.rs",
+        "codex-rs/exec-server/src/remote.rs",
+        "codex-rs/exec-server/src/server.rs",
+        "codex-rs/exec-server/src/server/transport.rs",
+        "codex-rs/exec-server/tests/common/relay.rs",
+        "codex-rs/exec-server/tests/relay.rs",
+        "codex-rs/exec-server/tests/relay/registration_retry_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol",
+        "security"
+      ],
+      "features": [
+        "execution-continuity",
+        "account-isolation"
+      ],
+      "decision": "keep-opt-in",
+      "reason": "Carry upstream's registry-authorized inbound Noise transport for explicitly configured remote executors. Keep the ordinary local executor and the default outbound remote transport as configured.",
+      "evidence": [
+        "The CLI accepts an inbound address only with remote Noise and no forwarding command. The ordinary remote transport still defaults to outbound Noise. An inbound connection joins the existing remote processor through registered executor identity and registry harness validation.",
+        "Inbound handling bounds connections and pending handshakes, establishes a first-authorization deadline and waits for registered connection tasks on shutdown. The public bundle's optional admission headers require a secure WebSocket before the client dials.",
+        "The clean integration at a03bceb47b96450911e2e659f9b3085d13ddda12 retains the ALab configuration and account-owned auth loaders in exec-server-cli. The executor compatibility stamp and local-process output hooks remain in their original owners. All bundle struct literals in the merged Rust workspace have upstream's updated shape."
+      ],
+      "revisit": "Exercise the registry-authorized read and shutdown on a loopback fixture and keep the outbound transport control. Recheck credential routing and original child ownership on future transport changes."
+    },
+    {
+      "sha": "0ba514837d1ed6bee7a9c5729ad1942ef0b3573c",
+      "subject": "Measure plugin recommendation latency during initial context setup (#62326)",
+      "paths": [
+        "codex-rs/core-plugins/src/remote.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/turn.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Keep upstream's measurement of first-turn plugin recommendation latency while preserving the fork's plugin and telemetry defaults.",
+      "evidence": [
+        "The duration surrounds the existing load only in the prompt-only recommendation branch. The caller still chooses endpoint candidates or legacy fallback after the await. The metric has no additional dimensions.",
+        "Three named info spans skip all arguments and distinguish the recommendation load, tooling marker and catalog fetch. The change installs no telemetry exporter and changes no plugin, feature or network default.",
+        "The merge at a03bceb47b96450911e2e659f9b3085d13ddda12 retains the existing session and turn hooks. Packaged defaults still disable plugins, tool suggestion and the metrics exporter. Upstream's receiving-model, prompt-only recommendation, overlap and fallback tests remain available in the merged core suite."
+      ],
+      "revisit": "Check the timing and unchanged prompt behavior for an enabled plugin catalog and the disabled-default path when initial context or metrics export changes."
+    }
+  ]
+}

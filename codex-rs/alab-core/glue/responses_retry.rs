@@ -809,7 +809,7 @@ pub(super) async fn wait(
         EventMsg::StreamError(StreamErrorEvent {
             message: reason.notice().into(),
             codex_error_info: Some(err.to_codex_protocol_error()),
-            additional_details: Some(err.to_string()),
+            additional_details: Some(codex_alab_core::capacity::retry_timing(delay)),
         }),
     )
     .await;
@@ -944,6 +944,7 @@ async fn reset_request_visible(sess: &Session, turn: &TurnContext) -> bool {
 
 /// Redeem before deciding whether the original quota wall is terminal.
 pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnContext) -> bool {
+    use codex_protocol::protocol::RateLimitReachedType;
     use codex_protocol::protocol::SessionSource;
     // An exec host keeps its request across the wall: no handoff is asked for
     // its turn, and its usage error does not end it.
@@ -971,11 +972,18 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
     if !reset_request_visible(sess, turn).await {
         return false;
     }
+    // A typed workspace refusal already tells the owner or member how to continue.
+    if details
+        .rate_limit_reached_type
+        .is_some_and(|reason| reason != RateLimitReachedType::RateLimitReached)
+    {
+        return false;
+    }
     if !codex_alab_quota_recovery::ordinary_weekly_wall(details) {
         reset_notice(
             sess,
             turn,
-            "Reset not used: this limit is outside the ordinary Codex allowance, so an earned reset cannot clear it.".into(),
+            "Reset not used: this limit is outside the ordinary Codex allowance, so an earned reset cannot clear it.",
         )
         .await;
         return false;
@@ -987,7 +995,7 @@ pub(crate) async fn recover_weekly(err: &CodexErr, sess: &Session, turn: &TurnCo
         reset_notice(
             sess,
             turn,
-            "Reset not used: the current request has no authenticated reset-recovery state; availability and expiry could not be verified.".into(),
+            "Reset not used: the current request has no authenticated reset-recovery state; availability and expiry could not be verified.",
         )
         .await;
         return false;
@@ -1038,17 +1046,24 @@ async fn with_reset_notices<T>(
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     state.set_notice_sender(sender);
     reset_notices::forward(receiver, operation, |message| {
-        reset_notice(sess, turn, message)
+        quota_notice(sess, turn, message)
     })
     .await
 }
 
-async fn reset_notice(sess: &Session, turn: &TurnContext, message: String) {
+async fn reset_notice(sess: &Session, turn: &TurnContext, message: &str) {
+    quota_notice(
+        sess,
+        turn,
+        format!("{}{message}", codex_alab_core::quota::EARNED_RESET_NOTICE),
+    )
+    .await;
+}
+
+async fn quota_notice(sess: &Session, turn: &TurnContext, message: String) {
     sess.send_event(
         turn,
-        EventMsg::Warning(codex_protocol::protocol::WarningEvent {
-            message: format!("[codex-alab reset] {message}"),
-        }),
+        EventMsg::Warning(codex_protocol::protocol::WarningEvent { message }),
     )
     .await;
 }

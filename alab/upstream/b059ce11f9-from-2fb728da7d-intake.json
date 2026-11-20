@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "base": "2fb728da7d0b3e4273f19c3b4eb798a13cacb37c",
+  "target": "b059ce11f971c0543a20e02755fb9bd69f87e2fb",
+  "frontier": "2fb728da7d0b3e4273f19c3b4eb798a13cacb37c",
+  "commits": [
+    {
+      "sha": "b059ce11f971c0543a20e02755fb9bd69f87e2fb",
+      "subject": "Allow hosts to route selected analytics events (#62684)",
+      "paths": [
+        "codex-rs/analytics/src/client.rs",
+        "codex-rs/analytics/src/client_product_tests.rs",
+        "codex-rs/analytics/src/client_runtime_auth_tests.rs",
+        "codex-rs/analytics/src/client_tests.rs",
+        "codex-rs/analytics/src/client_transport_tests.rs",
+        "codex-rs/analytics/src/event_transport.rs",
+        "codex-rs/analytics/src/events.rs",
+        "codex-rs/analytics/src/lib.rs"
+      ],
+      "classes": [
+        "feature",
+        "telemetry"
+      ],
+      "features": [
+        "product-policy",
+        "account-isolation"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the optional upstream host transport and the existing ALab analytics opt-out. A host can select an event type explicitly when analytics is enabled.",
+      "evidence": [
+        "b059ce11f9:codex-rs/analytics/src/client.rs installs the transport in a new opt-in constructor. The queue filters by destination and existing auth eligibility before dispatch. Rebinding to another auth context drops the previous transport.",
+        "b059ce11f9:codex-rs/analytics/src/event_transport.rs sends a selected event with its complete wire payload and product SKU. An unselected event, a serialization failure or an explicit Http response preserves ordinary HTTP delivery. Handled transfers responsibility to the host and suppresses the duplicate HTTP send. A host that installs this API owns its delivery deadline.",
+        "codex-rs/alab-core/defaults.toml keeps product analytics disabled. This upstream change adds the optional constructor without adding a caller in the ALab host or changing the packaged setting.",
+        "All four native transport tests passed on pristine b059ce11f9 with the locked graph and source-selected Trust 15698 on macOS arm64. They exercised mixed-batch HTTP payloads and product attribution, API-key eligibility, local capture, analytics opt-out and rebinding to a different actor. Native libtest log SHA-256 d5ff88449fc1fa38596402fea974c1135b9df6be06d73116bcb7fafdb849c9b0."
+      ],
+      "revisit": ""
+    }
+  ]
+}

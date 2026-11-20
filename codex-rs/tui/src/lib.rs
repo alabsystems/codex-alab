@@ -461,13 +461,6 @@ async fn init_state_db_for_app_server_target(
     }
 }
 
-// TODO(jif) delete after 22/11/2026.
-fn remove_legacy_tui_log_file(codex_home: &Path) {
-    // Shared append-only TUI logs could grow without bound. Existing processes
-    // may still hold the file open, so startup cleanup is best effort.
-    let _ = std::fs::remove_file(codex_home.join("log").join(TUI_LOG_FILE_NAME));
-}
-
 fn remote_addr_has_explicit_port(addr: &str, parsed: &Url) -> bool {
     let Some(host) = parsed.host_str() else {
         return false;
@@ -681,6 +674,10 @@ async fn start_app_server(
 }
 
 #[cfg(test)]
+#[path = "../../alab-tui/glue/embedded_plugin_fixture.rs"]
+mod alab_plugin_fixture; // ALAB(test): embedded TUI fixtures own their plugin startup and reload configuration.
+
+#[cfg(test)]
 pub(crate) async fn start_app_server_for_picker(
     backend_id: crate::backend_id::BackendId,
     config: &Config,
@@ -773,6 +770,7 @@ where
     F: FnOnce(InProcessClientStartArgs) -> Fut,
     Fut: Future<Output = std::io::Result<T>>, // ALAB(owned-local): the constructor retains its actual output and lifetime.
 {
+    #[cfg(test)] let (config, cli_kv_overrides) = alab_plugin_fixture::isolate(config, cli_kv_overrides); // ALAB(test): generic backends schedule no marketplace work in temporary homes.
     let config_warnings = config
         .startup_warnings
         .iter()
@@ -882,7 +880,7 @@ async fn lookup_session_target_with_app_server(
                 return Ok(None);
             }
         };
-        app_server_session::alab_upgrade_receiver::before_lookup(app_server, action, thread_id).await?; // ALAB(exec-recovery): private roots must exist before ordinary thread lookup.
+        if let Some(target) = app_server_session::alab_upgrade_receiver::selection(app_server, action, thread_id).await? { return Ok(Some(target)); } // ALAB(exec-recovery): route an authenticated forest directly to its final embedded server.
         return match app_server
             .thread_read(thread_id, /*include_turns*/ false)
             .await
@@ -1103,6 +1101,7 @@ async fn resolve_startup_resume_or_fork_cwd(
         ResumeCwdContext {
             current_cwd: config.cwd.as_path(),
             remembered_current_cwd: config.cwd.as_path(),
+            local_workspace: !uses_remote_workspace_or_environment, // ALAB(accounts): the selected backend and execution environment share local paths.
             allow_remember_current: !uses_remote_workspace_or_environment || cwd_override.is_some(),
             mode: resume_cwd_mode,
         },
@@ -1179,8 +1178,8 @@ async fn cloud_config_bundle_for_app_server_target(
     codex_home: &Path,
     embedded_network_policy: &codex_app_server_client::EmbeddedNetworkPolicy,
 ) -> std::io::Result<CloudConfigBundleLoader> {
-    #[cfg(unix)] if let Some(actual) = owned_local_entered_readers::frozen_cloud_loader()? { return Ok(actual); } // ALAB(retained-readers): SAME mandatory decoded E1 policy precedes any auth constructor.
-    #[cfg(unix)] if let AppServerTarget::OwnedLocal { target } = app_server_target { return Ok(target.snapshot()?.ui_cloud_loader()); } // ALAB(owned-local): frontend consumes exact backend bundle DATA without another credential manager.
+    #[cfg(unix)] if let Some(actual) = owned_local_entered_readers::frozen_cloud_loader(app_server_target)? { return Ok(actual); } // ALAB(retained-readers): use the current policy from the same backend before any frontend auth construction.
+    #[cfg(unix)] if let AppServerTarget::OwnedLocal { target } = app_server_target { return target.managed_cloud_loader(); } // ALAB(owned-local): frontend consumes the latest backend bundle DATA without another credential manager.
     managed_config_bundle_loader_for_storage(
         embedded_network_policy
             .bind_bootstrap_auth(app_server_target.auth_config_for_cloud_loader(
@@ -1212,6 +1211,7 @@ fn loader_overrides_are_default(loader_overrides: &LoaderOverrides) -> bool {
 
 /// Restore terminal modes before a fatal startup exit bypasses destructor cleanup.
 fn restore_terminal_before_fatal_exit() {
+    #[cfg(unix)] if app_server_session::alab_upgrade_receiver::restoring() { let _ = tui::restore_after_failed_upgrade(); } // ALAB(exec-recovery): the inherited terminal may already be raw before Crossterm initializes.
     if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
         let _ = tui::restore_after_exit();
     }
@@ -1239,6 +1239,7 @@ pub async fn run_main(
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    daemon_login::install_interactive_error_hook()?; // ALAB(accounts): install once before any recoverable daemon probe incurs an eyre report.
     system_motion::initialize().await;
     startup_recovery::scope(async move {
         // Startup retains a large future for the whole session. Keep it off callers' stacks,
@@ -1280,6 +1281,7 @@ async fn run_ratatui_app(
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     mut app_server_target: AppServerTarget,
+    mut daemon_login: daemon_login::Launch, // ALAB(accounts): carry the checked physical connection into normal startup.
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
     manually_selected_oss_provider: Option<String>,
@@ -1313,7 +1315,6 @@ async fn run_ratatui_app(
     let backend_id = crate::backend_id::BackendId::new();
     let uses_remote_workspace = app_server_target.uses_remote_workspace();
     let workload_identity_selected = is_workload_identity_selected();
-    color_eyre::install()?;
 
     tooltips::announcement::prewarm(initial_config.http_client_factory());
 
@@ -1357,10 +1358,11 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
 
-    let connect = async |target: &mut AppServerTarget,
+    let mut connect = async |target: &mut AppServerTarget,
                          config: &Config,
                          bundle: &CloudConfigBundleLoader,
                          state_db: &mut Option<StateDbHandle>| {
+        if let Some(client) = daemon_login.connection(target).await? { return Ok(client); } // ALAB(accounts): use the checked connection or validate its replacement.
         start_app_server(
             target,
             arg0_paths.clone(),
@@ -1804,11 +1806,10 @@ async fn run_ratatui_app(
         let lookup = startup_draft
             .run_until(
                 &mut tui,
-                lookup_session_target_with_app_server(
-                    crate::resume_picker::SessionPickerAction::Resume,
-                    startup_app_server,
+                startup_app_server.alab_startup_resume_target( // ALAB(accounts): resolve explicit labels over the same history as the local picker.
                     &config,
                     id_str,
+                    uses_remote_workspace_or_environment(&app_server_target, &environment_manager),
                 ),
             )
             .await;
@@ -2378,6 +2379,7 @@ async fn run_ratatui_app(
         Ok(StartupHooksReviewOutcome::OpenHooksBrowser(data)) => Some(data),
     };
 
+    if matches!(app_server_target, AppServerTarget::LocalDaemon { .. }) && app_server.backend_id() == backend_id { app_server.daemon_login = daemon_login.login; } // ALAB(accounts): only this admitted backend carries its login through ordinary reconnect.
     let mut initial_backends = app::backend_sessions::InitialBackendSessions::singleton(app_server);
     if cfg!(any(target_os = "macos", target_os = "linux"))
         && config.features.enabled(Feature::TuiMultiBackend)
@@ -2712,6 +2714,7 @@ fn should_show_provider_setup_wizard(
             .is_login_method_allowed(ForcedLoginMethod::Api)
 }
 
+#[path = "../../alab-tui/glue/daemon_login.rs"] mod daemon_login; // ALAB(accounts): bind the new local UI to the daemon that actually serves its login.
 mod daemon_recovery;
 mod daemon_startup;
 mod daemon_telemetry;

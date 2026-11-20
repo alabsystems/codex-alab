@@ -128,6 +128,7 @@ fn terminal_title_item_id(item: &str) -> Option<&'static str> {
         "current-dir" => Some("current-dir"),
         "activity" | "spinner" => Some("activity"),
         "run-state" | "status" => Some("run-state"),
+        "thread-name" => Some("thread-name"), // ALAB(defaults): accept the TUI's named-thread item used by packaged defaults.
         "thread-title" | "thread" => Some("thread-title"),
         "git-branch" => Some("git-branch"),
         "context-remaining" => Some("context-remaining"),
@@ -422,3 +423,8 @@ mod tests {
         );
     }
 }
+
+// ALAB(defaults): keep packaged-default regression coverage outside upstream's source.
+#[cfg(test)]
+#[path = "../../../../alab/doctor_title_tests.rs"]
+mod alab_tests;

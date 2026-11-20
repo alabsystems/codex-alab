@@ -13,6 +13,9 @@ mod late_goal;
 #[path = "goal_admission/retained_goal_gate.rs"]
 mod retained_goal_gate;
 
+#[path = "goal_admission/terminal.rs"]
+mod terminal;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -91,18 +94,7 @@ impl Fixture {
             .build(server)
             .await
             .unwrap_or_else(|error| panic!("real core fixture: {error}"));
-        let goals = Arc::new(GoalService::new());
-        late.bind(&test, Arc::clone(&goals)).await;
-        let runtime = test
-            .codex
-            .thread_extension_data()
-            .get::<GoalRuntimeHandle>()
-            .unwrap_or_else(|| panic!("real goal runtime"));
-        let fixture = Self {
-            test,
-            goals,
-            runtime,
-        };
+        let fixture = Self::bind(test, &late).await;
         // Persist the goal without its ordinary immediate continuation. This is the
         // state left when an automatic admission failed before creating a turn.
         fixture.set_status(ThreadGoalStatus::Active, true).await;
@@ -111,6 +103,21 @@ impl Fixture {
             "the setup-only continuation deferral must settle mutation custody"
         );
         fixture
+    }
+
+    async fn bind(test: TestCodex, late: &late_goal::LateGoal) -> Self {
+        let goals = Arc::new(GoalService::new());
+        late.bind(&test, Arc::clone(&goals)).await;
+        let runtime = test
+            .codex
+            .thread_extension_data()
+            .get::<GoalRuntimeHandle>()
+            .unwrap_or_else(|| panic!("real goal runtime"));
+        Self {
+            test,
+            goals,
+            runtime,
+        }
     }
 
     async fn set_status(&self, status: ThreadGoalStatus, defer_continuation: bool) {

@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "base": "c39f047d24e66521d0c538d153a857ed5c03910b",
+  "target": "0a82fdf49d98feb33638cd38f79451ac966da572",
+  "frontier": "c39f047d24e66521d0c538d153a857ed5c03910b",
+  "commits": [
+    {
+      "sha": "0a82fdf49d98feb33638cd38f79451ac966da572",
+      "subject": "Open Codex thread links inside the TUI (#62332)",
+      "paths": [
+        "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/agents_overview.rs",
+        "codex-rs/tui/src/app/archived_thread.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/history_ui.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/agents_navigation_tests.rs",
+        "codex-rs/tui/src/app/tests/archived_thread_tests.rs",
+        "codex-rs/tui/src/app/thread_attachment.rs",
+        "codex-rs/tui/src/app/thread_links.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
+        "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/dynamic_tools.rs",
+        "codex-rs/tui/src/dynamic_tools_tests.rs",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/markdown_render.rs",
+        "codex-rs/tui/src/markdown_render_tests.rs",
+        "codex-rs/tui/src/pager_overlay/transcript.rs",
+        "codex-rs/tui/src/pager_overlay/transcript_tests.rs",
+        "codex-rs/tui/src/resume_picker.rs",
+        "codex-rs/tui/src/session_start.rs",
+        "codex-rs/tui/src/snapshots/codex_tui__markdown_render__markdown_render_tests__web_link_labels_have_a_visible_underline_snapshot.snap",
+        "codex-rs/tui/src/terminal_hyperlinks.rs",
+        "codex-rs/tui/src/thread_links.rs",
+        "codex-rs/tui/src/thread_links_tests.rs",
+        "codex-rs/tui/src/transcript_view/input.rs",
+        "codex-rs/tui/src/transcript_view/input_tests.rs"
+      ],
+      "classes": [
+        "feature",
+        "protocol"
+      ],
+      "features": [
+        "native-ui",
+        "exec-handoff",
+        "account-isolation",
+        "model-discovery"
+      ],
+      "decision": "adapt",
+      "reason": "Open canonical thread links in the current terminal. Preserve the linked thread and its backend across navigation and binary handoff, including the first request to resume a live conversation.",
+      "evidence": [
+        "The upstream TUI accepts canonical codex://threads/<id> links, walks parent metadata on the current backend, opens archived transcripts read-only and retains draft state on failed navigation. Picker previews carry their original backend.",
+        "The fork shares its task-list output between the TUI and the private MCP endpoint. The adaptation carries upstream\u2019s schema version 5 and navigation hint into both active and archived results while keeping current-account filtering.",
+        "The transcript checkpoint now carries a pending link and accepts earlier overlays that could not have one. A retained live attachment participates in upstream\u2019s receiver replacement. The focused controls exercise the typed link and its terminal rendering, the old checkpoint shape, and both task surfaces."
+      ],
+      "revisit": "Verify the first model request when a link reopens a saved thread, as well as linked child and archived views, missing-thread draft preservation, mouse capture and an in-flight transcript selection during a signed upgrade."
+    }
+  ]
+}

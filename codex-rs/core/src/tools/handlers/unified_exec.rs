@@ -34,6 +34,8 @@ pub(crate) fn terminal_session_for_input(
     #[derive(Deserialize)]
     struct TerminalSessionArgs {
         session_id: i32,
+        max_output_tokens: Option<usize>, // ALAB(shell-output): budget historical output like a live poll.
+        invocation_id: Option<serde_json::Value>, // ALAB(shell-invocation): validate the optional token in the enhanced experience.
     }
 
     Box::pin(async move {
@@ -47,6 +49,14 @@ pub(crate) fn terminal_session_for_input(
             &invocation.step_context.environments,
             /*environment_id*/ None,
         )?;
+        // ALAB(shell-invocation): an explicit binding also survives a live switch to vanilla.
+        if codex_alab_core::active()
+            || (codex_alab_core::is_alab_binary() && args.invocation_id.is_some())
+        {
+            return crate::unified_exec::shell_binding::terminal(
+                invocation, args.session_id, args.invocation_id, args.max_output_tokens,
+            ).await;
+        }
         invocation
             .session
             .services

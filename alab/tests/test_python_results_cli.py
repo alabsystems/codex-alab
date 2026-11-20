@@ -148,6 +148,33 @@ class PythonResultsCliTests(unittest.TestCase):
         self.assertEqual(witness['hook'], '1')
         self.assertIsNone(witness['body'])
 
+    def test_exact_discovery_rejects_partial_and_ambiguous_selections_before_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            body = root / 'ran'
+            fixture = ('from pathlib import Path\nimport unittest\n'
+                       'class Case(unittest.TestCase):\n'
+                       f' def test_selected(self): Path({str(body)!r}).write_text("yes")\n'
+                       ' def test_unrelated(self): self.fail("unrelated method ran")\n')
+            module = root / 'case_sample.py'
+            module.write_text(fixture)
+            selected = 'case_sample.Case.test_selected'
+            for number, names in enumerate(([selected, 'case_sample.Case.missing'], [selected, selected],
+                                             ['case_sample.Case.test_*'], [selected])):
+                record = root / f'{number}.json'
+                result = subprocess.run([sys.executable, '-I', '-B', str(SCRIPT), '--start-directory', str(root),
+                                         '--pattern', module.name, '--record', str(record), '--tests', *names],
+                                        capture_output=True, text=True)
+                if names == [selected]:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(body.read_text(), 'yes')
+                    rows = json.loads(record.read_bytes())['tests']
+                    self.assertEqual(rows, [dict(id=selected, status='passed', finished=True)])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(record.read_bytes(), b'')
+                    self.assertFalse(body.exists())
+
     def test_natural_success_shaped_hook_exits_fail_with_incomplete_records(self):
         for case in ('zero', 'none', 'false', 'wrapped', 'negative_wrapped'):
             with self.subTest(case=case):

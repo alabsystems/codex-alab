@@ -58,6 +58,7 @@ compile_error!("ALAB source proof candidates require debug assertions"); // ALAB
 mod alab_native_source_proof; // ALAB(accounts): opt-in isolated SDK proof uses normal credential adapters.
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(unix)] #[path = "../../alab-tui/glue/fleet_model_cli.rs"] mod alab_model_policy; // ALAB(fleet-model): process-local policy application.
 mod app_cmd;
 mod config_override_args;
 #[path = "../../alab-core/glue/retained_cli_dispatch.rs"]
@@ -137,6 +138,8 @@ use codex_terminal_detection::TerminalName;
     override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
+    #[arg(long = "aterm-bound-picker-v1", hide = true)] // ALAB(accounts): older executables reject a confirmed account launch.
+    aterm_bound_picker_v1: Option<String>,
     #[clap(flatten)]
     pub config_overrides: CliConfigOverrides,
 
@@ -218,7 +221,7 @@ enum Subcommand {
     #[clap(visible_alias = "a")]
     Apply(ApplyCommand),
 
-    /// Resume a previous interactive session (picker by default; use --last to continue the most recent).
+    /// Resume a saved session (opens the picker unless you give a session or --last).
     Resume(ResumeCommand),
 
     /// Queue a message for an existing session.
@@ -276,6 +279,7 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    #[cfg(unix)] AtermModelPolicy(alab_model_policy::Args), // ALAB(fleet-model): aterm delivers one scoped local request.
     /// Print the compiled packaged-defaults TOML without loading configuration.
     PackagedDefaults, // ALAB(defaults): inspect the binary's defaults without host preferences or auth
 
@@ -380,9 +384,10 @@ struct AgentsCommand {
 }
 
 #[derive(Debug, Parser)]
+#[command(before_help = include_str!("../../alab-tui/glue/resume_help.txt").trim_end())] // ALAB(accounts): explain local discovery before the optional filters.
 struct ResumeCommand {
     /// Session id (UUID) or session name. UUIDs take precedence if it parses.
-    /// If omitted, use --last to pick the most recent recorded session.
+    /// Omit to open the picker.
     #[arg(value_name = "SESSION_ID")]
     session_id: Option<String>,
 
@@ -1069,6 +1074,7 @@ fn main() -> anyhow::Result<()> {
     unsafe { codex_alab_tui::upgrade_exec_custody::adopt_before_threads()?; } // ALAB(upgrade): first synchronous hook exclusively adopts same-PID exec custody before runtime threads.
     unsafe { codex_tui::pin_retained_image_custody_before_threads()?; } // ALAB(retained-ui): pin actual inherited image mailboxes before descriptor reuse; E1 authenticates later claims.
     codex_alab_core::activate(); // ALAB(core): this process is codex-alab; every ALab behavior keys off it
+    codex_alab_core::bound_picker::capture(std::env::args_os())?; // ALAB(accounts): a confirmed local resume pins its restriction before any auth reader.
     let _upgrade_recovery = alab_upgrade_startup::stage()?; // ALAB(upgrade): adopt terminal data and own failure recovery before runtime or credential readers.
     codex_alab_core::initialize_running_build!()?; // ALAB(version): final executable owns the running stamp
     codex_alab_tui::life::capture_launch(); // ALAB(life): argv, environment, cwd, exe and identity before arg0 rewrites PATH
@@ -1098,12 +1104,14 @@ async fn dispatch_cli(
     remote_control_disabled: bool,
 ) -> anyhow::Result<Option<impl Future<Output = anyhow::Result<()>>>> {
     let MultitoolCli {
+        aterm_bound_picker_v1, // ALAB(accounts): scoped to this original interactive resume.
         config_overrides: mut root_config_overrides,
         feature_toggles,
         remote,
         mut interactive,
         subcommand,
-    } = alab_upgrade_startup::parse(config_override_args::try_parse_from(alab_retained_frontend_cli::arguments()?))?; // ALAB(upgrade): a custodied forest cannot fall through ordinary resume or bypass terminal recovery.
+    } = alab_upgrade_startup::parse(config_override_args::try_parse_from(alab_retained_frontend_cli::arguments()?)).await?; // ALAB(upgrade): a custodied forest cannot fall through ordinary resume or bypass terminal recovery.
+    alab_retained_frontend_cli::bind_picker(aterm_bound_picker_v1.as_deref(), &mut interactive, &remote, subcommand.as_ref())?; // ALAB(accounts): constrain this process before credential selection.
     alab_retained_frontend_cli::validate_route(subcommand.as_ref())?; // ALAB(retained-ui): actual entered scope runs only the original interactive workflow.
     alab_retained_cli::validate_route(subcommand.as_ref())?; // ALAB(owned-local): no other original command may run under this bound backend route.
     codex_alab_tui::life::capture_cli(<MultitoolCli as clap::CommandFactory>::command); // ALAB(life): codex's own clap definition rebuilds the record's resumeArgv
@@ -1899,6 +1907,7 @@ async fn dispatch_cli(
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
             // ALAB(defaults): render compiled TOML without host configuration or authentication.
+            #[cfg(unix)] DebugSubcommand::AtermModelPolicy(command) => alab_model_policy::run(command, arg0_paths).await?, // ALAB(fleet-model): no fleet controller in Codex.
             DebugSubcommand::PackagedDefaults => {
                 print!("{}", codex_alab_core::compiled_packaged_defaults());
             }
@@ -3047,6 +3056,7 @@ enabled = true
     fn finalize_resume_from_args(args: &[&str]) -> TuiCli {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let MultitoolCli {
+            aterm_bound_picker_v1: _, // ALAB(accounts): unrelated interactive flag in this parser fixture.
             mut interactive,
             config_overrides: mut root_overrides,
             subcommand,
@@ -3084,6 +3094,7 @@ enabled = true
     fn finalize_fork_from_args(args: &[&str]) -> TuiCli {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let MultitoolCli {
+            aterm_bound_picker_v1: _, // ALAB(accounts): unrelated interactive flag in this parser fixture.
             mut interactive,
             config_overrides: mut root_overrides,
             subcommand,
@@ -3128,6 +3139,7 @@ enabled = true
     fn finalize_archive_from_args(args: &[&str]) -> (String, TuiCli, InteractiveRemoteOptions) {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let MultitoolCli {
+            aterm_bound_picker_v1: _, // ALAB(accounts): unrelated interactive flag in this parser fixture.
             interactive,
             config_overrides: root_overrides,
             subcommand,

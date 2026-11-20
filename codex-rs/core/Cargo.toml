@@ -203,3 +203,8 @@ path = "../alab-quota-recovery"
 # ALAB(kimi): supply native model metadata without writing a user catalog.
 [dependencies.codex-alab-kimi]
 path = "../alab-kimi"
+
+# ALAB(shell-output): exercise the real shell tools with ALab activation isolated.
+[[test]]
+name = "alab_shell_output"
+path = "../alab-core/glue/shell_output_integration.rs"

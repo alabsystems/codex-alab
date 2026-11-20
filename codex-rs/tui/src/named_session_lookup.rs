@@ -116,6 +116,7 @@ pub(super) async fn lookup(
                         .await
                     {
                         Ok(current) => current,
+                        Err(err) if err.is::<crate::app_server_session::history_page::ThreadResponseIdMismatch>() => continue, // ALAB(history): a stale name candidate does not conceal another valid match.
                         Err(err) => {
                             let Some(TypedRequestError::Server { source, .. }) =
                                 err.downcast_ref::<TypedRequestError>()

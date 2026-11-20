@@ -25,7 +25,7 @@ def inside(path, root):
     return resolved
 
 
-def select(metadata, artifacts, repo, target_dir, helpers):
+def select(metadata, artifacts, repo, target_dir, helpers, *, target_kind="bin"):
     root, target_dir = repo.resolve(strict=True), target_dir.resolve(strict=True)
     require(Path(metadata["workspace_root"]).resolve(strict=True) == root / "codex-rs",
             "helper metadata belongs to another workspace")
@@ -42,8 +42,8 @@ def select(metadata, artifacts, repo, target_dir, helpers):
         manifest = inside(package["manifest_path"], root)
         require(manifest.is_file(), f"helper manifest is not a file: {manifest}")
         targets = [item for item in package["targets"]
-                   if item["name"] == binary and item["kind"] == ["bin"]]
-        require(len(targets) == 1, f"no unique binary target: {name}/{binary}")
+                   if item["name"] == binary and item["kind"] == [target_kind]]
+        require(len(targets) == 1, f"no unique {target_kind} target: {name}/{binary}")
         source = inside(targets[0]["src_path"], manifest.parent)
         require(source.is_file(), f"helper source is not a file: {source}")
         paths = set()
@@ -51,8 +51,8 @@ def select(metadata, artifacts, repo, target_dir, helpers):
             compiled = artifact.get("target", {})
             if (artifact.get("reason") != "compiler-artifact"
                     or artifact.get("package_id") != package["id"]
-                    or compiled.get("name") != binary or compiled.get("kind") != ["bin"]
-                    or artifact.get("profile", {}).get("test") is not False):
+                    or compiled.get("name") != binary or compiled.get("kind") != [target_kind]
+                    or artifact.get("profile", {}).get("test") is not (target_kind == "test")):
                 continue
             if (not artifact.get("manifest_path") or not compiled.get("src_path")
                     or not isinstance(artifact.get("executable"), str)):
@@ -74,15 +74,18 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
-    parser.add_argument("--helper", action="append", required=True, metavar="PACKAGE/BINARY")
+    selectors = parser.add_mutually_exclusive_group(required=True)
+    selectors.add_argument("--helper", action="append", metavar="PACKAGE/BINARY")
+    selectors.add_argument("--integration-test", action="append", metavar="PACKAGE/TEST")
     args = parser.parse_args()
     try:
-        helpers = [item.split("/") for item in args.helper]
+        helpers = [item.split("/") for item in (args.integration_test or args.helper)]
         require(all(len(item) == 2 and all(item) for item in helpers),
                 "helper selectors must name PACKAGE/BINARY")
         metadata = json.loads(args.metadata.read_text())
         artifacts = [json.loads(line) for line in sys.stdin if line.strip()]
-        json.dump(select(metadata, artifacts, args.repo, args.target_dir, helpers), sys.stdout)
+        kind = "test" if args.integration_test else "bin"
+        json.dump(select(metadata, artifacts, args.repo, args.target_dir, helpers, target_kind=kind), sys.stdout)
         sys.stdout.write("\n")
     except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
         print(f"alab/check.sh: {error}", file=sys.stderr)

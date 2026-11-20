@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "base": "6ee9bc1ba7b6375faf040042728add58f796e79c",
+  "target": "1b84166252b6ecfd36be9e12c29ac01454a30d7e",
+  "frontier": "6ee9bc1ba7b6375faf040042728add58f796e79c",
+  "commits": [
+    {
+      "sha": "1b84166252b6ecfd36be9e12c29ac01454a30d7e",
+      "subject": "Flush HTTP/2 tunnel data to the local TCP writer (#62186)",
+      "paths": [
+        "codex-rs/tcp-tunnel/src/http2.rs",
+        "codex-rs/tcp-tunnel/src/http2_tests.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [],
+      "decision": "adopt",
+      "reason": "Deliver the first server bytes immediately through a buffered TCP writer so an interactive peer can respond while the connection stays open.",
+      "evidence": [
+        "Reviewed the two-file parent-to-commit patch, SHA-256 129fc7ca3c1f3592b4f8f4effb5381d247c8fec807452f5d0ba9ef5ff2b27ac0.",
+        "The receive loop flushes each write before returning HTTP/2 flow-control capacity. The upstream test waits for a server greeting before uploading through a buffered writer and retains its denied-response case."
+      ],
+      "revisit": "Run the interactive and refused HTTP/2 relay cases on the integrated source."
+    }
+  ]
+}

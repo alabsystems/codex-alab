@@ -126,7 +126,7 @@ pub(crate) fn output_lines(
         include_prefix,
     } = params;
     let output = match output {
-        Some(output) if only_err && output.exit_code == 0 => {
+        Some(output) if only_err && !output.failed() => {
             return OutputLines {
                 lines: Vec::new(),
                 omitted: None,
@@ -248,7 +248,7 @@ impl HistoryCell for ExecCell {
                 .filter(|call| {
                     call.output
                         .as_ref()
-                        .is_some_and(|output| output.exit_code != 0)
+                        .is_some_and(|output| output.nonzero_exit().is_some())
                 })
                 .count();
             if nonzero_exits > 0
@@ -296,7 +296,7 @@ impl HistoryCell for ExecCell {
         self.iter_calls()
             .filter(|call| !call.is_user_shell_command())
             .map(|call| {
-                let active = call.duration.is_none();
+                let active = call.is_pending();
                 let (running, finished, target) = match call.parsed.as_slice() {
                     [ParsedCommand::Read { name, .. }] => ("Reading", "Read", name.clone()),
                     [
@@ -326,11 +326,7 @@ impl HistoryCell for ExecCell {
                 };
                 let verb = if active { running } else { finished };
                 let mut label = format!("{verb} {target}");
-                if let Some(output) = &call.output
-                    && output.exit_code != 0
-                {
-                    label.push_str(&format!(" (exit {})", output.exit_code));
-                }
+                call.append_outcome_label(&mut label); // ALAB(shell-output): preserve a reported status without a numeric exit.
                 label
             })
             .collect()
@@ -380,23 +376,17 @@ impl ExecCell {
 
         let mut calls = self.group.calls.as_slice();
         let mut out_indented = Vec::new();
-        let nonzero_exit = |call: &ExecCall| {
-            call.duration
-                .and(call.output.as_ref())
-                .map(|output| output.exit_code)
-                .filter(|code| *code != 0)
-        };
         while let Some((call, remaining)) = calls.split_first() {
-            let exit_code = nonzero_exit(call);
+            let result = call.annotated_result();
             let reads_only = call
                 .parsed
                 .iter()
                 .all(|parsed| matches!(parsed, ParsedCommand::Read { .. }));
-            let group_len = if reads_only && exit_code.is_none() {
+            let group_len = if reads_only && result.is_none() {
                 1 + remaining
                     .iter()
                     .take_while(|next| {
-                        nonzero_exit(next).is_none()
+                        next.annotated_result().is_none()
                             && next
                                 .parsed
                                 .iter()
@@ -452,28 +442,10 @@ impl ExecCell {
 
             let line_count = call_lines.len();
             for (index, (title, mut line)) in call_lines.into_iter().enumerate() {
-                if let Some(code) = exit_code
-                    && index + 1 == line_count
+                if index + 1 == line_count
+                    && let Some(status) = call.exploration_outcome()
                 {
-                    // A compound command has one exit code, not an outcome for each parsed action.
-                    let status = if call.parsed.len() > 1 {
-                        format!(" (command exit {code})")
-                    } else {
-                        format!(" (exit {code})")
-                    };
-                    // Search exit 1 can mean no matches; report the code without calling it a failure.
-                    line.push(
-                        if code == 1
-                            && call
-                                .parsed
-                                .iter()
-                                .any(|p| matches!(p, ParsedCommand::Search { .. }))
-                        {
-                            status.dim()
-                        } else {
-                            status.red()
-                        },
-                    );
+                    line.push(status);
                 }
                 let line = Line::from(line);
                 let initial_indent = Line::from(vec![title.fg(accent_color()), " ".into()]);
@@ -505,30 +477,10 @@ impl ExecCell {
             panic!("Expected exactly one call in a command display cell");
         };
         let layout = EXEC_DISPLAY_LAYOUT;
-        let success = call
-            .duration
-            .and_then(|_| call.output.as_ref().map(|o| o.exit_code == 0));
-        let bullet = match success {
-            Some(true) => "•".green().bold(),
-            Some(false) => "•".red().bold(),
-            None => activity_marker(call.start_time, self.animations_enabled()),
-        };
-        let is_interaction = call.is_unified_exec_interaction();
-        let title = if is_interaction {
-            ""
-        } else if self.is_active() {
-            "Running"
-        } else if call.is_user_shell_command() {
-            "You ran"
-        } else {
-            "Ran"
-        };
-
-        let header_line = if is_interaction {
-            Line::from(vec![bullet.clone(), " ".into()])
-        } else {
-            Line::from(vec![bullet.clone(), " ".into(), title.bold(), " ".into()])
-        };
+        // ALAB(shell-output): the completed header reports the observed outcome.
+        let header_line = call.command_header(self.is_active(), || {
+            activity_marker(call.start_time, self.animations_enabled())
+        });
         let header_prefix_width = header_line.width();
         let mut header = HyperlinkLine::from(header_line.clone());
 

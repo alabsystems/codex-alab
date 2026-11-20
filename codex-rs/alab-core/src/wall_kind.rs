@@ -14,6 +14,25 @@
 /// The limit id of the ordinary bucket. A wall that names no limit id is this bucket's too.
 pub const ORDINARY_LIMIT: &str = "codex";
 
+/// Classification of a usage refusal for interactive account rotation. The quota watcher
+/// can still measure the recorded bucket when the refusal's classification is unverified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitClass {
+    Ordinary,
+    Model,
+    Unverified,
+}
+
+/// The host's wire grammar for a model's own bucket in a quota rotation request.
+pub fn valid_limit_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id != ORDINARY_LIMIT
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// The limit name of Reserve, the fallback upstream serves once the ordinary bucket is spent.
 /// Upstream's copy for a usage limit treats it as ordinary usage (`UsageLimitReachedError`'s
 /// `Display`, which compares the trimmed name without regard to case), and so does this.
@@ -61,11 +80,17 @@ pub enum WallKind {
 }
 
 impl WallKind {
-    /// Whether an exec run asks its host to move it at this wall. A model's own limit is not
-    /// asked until the host can judge that limit and is told it (gap 4, steps S4 and S5): a host
-    /// asked today judges the ordinary bucket and answers about another wall.
+    /// The model bucket named by the provider, including a malformed id that no host may be asked about.
+    pub fn limit_id(&self) -> Option<&str> {
+        match self {
+            Self::Limit(id) => Some(id),
+            Self::Ordinary | Self::Workspace(_) => None,
+        }
+    }
+
+    /// Whether this refusal can be represented on the native wire. Host policy is checked separately.
     pub fn asked(&self) -> bool {
-        !matches!(self, WallKind::Limit(_))
+        self.limit_id().is_none_or(valid_limit_id)
     }
 
     /// Whether an exec run keeps its request at this wall only while a host says a move may come
@@ -128,6 +153,25 @@ mod tests {
         Workspace::MemberUsageLimitReached,
         Workspace::SpendControl,
     ];
+
+    #[test]
+    fn only_canonical_model_bucket_ids_fit_the_native_request() {
+        for id in ["a", "codex_other", "model_42", &"z".repeat(64)] {
+            assert!(valid_limit_id(id), "{id:?}");
+        }
+        for id in [
+            "",
+            "codex",
+            "Codex",
+            "model-x",
+            "é",
+            "x\n",
+            "x y=z",
+            &"z".repeat(65),
+        ] {
+            assert!(!valid_limit_id(id), "{id:?}");
+        }
+    }
 
     #[test]
     fn a_workspace_word_comes_first_wherever_it_is_named() {
@@ -216,7 +260,8 @@ mod tests {
             );
         }
         let model = WallKind::Limit("codex_other".into());
-        assert!(!model.asked() && !model.host_kept());
+        assert!(model.asked() && !model.host_kept());
+        assert!(!WallKind::Limit("bad limit".into()).asked());
         assert!(WallKind::Ordinary.asked() && !WallKind::Ordinary.host_kept());
     }
 }

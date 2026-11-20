@@ -13,6 +13,7 @@ use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +42,15 @@ enum SavedInput {
         communication: InterAgentCommunication,
         publication: Option<usize>,
     },
+}
+
+impl SavedInput {
+    fn publication(&self) -> Option<usize> {
+        match self {
+            Self::Mail { publication, .. } => *publication,
+            _ => None,
+        }
+    }
 }
 
 impl ExecPendingInputs {
@@ -100,7 +110,7 @@ impl ExecPendingInputs {
             group_ends.push(items.len());
         }
         let saved = Self {
-            version: 2,
+            version: 5,
             items,
             publications,
             group_ends,
@@ -133,7 +143,14 @@ impl ExecPendingInputs {
         self.clone().restore_groups()?;
         let mut items = Vec::new();
         let mut ends = Vec::new();
+        let mut publications = Vec::new();
+        let mut rows = HashMap::new();
+        let mut included = HashSet::new();
+        let mut selected_results = HashSet::new();
         for &index in selected {
+            if !included.insert(index) {
+                return Err("input group selection repeats a group".into());
+            }
             let end = *self
                 .group_ends
                 .get(index)
@@ -143,20 +160,82 @@ impl ExecPendingInputs {
             } else {
                 self.group_ends[index - 1]
             };
-            items.extend_from_slice(&self.items[start..end]);
+            for mut item in self.items[start..end].iter().cloned() {
+                if let SavedInput::Mail {
+                    publication: Some(row),
+                    ..
+                } = &mut item
+                {
+                    let old = *row;
+                    *row = *rows.entry(old).or_insert_with(|| {
+                        let index = publications.len();
+                        let publication = &self.publications[old];
+                        if matches!(publication, ExecPublication::QueuedResult { .. }) {
+                            selected_results.insert(old);
+                        }
+                        publications.push(publication.clone());
+                        index
+                    });
+                }
+                items.push(item);
+            }
             ends.push(items.len());
+        }
+        // A queued writer belongs to one tree's runtime. Reject a cross-tree
+        // alias before either runtime can accept that publication.
+        if !selected_results.is_empty() {
+            let mut start = 0;
+            for (group, &end) in self.group_ends.iter().enumerate() {
+                if !included.contains(&group)
+                    && self.items[start..end]
+                        .iter()
+                        .filter_map(SavedInput::publication)
+                        .any(|row| selected_results.contains(&row))
+                {
+                    return Err("queued result writer is shared between destination trees".into());
+                }
+                start = end;
+            }
         }
         Ok(Self {
             version: self.version,
             items,
-            publications: self.publications.clone(),
+            publications,
             group_ends: ends,
         })
     }
 
     pub(crate) fn restore_groups(self) -> Result<Vec<Vec<TurnInput>>, String> {
-        if self.version != 2 {
+        if !matches!(self.version, 2 | 5) {
             return Err("unsupported accepted-input snapshot version".into());
+        }
+        let mut queued_scopes = HashSet::new();
+        let mut queued_indices = HashSet::new();
+        for (index, publication) in self.publications.iter().enumerate() {
+            if let ExecPublication::QueuedResult { scope_id, .. } = publication {
+                if self.version != 5 {
+                    return Err(
+                        "older accepted-input format cannot carry a queued result writer".into(),
+                    );
+                }
+                if !queued_scopes.insert(*scope_id) {
+                    return Err("accepted input repeats a queued result publication".into());
+                }
+                queued_indices.insert(index);
+            }
+        }
+        if !queued_indices.is_empty() {
+            if self.publications.iter().any(|publication| {
+                matches!(publication, ExecPublication::Pending { scope_id, .. } if queued_scopes.contains(scope_id))
+            }) {
+                return Err("queued result scope also appears as ordinary pending mail".into());
+            }
+            for index in self.items.iter().filter_map(SavedInput::publication) {
+                queued_indices.remove(&index);
+            }
+            if !queued_indices.is_empty() {
+                return Err("queued result publication has no receiving mail".into());
+            }
         }
         let mut previous = 0;
         for end in &self.group_ends {
@@ -293,7 +372,8 @@ mod tests {
 
     #[test]
     fn duplicated_deliveries_keep_shared_consumption_without_touching_the_source() {
-        let delivery = MessageDelivery::publish(codex_protocol::ThreadId::new(), &[]);
+        let delivery =
+            MessageDelivery::restore_legacy_pending_for_test(codex_protocol::ThreadId::new());
         let pending = PendingAgentMessage::new(mail(), Some(delivery.clone()));
         let source = vec![
             TurnInput::InterAgentCommunication(pending.clone()),
@@ -342,7 +422,7 @@ mod tests {
     #[test]
     fn different_threads_keep_shared_delivery_identity_without_merging_distinct_deliveries() {
         let sender = codex_protocol::ThreadId::new();
-        let shared = MessageDelivery::publish(sender, &[]);
+        let shared = MessageDelivery::restore_legacy_pending_for_test(sender);
         // A distinct publication may carry the same visible scope. Deduplication
         // must follow the live delivery owner, not equality of its serialized ID.
         let distinct = MessageDelivery::restore_exec(shared.capture_exec().unwrap().1);
@@ -403,5 +483,126 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+    #[test]
+    fn private_client_input_writer_emits_the_forward_compatibility_fixture() {
+        let fixture = include_bytes!("exec_queued_client_v5.json");
+        let saved: ExecPendingInputs = serde_json::from_slice(fixture).unwrap();
+        let input = saved.restore().unwrap();
+        let [
+            TurnInput::UserInput { .. },
+            TurnInput::InterAgentCommunication(mail),
+        ] = input.as_slice()
+        else {
+            panic!("the fixture must include both input records");
+        };
+        let runtime = crate::agent::control::LocalAgentControl::default().runtime;
+        runtime
+            .restore_exec_accepted_mail(Vec::new(), std::iter::once(mail), false)
+            .unwrap();
+        let _owner = crate::agent_communication::ExecResultGrant::prepare(
+            runtime.exec_result_counter(),
+            std::iter::once(mail),
+        )
+        .unwrap();
+        let encoded = serde_json::to_vec(&ExecPendingInputs::capture(&input).unwrap()).unwrap();
+        assert_eq!(encoded.as_slice(), fixture.strip_suffix(b"\n").unwrap());
+    }
+
+    #[test]
+    fn selecting_a_tree_retains_only_its_own_complete_result_writers() {
+        let sender = codex_protocol::ThreadId::new();
+        let publication = || ExecPublication::QueuedResult {
+            sender,
+            scope_id: uuid::Uuid::now_v7(),
+        };
+        let message = |row| SavedInput::Mail {
+            communication: InterAgentCommunication::new(
+                codex_protocol::AgentPath::root(),
+                codex_protocol::AgentPath::root(),
+                Vec::new(),
+                "queued".into(),
+                false,
+            ),
+            publication: Some(row),
+        };
+        let saved = ExecPendingInputs {
+            version: 5,
+            items: vec![message(0), message(1), message(1)],
+            publications: vec![publication(), publication()],
+            group_ends: vec![1, 2, 3],
+        };
+        let projected = saved.select_groups(&[2, 1]).unwrap();
+        assert_eq!(projected.publications, [saved.publications[1].clone()]);
+        assert!(projected.items.iter().all(|item| matches!(
+            item,
+            SavedInput::Mail {
+                publication: Some(0),
+                ..
+            }
+        )));
+        assert_eq!(projected.restore_groups().unwrap().len(), 2);
+        assert_eq!(
+            saved
+                .select_groups(&[0])
+                .unwrap()
+                .restore_groups()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(saved.select_groups(&[1]).is_err());
+        assert!(saved.select_groups(&[1, 1]).is_err());
+    }
+
+    #[test]
+    fn queued_result_write_requires_its_own_input_format() {
+        let sender = codex_protocol::ThreadId::new();
+        let scope_id = uuid::Uuid::now_v7();
+        let mail = InterAgentCommunication::new(
+            codex_protocol::AgentPath::root(),
+            codex_protocol::AgentPath::root(),
+            Vec::new(),
+            "queued".into(),
+            false,
+        );
+        let mut saved = ExecPendingInputs {
+            version: 5,
+            items: vec![SavedInput::Mail {
+                communication: mail,
+                publication: Some(0),
+            }],
+            publications: vec![ExecPublication::QueuedResult { sender, scope_id }],
+            group_ends: vec![1],
+        };
+        for old in [2, 3, 4] {
+            saved.version = old;
+            assert!(saved.clone().restore_groups().is_err());
+        }
+        saved.version = 5;
+        let decoded: ExecPendingInputs =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        let items = decoded.restore().unwrap();
+        let [TurnInput::InterAgentCommunication(mail)] = items.as_slice() else {
+            panic!("missing queued result")
+        };
+        assert!(
+            !mail.is_terminal_result(),
+            "plain decoding creates no writer"
+        );
+        assert!(mail.delivery.as_ref().unwrap().is_restored_queued_result());
+        let mut unreferenced = saved.clone();
+        let SavedInput::Mail { publication, .. } = &mut unreferenced.items[0] else {
+            panic!("missing queued mail")
+        };
+        *publication = None;
+        assert!(unreferenced.restore_groups().is_err());
+        let mut conflicting = saved.clone();
+        conflicting
+            .publications
+            .push(ExecPublication::Pending { sender, scope_id });
+        assert!(conflicting.restore_groups().is_err());
+        saved.publications.push(saved.publications[0].clone());
+        assert!(saved.restore_groups().is_err());
     }
 }

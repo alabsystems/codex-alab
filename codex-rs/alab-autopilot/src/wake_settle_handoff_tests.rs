@@ -4,6 +4,7 @@
 //! A real accepted upgrade and native resume must not forget a recent wake.
 
 use super::upgrade_handoff_tests::Harness;
+use super::upgrade_handoff_tests::before_upgrade_ends;
 use super::upgrade_handoff_tests::wait_for_supervisor;
 use super::*;
 use codex_alab_aterm::Options as ClientOptions;
@@ -214,9 +215,10 @@ async fn accepted_upgrade_preserves_wake_settle() {
             old.fake.set_policy_key("upgrade", "true");
             wait_for_supervisor(|| old.autopilot.sup.policy().is_some_and(|p| p.upgrade)).await;
             let pilot = Arc::clone(&old.autopilot);
-            let upgrading = tokio::spawn(async move { pilot.try_upgrade().await });
-            selection
+            let mut upgrading = tokio::spawn(async move { pilot.try_upgrade().await });
+            before_upgrade_ends(&mut upgrading, selection, &old.autopilot.sup)
                 .await
+                .expect("upgrade ended before selecting the continuation")
                 .expect("real ready and upgrade admission reached selection");
             tokio::time::pause();
             let runnable = tokio::spawn(async {
@@ -236,11 +238,11 @@ async fn accepted_upgrade_preserves_wake_settle() {
             release
                 .send(())
                 .expect("release only this admitted upgrade");
-            let request = old
-                .requests
-                .recv()
-                .await
-                .expect("conditional upgrade queued");
+            let request =
+                before_upgrade_ends(&mut upgrading, old.requests.recv(), &old.autopilot.sup)
+                    .await
+                    .expect("upgrade ended before the terminal was asked to leave")
+                    .expect("conditional upgrade queued");
             let carried = old
                 .shared
                 .owed_act()

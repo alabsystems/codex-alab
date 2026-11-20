@@ -19,20 +19,14 @@ mod tests {
         })
     }
 
+    fn core_record_value() -> Value {
+        serde_json::from_str(include_str!("../fixtures/session-v1-core.json"))
+            .expect("valid shared core record")
+    }
+
     fn record_value() -> Value {
-        serde_json::json!({
-            "v": 1,
-            "pid": 4242,
-            "version": "record-contract-fixture",
-            "execGeneration": 0,
-            "env": {},
-            "status": "busy",
-            "draftEmpty": true,
-            "autopilot": "off",
-            "statusUpdatedAt": 1_000,
-            "updatedAt": 1_000,
-            "kind": "codex",
-            "entrypoint": "exec",
+        let mut value = core_record_value();
+        let waits = serde_json::json!({
             "recovery": {
                 "clock": clock_value(),
                 "thread": "fixture-thread",
@@ -54,7 +48,12 @@ mod tests {
                 "turnId": "waiting-native-turn",
                 "notBefore": 1_800_000,
             },
-        })
+        });
+        value
+            .as_object_mut()
+            .expect("core record object")
+            .extend(waits.as_object().expect("wait fields object").clone());
+        value
     }
 
     fn original_record() -> Record {
@@ -136,6 +135,57 @@ mod tests {
                 mismatches.push(format!("{context}/{reader}"));
             }
         }
+    }
+
+    #[test]
+    fn shared_core_record_is_pathless_and_each_core_field_is_required() {
+        let value = core_record_value();
+        let original: Record =
+            serde_json::from_value(value.clone()).expect("valid pathless core record");
+        assert!(original.exe.is_none());
+        assert!(original.launch_argv0.is_none());
+        assert!(original.resume_argv.is_none());
+        let home = tempfile::tempdir().expect("private core record directory");
+        let path = home.path().join("core.json");
+        let raw = serde_json::to_string(&value).expect("shared core record JSON");
+        let mut mismatches = Vec::new();
+        compare_readers(
+            &raw,
+            Some(&original),
+            &path,
+            "pathless shared core record",
+            &mut mismatches,
+        );
+        for key in value.as_object().expect("shared core object").keys() {
+            let mut missing = value.clone();
+            missing.as_object_mut().expect("core object").remove(key);
+            let raw = serde_json::to_string(&missing).expect("core with missing field JSON");
+            compare_readers(
+                &raw,
+                None,
+                &path,
+                &format!("missing core field {key}"),
+                &mut mismatches,
+            );
+        }
+        assert!(
+            mismatches.is_empty(),
+            "shared core contract mismatches: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn record_file_reader_rejects_a_structurally_valid_v2_record() {
+        let mut value = core_record_value();
+        value["v"] = serde_json::json!(2);
+        let decoded: Record =
+            serde_json::from_value(value.clone()).expect("structurally valid v2 record");
+        assert_eq!(decoded.v, 2);
+        let home = tempfile::tempdir().expect("private schema record directory");
+        let path = home.path().join("v2.json");
+        let raw = serde_json::to_string(&value).expect("v2 record JSON");
+        std::fs::write(&path, raw).expect("private v2 record");
+        assert!(record::read(&path).is_none());
     }
 
     #[test]

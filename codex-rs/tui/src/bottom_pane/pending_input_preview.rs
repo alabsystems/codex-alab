@@ -21,6 +21,7 @@ use crate::wrapping::adaptive_wrap_lines;
 /// queued user inputs to pop back into the composer. The displayed binding is
 /// configurable via [`set_edit_binding`](Self::set_edit_binding).
 pub(crate) struct PendingInputPreview {
+    alab_recovery: alab_queue_review::Recovery, // ALAB(queue-review): distinguish paused automatic delivery from the ordinary queue.
     pub pending_steers: Vec<String>,
     pub rejected_steers: Vec<String>,
     pub queued_messages: Vec<String>,
@@ -40,6 +41,7 @@ const PREVIEW_LINE_LIMIT: usize = 3;
 impl PendingInputPreview {
     pub(crate) fn new() -> Self {
         Self {
+            alab_recovery: Default::default(), // ALAB(queue-review): a new pane starts with ordinary delivery.
             pending_steers: Vec::new(),
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
@@ -93,11 +95,12 @@ impl PendingInputPreview {
             return Box::new(());
         }
 
+        let labels = self.alab_queue_labels(); // ALAB(queue-review): describe the current delivery and recall state.
         let mut lines = vec![];
 
         if !self.pending_steers.is_empty() {
-            let mut header = vec!["Messages to be submitted after next tool call".into()];
-            if let Some(interrupt_binding) = self.interrupt_binding {
+            let mut header = vec![labels.pending.into()];
+            if let Some(interrupt_binding) = labels.interrupt {
                 header.push(" (press ".dim());
                 header.extend(interrupt_binding.spans());
                 header.push(" to interrupt and send immediately)".dim());
@@ -125,7 +128,7 @@ impl PendingInputPreview {
             Self::push_section_header(
                 &mut lines,
                 width,
-                "Messages to be submitted at end of turn".into(),
+                labels.rejected.into(),
             );
 
             for steer in &self.rejected_steers {
@@ -142,13 +145,14 @@ impl PendingInputPreview {
             }
         }
 
-        if !self.queued_messages.is_empty() || has_questions {
+        labels.show_preparation(&mut lines, width); // ALAB(queue-review): image preparation remains live beside held messages.
+        if !labels.queued.is_empty() || has_questions {
             if !lines.is_empty() {
                 lines.push(HyperlinkLine::new(Line::from("")));
             }
-            Self::push_section_header(&mut lines, width, "Queued follow-up inputs".into());
+            Self::push_section_header(&mut lines, width, labels.queued_title.into());
 
-            for message in &self.queued_messages {
+            for message in labels.queued {
                 let wrapped = wrap_preview_lines(
                     message
                         .lines()
@@ -166,7 +170,7 @@ impl PendingInputPreview {
             }
         }
 
-        if !self.queued_messages.is_empty()
+        if labels.recall
             && !has_questions
             && let Some(edit_binding) = self.edit_binding
         {
@@ -484,6 +488,9 @@ mod tests {
         );
     }
 }
+
+#[path = "../../../alab-tui/glue/recovered_input_preview.rs"]
+mod alab_queue_review; // ALAB(queue-review): keep delivery copy and shortcuts consistent with the held queue.
 
 #[cfg(unix)]
 #[path = "../../../alab-tui/glue/retained_bottom_pending_preview.rs"]

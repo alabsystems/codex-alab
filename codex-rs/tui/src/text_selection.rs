@@ -48,6 +48,8 @@ impl SelectionUnit {
     }
 }
 
+pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400); // ALAB(interface): use the native click interval across picker dismissal.
+
 pub(crate) fn click_count(
     last_click: &mut Option<(Instant, u16, u16, u8)>,
     column: u16,
@@ -56,7 +58,7 @@ pub(crate) fn click_count(
     let now = Instant::now();
     let clicks = last_click
         .filter(|(at, x, y, _)| {
-            now.duration_since(*at) < Duration::from_millis(/*millis*/ 400)
+            now.duration_since(*at) < MULTI_CLICK_INTERVAL // ALAB(interface): share the native interval with picker clicks.
                 && *x == column
                 && *y == row
         })

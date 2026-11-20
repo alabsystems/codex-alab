@@ -98,7 +98,7 @@ fn run_private_child(child: &str, mode: &str, marker: &str) {
     let exact = format!("{local_module}::{child}");
     let root = tempfile::tempdir().unwrap();
     let guard =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../alab/command_guard.py");
+        core_test_support::alab_test_process::command_guard().expect("runtime process guardian");
     let evidence = root.path().join("guardian.json");
     let output = std::process::Command::new("/usr/bin/python3")
         .arg(&guard)
@@ -463,7 +463,7 @@ async fn weekly_handoff_child() {
         provider.base_url = Some(format!("{}/v1", server.uri()));
         provider.supports_websockets = false;
         let base = server.uri();
-        let (session, mut turn, _events) = make_session_and_context_with_auth_config_home_and_rx(
+        let (session, mut turn, events) = make_session_and_context_with_auth_config_home_and_rx(
             auth,
             Vec::new(),
             home.path(),
@@ -498,6 +498,42 @@ async fn weekly_handoff_child() {
         }
         let state = codex_alab_quota_recovery::State::bind(&session.services.auth_manager).await;
         turn.extension_data.insert_if(state, |old| old.is_none());
+        let workspace = codex_protocol::error::CodexErr::UsageLimitReached(
+            codex_protocol::error::UsageLimitReachedError {
+                plan_type: None,
+                resets_at: None,
+                limit_window_minutes: None,
+                rate_limits: None,
+                promo_message: None,
+                rate_limit_reached_type: Some(
+                    codex_protocol::protocol::RateLimitReachedType::WorkspaceMemberCreditsDepleted,
+                ),
+            },
+        );
+        assert!(
+            workspace
+                .to_string()
+                .contains("Your workspace is out of credits")
+        );
+        assert!(
+            !crate::responses_retry::alab_capacity_retry::recover_weekly(
+                &workspace, &session, &turn,
+            )
+            .await
+        );
+        let recovery_warning =
+            std::iter::from_fn(|| events.try_recv().ok()).find_map(|event| match event.msg {
+                EventMsg::Warning(warning)
+                    if codex_alab_core::quota::is_recovery_notice(&warning.message) =>
+                {
+                    Some(warning.message)
+                }
+                _ => None,
+            });
+        assert_eq!(
+            recovery_warning, None,
+            "the workspace refusal explains the block"
+        );
         let wall = codex_protocol::error::CodexErr::UsageLimitReached(
             codex_protocol::error::UsageLimitReachedError {
                 plan_type: None,

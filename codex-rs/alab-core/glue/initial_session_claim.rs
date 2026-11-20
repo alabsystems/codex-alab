@@ -96,3 +96,4 @@ pub(crate) use client_preparation::PreparationRequest;
 pub(crate) use client_preparation::PreparedArguments;
 pub(crate) use client_preparation::take_preparation;
 pub(crate) use metadata::preparation::RESULT_KEY as PREPARATION_RESULT_KEY;
+pub(crate) use metadata::preparation::SavedResumeOutcome;

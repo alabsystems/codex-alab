@@ -529,6 +529,88 @@ class QualificationTests(unittest.TestCase):
         path.write_text(json.dumps(original))
         self.assertEqual(QUAL.inspect(self.repo, path)['source'], self.source)
 
+    def run_sync_during_main_advance(self, first=1, final=0, dirty=False):
+        # An independently committed hook reaches origin/main while the real
+        # recorder is inside the first gate. Keep both qualification records.
+        self.git('checkout', '-qb', 'peer')
+        (self.repo / 'peer-hook.rs').write_text('// ALAB(peer): landed concurrently\n')
+        self.git('add', 'peer-hook.rs')
+        self.git('commit', '-qm', 'concurrent private hook')
+        peer = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '--detach', self.source)
+        for name in ('qualification.py', 'cli_status.py', 'file_hash.py', 'upstream_intake.py', 'source_content.py'):
+            shutil.copyfile(ALAB / name, self.repo / 'alab' / name)
+        self.install("""
+if ! git merge-base --is-ancestor "$PEER" HEAD; then
+    git update-ref refs/remotes/origin/main "$PEER" "$BASE"
+    if test "$DIRTY" = yes; then echo edited > tracked; fi
+    exit "$FIRST"
+fi
+test -f peer-hook.rs
+exit "$FINAL"
+""")
+        candidate = self.git('rev-parse', 'HEAD')
+        source = (ALAB / 'sync.sh').read_text()
+        # The real concurrent merge uses the sync command's Git attributes and drivers.
+        config = source[source.index('export ALAB_SYNC_RECIPE_DRIVER='):source.index('\n\nin_wt()')]
+        functions = [config]
+        for name in ('take_concurrent_main', 'run_check', 'check_current_main', 'worktree_clean',
+                     'reresolve_cargo_lock', 'drift_check'):
+            start = source.index('\n' + name + '() {') + 1
+            functions.append(source[start:source.index('\n}\n', start) + 3])
+        body = 'set -euo pipefail\n. "$LIB"\n' + '\n'.join(functions) + """
+wt=$PWD
+check=1
+mode=continue
+in_wt() { git -C "$wt" "$@"; }
+alab_python_311() { echo "$FIXTURE_PYTHON"; }
+sync_target() { echo "$BASE"; }
+exit_with() { echo "$2" >&2; exit "$1"; }
+check_failed() { if [[ "$1" == 1 ]]; then exit 4; fi; exit "$1"; }
+check_current_main
+test "$checked_main" = "$PEER"
+"""
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        # Production sync runs the controller from its own checkout and the recorder from wt.
+        env.update(repo_root=str(ALAB.parent), LIB=str(ALAB / 'lib.sh'), FIXTURE_PYTHON=sys.executable,
+                   PEER=peer, BASE=self.source, FIRST=str(first), FINAL=str(final),
+                   DIRTY='yes' if dirty else 'no', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+        result = subprocess.run(['/bin/bash', '-c', body], cwd=self.repo, env=env,
+                                capture_output=True, text=True, timeout=60)
+        records = sorted((self.repo / '.git/alab-qualification').glob('*/run-*/record.json'))
+        return result, candidate, peer, records
+
+    def test_concurrent_private_hook_requires_a_fresh_checked_merge(self):
+        result, candidate, peer, records = self.run_sync_during_main_advance()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(records), 2)
+        by_source = {json.loads(path.read_text())['before']['source']: path for path in records}
+        first = json.loads(by_source[candidate].read_text())
+        self.assertEqual((first['status'], first['qualified_source'], first['after']['base']),
+                         (1, None, peer))
+        merged = self.git('rev-parse', 'HEAD')
+        self.assertEqual(self.git('show', '-s', '--format=%P', merged).split(), [candidate, peer])
+        self.assertEqual(QUAL.inspect(self.repo, by_source[merged])['source'], merged)
+
+    def test_failure_on_the_new_base_remains_a_check_failure(self):
+        result, _, _, records = self.run_sync_during_main_advance(final=1)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(json.loads(path.read_text())['qualified_source'] is None for path in records))
+
+    def test_dirty_candidate_cannot_be_merged_after_a_concurrent_fetch(self):
+        result, candidate, _, records = self.run_sync_during_main_advance(dirty=True)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn('candidate changed during qualification', result.stderr)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), candidate)
+        self.assertEqual(len(records), 1)
+
+    def test_concurrent_main_cannot_turn_a_resource_stop_into_a_retry(self):
+        result, candidate, _, records = self.run_sync_during_main_advance(first=75)
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), candidate)
+        self.assertEqual(len(records), 1)
+
     def test_production_sync_runs_the_recorder_and_preserves_gate_exit_classes(self):
         for name in ('qualification.py', 'cli_status.py', 'file_hash.py', 'upstream_intake.py', 'source_content.py'):
             shutil.copyfile(ALAB / name, self.repo / 'alab' / name)
@@ -552,8 +634,8 @@ run_check
             # without recording a source fault; preserve its existing behavior.
             self.install('exit ' + str(code) + '\n')
             environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-            environment.update(FIXTURE_PYTHON=sys.executable, GIT_CONFIG_GLOBAL=os.devnull,
-                               GIT_CONFIG_NOSYSTEM='1')
+            environment.update(repo_root=str(ALAB.parent), FIXTURE_PYTHON=sys.executable,
+                               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
             done = subprocess.run(['/bin/bash', '-c', body, 'sync-recorder-fixture', str(self.repo)],
                                   env=environment, capture_output=True, text=True)
             self.assertEqual(done.returncode, expected, done.stdout + done.stderr)

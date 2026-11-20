@@ -141,6 +141,7 @@ impl ExecCommandHandler {
             step_context,
             cancellation_token,
             tracker,
+            source, // ALAB(shell-output): select the native tool's preview.
             call_id,
             payload,
             ..
@@ -198,6 +199,7 @@ impl ExecCommandHandler {
                 raw_output: CapturedStream {
                     text: output.into_text(),
                     omitted_bytes: 0,
+                    shell_log: None, // ALAB(shell-output): intercepted patch has no shell process.
                 },
                 truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                 max_output_tokens,
@@ -220,11 +222,13 @@ impl ExecCommandHandler {
         )
         .await;
         // Preparation can be cancelled. Reserve a process only once it is done.
-        let process_id = manager.allocate_process_id().await;
+        let (process_id, number_lease) = manager.reserve_process_id().await; // ALAB(shell-invocation): keep cleanup and every original launch callback on distinct numbers.
         let hook_command = prepared.hook_command.clone();
         let tool_cwd =
             (!prepared.turn_environment.environment().is_remote()).then(|| prepared.cwd.clone());
         let request = ExecCommandRequest {
+            source: source.clone(), // ALAB(shell-output): qualify the first result at native collection.
+            _number_lease: number_lease, // ALAB(shell-invocation): the detached one-shot task keeps custody too.
             prepared,
             process_id,
             network: context.step_context.turn.network.clone(),
@@ -237,10 +241,14 @@ impl ExecCommandHandler {
             None => manager.exec_command(request, &context).await,
         };
         match result {
-            Ok(response) => Ok(boxed_tool_output(response)),
+            Ok(mut response) => { // ALAB(shell-output): retain the exact result disclosure.
+                if response.process_id.is_some() { crate::unified_exec::shell_observation::record(&session, &source, process_id, &mut response, None).await; } // ALAB(shell-output): the native collector already settled terminal launches.
+                Ok(boxed_tool_output(response))
+            }
             Err(UnifiedExecError::SandboxDenied {
                 output,
                 original_token_count,
+                shell_log, // ALAB(shell-output): an exited process may have produced a log.
                 output_omitted_bytes,
                 ..
             }) => {
@@ -254,6 +262,7 @@ impl ExecCommandHandler {
                     raw_output: CapturedStream {
                         text: output_text,
                         omitted_bytes: output_omitted_bytes.map_or(0, std::num::NonZeroUsize::get),
+                        shell_log, // ALAB(shell-output): disclose only when the denied output was clipped.
                     },
                     truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                     max_output_tokens,

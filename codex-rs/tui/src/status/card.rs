@@ -917,6 +917,7 @@ impl StatusHistoryCell {
             [Line::from(title)],
             RtOptions::new(available_width).subsequent_indent(indent.into()),
         );
+        codex_alab_tui::interface::group_status_title(&mut rendered, available_width); // ALAB(interface): keep the release and upstream baseline together in the status title.
         rendered.push(Line::default());
         // Providers such as Bedrock manage limits and billing elsewhere.
         if self.show_chatgpt_usage_link {

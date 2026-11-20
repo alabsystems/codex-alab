@@ -215,13 +215,34 @@ pub trait ExecProcess: Send + Sync {
     fn signal(&self, signal: ProcessSignal) -> ExecProcessFuture<'_, ()>;
 
     fn terminate(&self) -> ExecProcessFuture<'_, ()>;
+    fn started_with_local_output_observer(&self) -> bool { false } // ALAB(shell-output): only the backend that installed the tap can attest it.
+    fn dispose_owned_local_capture(&self) -> ExecProcessFuture<'_, bool> { Box::pin(async { self.terminate().await?; Ok(false) }) } // ALAB(shell-output): release only the final native owner; other transports retain ordinary termination.
+    fn stop_local_output_after_exit(&self) -> ExecProcessFuture<'_, ()> { Box::pin(async { Ok(()) }) } // ALAB(shell-output): retirement is local to an owned raw reader and never an RPC.
 }
 
 pub type ExecProcessFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ExecServerError>> + Send + 'a>>;
 
+// ALAB(shell-output): tap raw local output before bounded replay. None means the channel closed.
+pub type LocalOutputObserver = std::sync::Arc<dyn Fn(Option<&[u8]>) + Send + Sync>;
+pub enum LocalOutput<'a> { Bytes(&'a [u8]), Closed { native_eof: codex_utils_pty::NativeOutputEof } } // ALAB(shell-output): a closed raw channel carries its descriptor EOF receipt.
+pub type LocalCaptureObserver = std::sync::Arc<dyn Fn(LocalOutput<'_>) + Send + Sync>; // ALAB(shell-output): observe local raw bytes before replay.
+
 pub trait ExecBackend: Send + Sync {
     fn start(&self, params: ExecParams) -> ExecBackendFuture<'_>;
+
+    // ALAB(shell-output): callbacks are in-process only.
+    fn start_with_local_output_observer(
+        &self,
+        params: ExecParams,
+        _observer: LocalOutputObserver,
+    ) -> ExecBackendFuture<'_> {
+        self.start(params)
+    }
+
+    fn start_with_local_capture_observer(&self, params: ExecParams, observer: LocalCaptureObserver) -> ExecBackendFuture<'_> { // ALAB(shell-output): older local taps still supply supported raw bytes.
+        self.start_with_local_output_observer(params, std::sync::Arc::new(move |chunk| observer(match chunk { Some(bytes) => LocalOutput::Bytes(bytes), None => LocalOutput::Closed { native_eof: Default::default() } }))) // ALAB(shell-output): a legacy close has no native EOF proof.
+    }
 
     /// Captures a local shell snapshot without starting the requested command.
     /// Failures must remain retryable by real commands. Remote backends do not

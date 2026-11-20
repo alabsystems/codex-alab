@@ -85,6 +85,7 @@ async fn later_start_shared_policy_captures_new_core_and_private_binding_before_
                 accepted: None,
                 next_claim: None,
                 clients: HashMap::new(),
+                retired_saved_resumes: saved_resume_receipts::Receipts::default(),
                 preparations: HashMap::new(),
             }),
         });
@@ -105,7 +106,7 @@ async fn later_start_shared_policy_captures_new_core_and_private_binding_before_
             processor: processor.clone(),
             binding: None,
             context,
-            frozen: frozen::FrozenRequest::client(claim),
+            frozen: frozen::FrozenRequest::client(claim, false),
             arguments: Arguments::Start(params.clone()),
             metadata: ClientMetadata {
                 name: h.c1.app_server_client_name().map(str::to_owned),

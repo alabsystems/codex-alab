@@ -2419,6 +2419,94 @@ async fn the_receipt_marks_the_row_and_the_report_travels_after_its_line() {
 }
 
 #[tokio::test]
+async fn repeated_broker_offset_keeps_ring_work_visible_without_reading_the_wrong_body() {
+    use codex_alab_core::mail::TriggerKind;
+    use codex_alab_core::mail::Verdict;
+    let (_dir, fake) = fake(Mode::Current).await;
+    let (first_id, first_off) = fake.deliver("h-andrew", "task", "human", "first");
+    let (second_id, second_off) = fake.deliver("h-andrew", "task", "human", "second");
+    let (third_id, third_off) = fake.deliver("h-andrew", "ask", "human", "third");
+    let c = client(&fake).await;
+    let command = format!("@{} inbox --peek --meta", fake.sid());
+    fake.reply_always(
+        &command,
+        &format!(
+            "OK 3 seen=0\nmsg {first_id} off={first_off} from=h-andrew kind=task trust=human len=5\n\
+             msg {second_id} off={first_off} from=h-andrew kind=task trust=human len=6\n\
+             msg {third_id} off={third_off} from=h-andrew kind=ask trust=human len=5\n"
+        ),
+    );
+    let (seen, rows) = crate::mail::rows(&c).await.expect("distinct ring rows");
+    let owed = [(second_id, Verdict::Handled)].into_iter().collect();
+    let (due, held) = crate::mail::receipts_due(seen, &rows, &owed);
+    assert!(due.is_empty());
+    let (waiting, blocker) = held.expect("older local task holds the receipt");
+    assert_eq!((waiting, blocker.id), (second_id, first_id));
+    let badge = crate::mail::badge(&c).await.expect("badge by local row");
+    assert_eq!((badge.tasks, badge.asks), (2, 1));
+    assert!(matches!(
+        crate::mail::read(&c, TriggerKind::Task, first_off, &|_| None).await,
+        Err(Error::Refused(_))
+    ));
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|request| request.contains("inbox get"))
+    );
+    let unique = crate::mail::read(&c, TriggerKind::Ask, third_off, &|_| None)
+        .await
+        .expect("unrelated unique broker offset remains readable");
+    assert_eq!((unique.id, unique.body.as_str()), (third_id, "third"));
+    assert!(fake.reply_always_clear(&command));
+    let next = crate::mail::read(&c, TriggerKind::Task, second_off, &|_| None)
+        .await
+        .expect("unambiguous refreshed snapshot");
+    assert_eq!((next.id, next.body.as_str()), (second_id, "second"));
+    assert!(fake.receipts().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_local_row_identity_refuses_the_snapshot_and_recovers_on_refresh() {
+    use codex_alab_core::mail::TriggerKind;
+    let (_dir, fake) = fake(Mode::Current).await;
+    let (id, off) = fake.deliver("h-andrew", "task", "human", "work");
+    let c = client(&fake).await;
+    let command = format!("@{} inbox --peek --meta", fake.sid());
+    fake.reply_always(
+        &command,
+        &format!(
+            "OK 2 seen=0\nmsg {id} off=- from=fleet:lab kind=ask trust=agent len=3\n\
+             msg {id} off={off} from=h-andrew kind=task trust=human len=4\n"
+        ),
+    );
+    assert!(matches!(
+        crate::mail::rows(&c).await,
+        Err(Error::Malformed(_))
+    ));
+    assert!(matches!(
+        crate::mail::badge(&c).await,
+        Err(Error::Malformed(_))
+    ));
+    assert!(matches!(
+        crate::mail::read(&c, TriggerKind::Task, off, &|_| None).await,
+        Err(Error::Malformed(_))
+    ));
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|request| request.contains("inbox get"))
+    );
+    assert!(fake.reply_always_clear(&command));
+    let next = crate::mail::read(&c, TriggerKind::Task, off, &|_| None)
+        .await
+        .expect("fresh valid snapshot");
+    assert_eq!((next.id, next.body.as_str()), (id, "work"));
+    assert!(fake.receipts().is_empty());
+}
+
+#[tokio::test]
 async fn fleet_rows_keep_older_unhandled_tasks_visible() {
     use codex_alab_core::mail::TriggerKind;
     use codex_alab_core::mail::Verdict;

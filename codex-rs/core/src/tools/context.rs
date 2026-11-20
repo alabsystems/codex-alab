@@ -502,15 +502,30 @@ impl ToolOutput for ExecCommandToolOutput {
             session_id: Option<i32>,
             #[serde(skip_serializing_if = "Option::is_none")]
             original_token_count: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")] // ALAB(shell-output): preserve results for completed or vanilla commands.
+            invocation_id: Option<uuid::Uuid>, // ALAB(shell-output): bind nested writes to their running command.
+            // ALAB(shell-output): optional recovery metadata outside the preview.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            full_output_path: Option<std::path::PathBuf>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            full_output_status: Option<&'static str>,
+            #[serde(skip_serializing_if = "Option::is_none")] // ALAB(shell-output): only an oversized verified failure has a tail.
+            shell_output_tail: Option<codex_alab_core::ShellOutputTail>, // ALAB(shell-output): exact bytes beyond the retained prefix.
             output: String,
         }
 
+        // ALAB(shell-output): code-mode applies only the explicit shell preview budget here.
+        let log = self.code_mode_shell_notice(); // ALAB(shell-output): share the nested tool's disclosure boundary.
         let result = UnifiedExecCodeModeResult {
             chunk_id: (!self.chunk_id.is_empty()).then(|| self.chunk_id.clone()),
             wall_time_seconds: self.wall_time.as_secs_f64(),
             exit_code: self.exit_code,
             session_id: self.process_id,
+            invocation_id: self.shell_invocation_id(), // ALAB(shell-output): identify the writer for nested tools.
             original_token_count: self.original_token_count,
+            full_output_status: log.as_ref().and_then(|log| log.status), // ALAB(shell-output): describe incomplete capture.
+            shell_output_tail: log.as_ref().and_then(|log| log.tail.clone()), // ALAB(shell-output): the same evidence as direct tool text.
+            full_output_path: log.and_then(|log| log.path), // ALAB(shell-output): recover clipped bytes.
             output: match self.max_output_tokens {
                 Some(max_tokens) => self.truncated_output(max_tokens),
                 None => self.raw_output.text.clone(),
@@ -522,6 +537,8 @@ impl ToolOutput for ExecCommandToolOutput {
         })
     }
 }
+
+#[path = "../../../alab-core/glue/shell_invocation_output.rs"] mod shell_invocation_output; // ALAB(shell-output): shared disclosure and binding for native tools.
 
 impl ExecCommandToolOutput {
     fn model_output_policy(&self) -> TruncationPolicy {
@@ -558,6 +575,7 @@ impl ExecCommandToolOutput {
 
         if let Some(process_id) = &self.process_id {
             sections.push(format!("Process running with session ID {process_id}"));
+            self.add_invocation_header(&mut sections); // ALAB(shell-output): identify the writer in direct results.
         }
 
         if let Some(original_token_count) = self.original_token_count {
@@ -568,12 +586,30 @@ impl ExecCommandToolOutput {
         sections.join("\n")
     }
 
+    // ALAB(shell-output): only disclose a log when this formatter omits shell output.
+    fn shell_output_notice(
+        &self,
+        policy: Option<TruncationPolicy>,
+        output_budget: usize,
+    ) -> Option<crate::unified_exec::shell_output::LogNotice> {
+        let log = self.raw_output.shell_log.as_ref()?;
+        let bytes = self.raw_output.text.len();
+        let clipped = self.raw_output.omitted_bytes > 0
+            || bytes > output_budget
+            || policy.is_some_and(|policy| bytes > policy.byte_budget());
+        log.notice(clipped, self.process_id.is_some())
+    }
+
     fn response_text(&self) -> String {
-        let header = self.response_header();
-        let output_budget = with_serialization_allowance(self.truncation_policy)
-            .byte_budget()
-            .saturating_sub(header.len().saturating_add(/*rhs*/ 1));
+        let mut header = self.response_header();
+        let serialization_budget = with_serialization_allowance(self.truncation_policy).byte_budget();
         let mut policy = self.model_output_policy();
+        // ALAB(shell-output): put the notice before the preview, within the serialization budget.
+        if let Some(log) = self.direct_shell_notice(header.len()) { // ALAB(shell-output): share the formatter's disclosure boundary.
+            header.insert_str(header.len() - "Output:".len(), &format!("{}\n", log.text()));
+        }
+        let output_budget =
+            serialization_budget.saturating_sub(header.len().saturating_add(/*rhs*/ 1));
         let mut output = self.truncated_output_with_policy(policy);
 
         // History applies this same serialization budget to the complete response.

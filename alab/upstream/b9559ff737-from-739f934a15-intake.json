@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "base": "739f934a15983c3d117ce9677c20bcc99370713f",
+  "target": "b9559ff737000a4fcf7a0e12c3353cca1ea4d008",
+  "frontier": "739f934a15983c3d117ce9677c20bcc99370713f",
+  "commits": [
+    {
+      "sha": "b9559ff737000a4fcf7a0e12c3353cca1ea4d008",
+      "subject": "Update the `openai-docs` skill for GPT-6.2 (#62447)",
+      "paths": [
+        "codex-rs/skills/src/assets/samples/openai-docs/SKILL.md",
+        "codex-rs/skills/src/assets/samples/openai-docs/references/latest-model.md",
+        "codex-rs/skills/src/assets/samples/openai-docs/references/model-migration.md",
+        "codex-rs/skills/src/assets/samples/openai-docs/references/upgrade-guide.md"
+      ],
+      "classes": [
+        "model"
+      ],
+      "features": [
+        "skill-discovery"
+      ],
+      "decision": "adopt",
+      "reason": "Adopt the official GPT-6.2 migration and onboarding guidance in the bundled openai-docs skill. Preserve the requested API target and the separate ALab system-skill cache.",
+      "evidence": [
+        "The four edits are Markdown. Explicit GPT-6.2 Astra and Sol migrations share the official quickstart. Both APIs support those models, and the skill directs tool-calling requests to Responses. Unspecified targets still resolve through the official model-selection and migration instructions.",
+        "The fallback distinguishes a legacy Chat Completions function-tool example, an account-eligible CLI Sol example, and a configuration example shared with the IDE. These teaching examples do not set Codex defaults, publish model availability or change how a saved thread selects its serving model.",
+        "The updated files are embedded by the existing content-hashed skill installer. ALab keeps its own .alab-system directory alongside vendor skills. The installer, resolver, download helpers and skill routing are unchanged.",
+        "On both official source revisions the four existing Node download/resolver tests passed. With each exact source skill installed in an isolated home, the official 0.170.0 app-server delivered its complete instructions on explicit Astra and Sol requests and omitted the skill body on an unrelated request. Only the new source delivered the shared GPT-6.2 link."
+      ],
+      "revisit": "Verify the release binary reinstalls changed embedded skill contents into its own cache on first use and that an explicit Sol or Astra request still loads the selected skill. Recheck the official documentation before recommending API parameters or availability."
+    }
+  ]
+}

@@ -7,6 +7,9 @@
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+#[cfg(test)]
+pub(crate) use core_test_support::alab_test_process; // ALAB(defaults): share one process-isolated test harness across ALab tests in this crate.
+
 mod apply_patch;
 mod apps;
 mod client;
@@ -21,6 +24,7 @@ pub use responses_headers::CodexResponsesHeaders;
 mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;
+pub use session::queue_review::{history_without_rolled_back_finding, pending_misalignment_review}; // ALAB(queue-review): share the authoritative typed native review boundary and its rollback with cold Autopilot.
 pub use codex_protocol::turn_input::NotSubmittedReason;
 pub use codex_protocol::turn_input::PromptCacheTtl;
 pub use codex_protocol::turn_input::RecoverTurnRequest;
@@ -37,7 +41,7 @@ mod codex_thread;
 pub use agent::control::exec_tree_gate::{ExecTreeSeal, ExecPreparedChildRestore, ExecRestoredChild, ExecIdleRestore, ExecRestoredMember, UpgradeManagerBarrier, CommittedUpgradeInventory}; // ALAB(exec-tree): typed start barrier, not recovery authority.
 pub use tasks::alab_exec_launch::{ExecLaunchBarrier, ExecLaunchPermit}; // ALAB(exec-tree): bind launch ordering to fresh runtimes and original turns.
 pub use tasks::review_recovery::{ExecFrozenReview, ExecReviewSnapshot}; // ALAB(exec-review): closed-source review data is not execution authority.
-pub use session::alab_exec_recovery_options::{ExecTreeSnapshot, ExecThreadSnapshot, ExecCapturedTree, ExecCapturedThread, ExecPreparedTree, PreparedUpgradeForest, CommittedUpgradeForest, UpgradeForestSnapshot, DecodedUpgradeForest, ExecPreparedChild, ExecEphemeralHistory, ExecInputSnapshot, ExecInputBatch, PreparedExecInputBatch, PreparedExecIdleInput, ExecRecoveryOptions, quota_observation::{ExecQuotaWall, ExecQuotaWatch}}; // ALAB(exec-recovery): typed original settings and history, not execution authority.
+pub use session::alab_exec_recovery_options::{ExecTreeSnapshot, ExecThreadSnapshot, ExecCapturedTree, ExecCapturedThread, ExecPreparedTree, PreparedUpgradeForest, CommittedUpgradeForest, UpgradeForestSnapshot, DecodedUpgradeForest, ExecPreparedChild, ExecEphemeralHistory, ExecInputSnapshot, ExecInputBatch, PreparedExecInputBatch, PreparedExecIdleInput, ExecRecoveryOptions, quota_observation::{ExecQuotaDrain, ExecQuotaWall, ExecQuotaWatch}}; // ALAB(exec-recovery): typed original settings and history, not execution authority.
 mod thread_input;
 pub use thread_input::InputWaitOutcome;
 mod turn_extension_data;
@@ -98,6 +102,9 @@ mod codex_delegate;
 mod command_canonicalization;
 pub mod config;
 #[path = "../../alab-core/glue/destination_config_preparer.rs"] pub mod alab_destination_config; // ALAB(accounts): host-owned configuration preparation avoids a Core/app-server dependency cycle.
+#[cfg(unix)]
+#[path = "../../alab-core/glue/shell_log_store.rs"]
+pub(crate) mod alab_shell_log_store; // ALAB(shell-output): bind retained capture storage to a local thread's lifecycle.
 pub mod connectors;
 pub mod context;
 mod context_manager;
@@ -200,11 +207,13 @@ pub use thread_manager::AgentTreeShutdownFailureReason;
 pub use thread_manager::AgentTreeShutdownReport;
 pub use thread_manager::ForkSnapshot;
 pub use thread_manager::InternalSessionParent;
+pub use thread_manager::LoadedSuspendedAgent;
 pub use thread_manager::McpRefreshReason;
 pub use thread_manager::NewThread;
 pub use thread_manager::PromptCacheKey;
 pub use thread_manager::StartThreadOptions;
 pub use thread_manager::StartupModels;
+pub use thread_manager::SuspendedAgentTree;
 pub use thread_manager::ThreadManager;
 pub use thread_manager::ThreadRegistration;
 pub use thread_manager::ThreadShutdownReport;

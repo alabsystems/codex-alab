@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "base": "aadb51b2b60c488a7aa047775876c196eb60cb2f",
+  "target": "92745114438c038dee88263ac4a6a91405dd85af",
+  "frontier": "aadb51b2b60c488a7aa047775876c196eb60cb2f",
+  "commits": [
+    {
+      "sha": "92745114438c038dee88263ac4a6a91405dd85af",
+      "subject": "Reconcile unfinished Cloud replies in the TUI transcript (#62403)",
+      "paths": [
+        "codex-rs/tui/src/app/event_dispatch.rs",
+        "codex-rs/tui/src/app/history_pagination.rs",
+        "codex-rs/tui/src/app/tests/history_hydration_tests.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/session_flow.rs",
+        "codex-rs/tui/src/chatwidget/streaming.rs",
+        "codex-rs/tui/src/chatwidget/tests/replay_render_tests.rs",
+        "codex-rs/tui/src/chatwidget/transcript.rs",
+        "codex-rs/tui/src/chatwidget/turn_runtime.rs",
+        "codex-rs/tui/src/history_cell/messages.rs"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "history-pagination",
+        "native-ui",
+        "execution-continuity"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt upstream's Cloud reply reconciliation and carry its item identity, unfinished position and copy order through the fork's retained transcript.",
+      "evidence": [
+        "Replayed and paged Cloud replies are keyed by turn and item. An item with a start timestamp and no completion stays unfinished even if the turn page says completed. Empty unfinished items reserve a zero-height position. A final event replaces or removes those fragments in place and leaves unrelated streams running.",
+        "Copy order follows transcript position, including prepended pages. Turn completion without explicit text may use only a completed response from that turn. Upstream added controls for older pages, live Cloud resume and hidden directives.",
+        "The fork separately recovers an unseen final answer from a retired turn summary and checks its backend and thread. Its paged history and streaming correction hooks retain the original side-pane producer and viewed-image links. The native retained widget and cell codecs must preserve the new occurrence state and pending-cell identity across transfer. The prior codec stored only completed Cloud item IDs and a current-turn copy flag."
+      ],
+      "revisit": "Exercise upstream Cloud pagination, resume, copy/notification fallback, and the fork's retained-cell, legacy-reader and retired-summary controls on the integrated source."
+    }
+  ]
+}

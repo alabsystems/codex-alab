@@ -15,6 +15,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const BODY: &[u8] = b"{\"detail\":\"Bad Request\"}";
 
+async fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
+    std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await
+}
+
 enum End {
     Eof,
     Pending,
@@ -296,7 +300,7 @@ async fn cancelling_a_pending_rejection_retires_io_without_capture_or_later_poll
                 guarded,
                 None,
             ));
-            assert!(futures::poll!(&mut handshake).is_pending());
+            assert!(poll_once(handshake.as_mut()).await.is_pending());
             // The pending underlying read follows all ready header/prefix reads,
             // so the adapter has already processed those bytes at this point.
             let pending_reads = ownership.pending_reads.load(Ordering::SeqCst);
@@ -479,7 +483,7 @@ async fn accepted_entity_progress_survives_empty_and_partial_body_timeouts() {
         }
         let mut handshake = Box::pin(rejected(ScriptedIo::new(fragments, End::Pending)));
         // Ready scripted bytes pass through the decoder before the pending read.
-        assert!(futures::poll!(&mut handshake).is_pending());
+        assert!(poll_once(handshake.as_mut()).await.is_pending());
         assert_eq!(Instant::now(), started);
         let response = handshake.await;
         assert_eq!(Instant::now() - started, BODY_TIMEOUT);

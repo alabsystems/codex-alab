@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check ident files against raw blobs or their canonical Git checkout bytes."""
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -78,6 +79,7 @@ def _identity(info):
             info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
 
 
+@contextmanager
 def _open_regular(repo, name):
     path = repo
     parents = []
@@ -95,11 +97,27 @@ def _open_regular(repo, name):
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
         raise ValueError("ident source is not a regular file")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    if _identity(os.fstat(descriptor)) != _identity(before):
-        os.close(descriptor)
-        raise ValueError("ident source changed while opening")
-    return descriptor, path, parents, _identity(before)
+    descriptor = None
+    primary = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if _identity(os.fstat(descriptor)) != _identity(before):
+            raise ValueError("ident source changed while opening")
+        yield descriptor, path, parents, _identity(before)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                if primary is None:
+                    raise
+                try:
+                    primary.add_note(f"ident source descriptor close failed: {type(error).__name__}: {error}")
+                except BaseException:
+                    pass  # Cleanup diagnostics cannot replace the first failure.
 
 
 def _unchanged(descriptor, path, parents, identity):
@@ -113,9 +131,9 @@ def _unchanged(descriptor, path, parents, identity):
 
 def _matches_checkout(command, env, descriptor):
     """Stream expected bytes without retaining a second copy of a large source."""
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
-    expired = threading.Event()
+    process = None
+    timer = None
+    primary = None
 
     def stop():
         try:
@@ -127,10 +145,13 @@ def _matches_checkout(command, env, descriptor):
         expired.set()
         stop()
 
-    timer = threading.Timer(TIMEOUT, timeout)
-    timer.daemon = True
-    matched = True
     try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        expired = threading.Event()
+        timer = threading.Timer(TIMEOUT, timeout)
+        timer.daemon = True
+        matched = True
         timer.start()
         while True:
             expected = process.stdout.read(CHUNK)
@@ -154,14 +175,45 @@ def _matches_checkout(command, env, descriptor):
         if matched and status:
             raise subprocess.CalledProcessError(status, command)
         return matched
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        timer.cancel()
-        try:
-            if process.poll() is None:
-                stop()
-            process.wait(timeout=5)
-        finally:
-            process.stdout.close()
+        selected = primary
+
+        def cleanup(phase, action):
+            nonlocal selected
+            try:
+                return action()
+            except BaseException as error:
+                if selected is None:
+                    selected = error
+                else:
+                    try:
+                        selected.add_note(f"ident checkout {phase} failed: {type(error).__name__}: {error}")
+                    except BaseException:
+                        pass  # Cleanup diagnostics cannot replace the first failure.
+
+        if timer is not None:
+            cleanup("timer cancellation", timer.cancel)
+
+            def join_timer():
+                if timer.ident is not None:
+                    timer.join(timeout=5)
+
+            def confirm_timer():
+                if timer.is_alive():
+                    raise ValueError("ident checkout timer retirement is unconfirmed")
+
+            cleanup("timer join", join_timer)
+            cleanup("timer retirement", confirm_timer)
+        if process is not None:
+            if cleanup("child status", process.poll) is None:
+                cleanup("child stop", stop)
+            cleanup("child wait", lambda: process.wait(timeout=5))
+            cleanup("stdout close", process.stdout.close)
+        if primary is None and selected is not None:
+            raise selected
 
 
 def validate_ident(repo, commit, *, env, filter_config):
@@ -176,8 +228,7 @@ def validate_ident(repo, commit, *, env, filter_config):
     environment = dict(env, GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1")
     entries = _regular_entries(repo, commit, environment, filter_config)
     for name in _ident_paths(repo, entries, environment, filter_config):
-        descriptor, path, parents, identity = _open_regular(repo, name)
-        try:
+        with _open_regular(repo, name) as (descriptor, path, parents, identity):
             raw_hash = _output(_command(repo, filter_config, "hash-object", "--no-filters", "--stdin"),
                                environment, descriptor=descriptor)
             actual = raw_hash[:-1]
@@ -189,5 +240,3 @@ def validate_ident(repo, commit, *, env, filter_config):
                 if not _matches_checkout(command, environment, descriptor):
                     raise ValueError("ident source differs from its raw blob and canonical checkout")
             _unchanged(descriptor, path, parents, identity)
-        finally:
-            os.close(descriptor)

@@ -6,3 +6,5 @@
 # (the alab-upstream driver sync.sh defines), and sync.sh re-resolves it for ALab's crates
 # before committing, refusing if that moves any package upstream locked.
 codex-rs/Cargo.lock merge=alab-upstream
+# Treat each qualification feature or test group as one entry when main advances.
+alab/feature_recipes/scenarios.json merge=alab-feature-recipes

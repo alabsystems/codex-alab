@@ -102,18 +102,17 @@ async fn transport_failure(
 }
 
 pub(crate) async fn run(arg0_paths: codex_arg0::Arg0DispatchPaths) -> io::Result<()> {
-    // Resource/replacement variants require separate qualification; never let
-    // an unsupported marker silently choose another proof or normal runtime.
-    if std::env::args_os().count() != 2 {
-        return Err(unavailable());
-    }
-    let backend = std::env::args_os()
-        .nth(1)
-        .is_some_and(|value| value == BACKEND);
-    let result = if backend {
-        run_backend(arg0_paths).await
-    } else {
-        run_frontend().await
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let result = match arguments.as_slice() {
+        [name] if name == BACKEND => run_backend(arg0_paths).await,
+        [name] if name == FRONTEND => run_frontend(None).await,
+        [name, option, image] if name == FRONTEND && option == "--replacement-image" => {
+            run_frontend(Some(std::path::Path::new(image))).await
+        }
+        [name, option, state] if name == FRONTEND && option == "--observe-retained-work" => {
+            pair::resume(state).await
+        }
+        _ => return Err(unavailable()),
     };
     // Config/auth errors can contain private values; expose only this fixed class.
     result.map_err(|_| unavailable())
@@ -146,7 +145,10 @@ async fn run_backend(arg0_paths: codex_arg0::Arg0DispatchPaths) -> io::Result<()
     Ok(())
 }
 
-async fn run_frontend() -> io::Result<()> {
+#[path = "native_source_proof_retained_pair.rs"]
+mod pair;
+
+async fn run_frontend(replacement: Option<&std::path::Path>) -> io::Result<()> {
     // Match the existing native driver contract. This frontend constructs only
     // independent controllers; it never creates a credential reader/manager.
     let mut input = BufReader::new(tokio::io::stdin());
@@ -160,16 +162,10 @@ async fn run_frontend() -> io::Result<()> {
     }
     let first = codex_alab_tui::frontend_control::open().await?;
     phase("independent-control").await?;
-    let settings = StartupSettings::new(&[], &std::env::vars_os().collect::<Vec<_>>())?;
-    let mut start = retained::prepare_start(&first, &operation(), settings)?;
-    phase("startup-settings").await?;
-    let service = match start.observe().await {
-        retained::ServiceObservation::Observed {
-            service,
-            phase: retained::RetainedPhase::Starting | retained::RetainedPhase::Spawned,
-        } => service,
-        _ => return Err(unavailable()),
-    };
+    let (start, service) = start_service(&first).await?;
+    if let Some(image) = replacement {
+        return pair::replace(&first, service, image).await;
+    }
     let first_config = request_config(&first, &service).await?;
     // Release the completed startup object as well as the first controller's
     // physical connection. Its accepted native backend operation is independent.
@@ -184,6 +180,26 @@ async fn run_frontend() -> io::Result<()> {
     }
     second.close().await?;
     drop(second);
+    pass().await
+}
+
+async fn start_service(
+    controller: &codex_alab_aterm::frontend_control::Controller,
+) -> io::Result<(retained::RetainedStart, String)> {
+    let settings = StartupSettings::new(&[], &std::env::vars_os().collect::<Vec<_>>())?;
+    let mut start = retained::prepare_start(controller, &operation(), settings).await?;
+    phase("startup-settings").await?;
+    let service = match start.observe().await {
+        retained::ServiceObservation::Observed {
+            service,
+            phase: retained::RetainedPhase::Starting | retained::RetainedPhase::Spawned,
+        } => service,
+        _ => return Err(unavailable()),
+    };
+    Ok((start, service))
+}
+
+async fn pass() -> io::Result<()> {
     let mut output = tokio::io::stdout();
     output
         .write_all(
@@ -193,10 +209,10 @@ async fn run_frontend() -> io::Result<()> {
     output.flush().await
 }
 
-async fn request_config(
+async fn connect(
     controller: &codex_alab_aterm::frontend_control::Controller,
     service: &str,
-) -> io::Result<ConfigReadResponse> {
+) -> io::Result<(retained::RetainedAttachment, RemoteAppServerClient)> {
     let mut attachment = retained::prepare_attachment(controller, &operation(), service)?;
     // Native SDK construction Busy becomes member-waiting on the SAME request;
     // Transport.call reconciles that owned request within its existing deadline.
@@ -209,7 +225,7 @@ async fn request_config(
     }
     let stream = attachment.take_stream()?;
     phase("physical-endpoint-received").await?;
-    let mut client = RemoteAppServerClient::connect_native_stream(
+    let client = RemoteAppServerClient::connect_native_stream(
         stream,
         RemoteAppServerConnectArgs {
             required_human_approval: false,
@@ -226,6 +242,24 @@ async fn request_config(
         },
     )
     .await?;
+    Ok((attachment, client))
+}
+
+async fn request_config(
+    controller: &codex_alab_aterm::frontend_control::Controller,
+    service: &str,
+) -> io::Result<ConfigReadResponse> {
+    let (attachment, mut client) = connect(controller, service).await?;
+    let result = read_config(&mut client).await?;
+    if let Err(error) = client.shutdown().await {
+        failure("bridge-startup", error.kind()).await?;
+        return Err(unavailable());
+    }
+    drop(attachment);
+    Ok(result)
+}
+
+async fn read_config(client: &mut RemoteAppServerClient) -> io::Result<ConfigReadResponse> {
     phase("actual-config-request").await?;
     let reply = client
         .request(ClientRequest::ConfigRead {
@@ -243,7 +277,7 @@ async fn request_config(
             return Err(unavailable());
         }
         Err(error) => {
-            transport_failure(&mut client, error.kind()).await?;
+            transport_failure(client, error.kind()).await?;
             return Err(unavailable());
         }
     };
@@ -258,10 +292,5 @@ async fn request_config(
             return Err(unavailable());
         }
     };
-    if let Err(error) = client.shutdown().await {
-        failure("bridge-startup", error.kind()).await?;
-        return Err(unavailable());
-    }
-    drop(attachment);
     Ok(reply)
 }

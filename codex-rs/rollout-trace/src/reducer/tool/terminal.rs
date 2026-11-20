@@ -503,7 +503,7 @@ fn parse_protocol_terminal_response(payload: ExecCommandEndPayload) -> ParsedTer
     ParsedTerminalResponse {
         process_id: payload.process_id,
         result: TerminalResult {
-            exit_code: Some(payload.exit_code),
+            exit_code: (!payload.exit_code_unavailable).then_some(payload.exit_code), // ALAB(shell-output): recover the observed result from either trace version.
             stdout: payload.aggregated_output,
             stderr: String::new(),
             formatted_output: None,
@@ -614,6 +614,8 @@ struct ExecCommandEndPayload {
     #[serde(default)]
     aggregated_output: String,
     exit_code: i32,
+    #[serde(default)]
+    exit_code_unavailable: bool, // ALAB(shell-output): old trace payloads contain a reported integer.
 }
 
 #[derive(Deserialize)]

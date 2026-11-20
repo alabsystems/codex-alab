@@ -231,9 +231,9 @@ async fn misalignment_turn_end_discards_history_search_and_question_drafts() {
 }
 
 #[tokio::test]
-async fn misalignment_findings_are_non_interactive_by_default() {
+async fn opting_out_of_misalignment_review_keeps_findings_non_interactive() {
     let (mut chat, mut rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
-    assert!(!chat.config.features.enabled(Feature::MisalignmentReview));
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
     chat.queue_user_message(UserMessage::from("continue with other work"));
@@ -249,8 +249,10 @@ async fn misalignment_findings_are_non_interactive_by_default() {
         chat.bottom_pane.composer_text_with_pending(),
         "keep my draft"
     );
-    assert!(chat.queued_user_message_texts().is_empty());
-    assert!(ops.try_recv().is_ok(), "queued work should be submitted");
+    assert_eq!(chat.queued_user_message_texts(), ["continue with other work"]);
+    chat.on_modal_or_popup_closed();
+    assert!(!chat.maybe_send_next_queued_input());
+    assert!(ops.try_recv().is_err());
     let rendered = drain_insert_history(&mut rx)
         .iter()
         .map(|cell| lines_to_single_string(cell))
@@ -260,11 +262,101 @@ async fn misalignment_findings_are_non_interactive_by_default() {
     assert!(rendered.contains("The agent proposed a change outside your instructions."));
     assert!(rendered.contains("Server-suggested continuation (not submitted)"));
     assert!(rendered.contains("Continue with the requested change only."));
+    assert!(rendered.contains("codex features enable misalignment_review"));
+    assert!(rendered.contains("before your next Codex launch"));
+
+    handle_turn_started(&mut chat, "turn-1");
+    assert!(!chat.is_user_turn_pending_or_running());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(next_submit_op(&mut ops), Op::UserTurn { items, .. }
+        if items == vec![UserInput::Text { text: "keep my draft".into(), text_elements: vec![] }]);
+    let mut updated = review_details();
+    updated.detailed_explanation = Some("Updated explanation of the same finding.".into());
+    chat.on_misalignment_error(Some("turn-1".into()), Some(updated));
+    assert!(chat.is_user_turn_pending_or_running());
+    handle_turn_started(&mut chat, "correction");
+    chat.on_misalignment_error(Some("turn-1".into()), Some(review_details()));
+    assert_eq!(chat.last_turn_id(), Some("correction"));
+    assert!(chat.is_user_turn_pending_or_running());
+    handle_turn_completed(&mut chat, "correction", /*duration_ms*/ None);
+    assert_eq!(chat.queued_user_message_texts(), ["continue with other work"]);
+    assert!(ops.try_recv().is_err());
+
+    chat.chat_keymap.edit_queued_message = vec![crate::key_hint::alt(KeyCode::Up)];
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(chat.bottom_pane.composer_text_with_pending(), "continue with other work");
+    assert!(ops.try_recv().is_err());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(next_submit_op(&mut ops), Op::UserTurn { items, .. }
+        if items == vec![UserInput::Text { text: "continue with other work".into(), text_elements: vec![] }]);
+    assert!(ops.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn passive_finding_retains_input_restored_after_replay() {
+    let (mut original, _events, mut original_ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let id = ThreadId::new();
+    original.thread_id = Some(id);
+    handle_turn_started(&mut original, "refused");
+    original.queue_user_message(UserMessage::from("waiting before disconnect"));
+    let mut input = original.capture_thread_input_state().expect("thread input");
+    input.reconnect_pending = true;
+    assert!(!input.recovered_queue);
+    assert!(original_ops.try_recv().is_err());
+
+    let (mut restored, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    restored.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
+    restored.thread_id = Some(id);
+    restored.alab_hold_snapshot_input();
+    restored.on_turn_misalignment_error(Some("refused".into()), None, Some(ReplayKind::ThreadSnapshot));
+    restored.restore_reconnected_input(Some(input), &[]);
+    restored.alab_resume_snapshot_input();
+    assert_eq!(restored.queued_user_message_texts(), ["waiting before disconnect"]);
+    assert!(!restored.maybe_send_next_queued_input());
+    assert!(ops.try_recv().is_err());
+
+    handle_turn_started(&mut restored, "later");
+    handle_turn_interrupted(&mut restored, "later");
+    assert!(restored.queued_user_message_texts().is_empty());
+    assert_eq!(restored.bottom_pane.composer_text_with_pending(), "waiting before disconnect");
+    assert!(ops.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn passive_finding_retires_deferred_image_and_startup_submissions() {
+    let (mut chat, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "refused");
+    chat.prepare_image_submission(
+        "waiting for images".into(),
+        UserMessageHistoryRecord::UserMessageText,
+        UserMessageSource::DirectEnter,
+    );
+    let prepared = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if let AppEvent::ImagesPrepared(id) = events.recv().await.expect("widget event") {
+                break id;
+            }
+        }
+    }).await.expect("image preparation");
+    chat.on_misalignment_error(Some("refused".into()), None);
+    chat.on_images_prepared(prepared);
+    let mut confirmed = true;
+    let mut draft = chat.bottom_pane.composer_draft_snapshot();
+    draft.text = "confirmed before startup".into();
+    chat.restore_startup_input_when_ready(&mut Some(draft), &mut confirmed);
+    assert!(!confirmed);
+    assert!(chat.input_queue.startup_submission.is_none());
+    assert_eq!(chat.bottom_pane.composer_text_with_pending(), "confirmed before startup");
+    assert_eq!(chat.queued_user_message_texts(), ["waiting for images"]);
+    assert!(ops.try_recv().is_err());
 }
 
 #[tokio::test]
 async fn passive_parent_precaution_does_not_suppress_later_turn_findings() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::MisalignmentReview, /*enabled*/ false);
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
     chat.on_misalignment_policy_violation();
@@ -392,3 +484,6 @@ async fn misalignment_review_requires_current_findings() {
     chat.show_misalignment_policy_precaution();
     assert!(!chat.bottom_pane.has_active_view());
 }
+
+#[path = "../../../../alab-tui/glue/finding_commands_tests.rs"]
+mod alab_finding_commands_tests; // ALAB(misalignment-review): verify late native command outcomes across terminal findings.

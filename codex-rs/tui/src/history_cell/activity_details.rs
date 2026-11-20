@@ -28,6 +28,16 @@ impl ActivityDetails {
         *self = older;
     }
 
+    /// Split a group's transcript details at the same boundary as its calls.
+    pub(crate) fn split_after(&mut self, calls: usize) -> Self { // ALAB(misalignment-review): keep original positional details when separating unfinished commands.
+        let first_later = self.entries.partition_point(|(position, _)| *position <= calls);
+        let mut entries = self.entries.split_off(first_later);
+        for (position, _) in &mut entries {
+            *position -= calls;
+        }
+        Self { entries }
+    }
+
     pub(crate) fn lines_after(
         &self,
         after_calls: usize,

@@ -50,10 +50,13 @@ justify removing these adapters or activating SourceV1.
 
 Also adapt `alab-core/glue/exec_message_publication.rs` to the now-optional
 `MessageDelivery::publish` and `MessagePublication::result_write` field.
-`restore_exec` must construct no live result-write receipt. `capture_exec` must
-refuse a pending receipt even if no lifecycle observer exists: serializing only
-sender/scope would silently discard the durable-write obligation. Add a focused
-regression proving refusal leaves the outstanding receipt/count intact. Existing
+The private backport of `fae87361f447` is `0e00045d24`. Decoding a receipt
+creates a pending destination obligation. A fresh original-turn or idle-member
+admission binds that obligation to the receiving runtime. Transfer requires the
+source to account for every unconfirmed writer and every alias in the locked
+queues. A claimed append remains owned by its source writer. The private
+client-input format uses version 5 to distinguish it from the resolved-media
+formats under rehearsal. Keep the released version 2 reader. Existing
 observer-free portable fixtures should construct the typed pending snapshot with
 `restore_exec`, since native publication now correctly returns `None` when it has
 neither an observer nor a persistence receipt.

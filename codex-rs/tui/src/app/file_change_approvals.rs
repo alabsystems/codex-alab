@@ -22,6 +22,7 @@ impl App {
         &mut self,
         event: ThreadBufferedEvent,
     ) {
+        if !self.accept_live_misalignment_turn(&event).await { return; } // ALAB(misalignment-review): bind a sparse terminal only at the displayed thread's live FIFO.
         let changes = match (&event, self.active_thread_id) {
             (ThreadBufferedEvent::Request(request), Some(thread_id)) => match request.as_ref() {
                 ServerRequest::FileChangeRequestApproval { params, .. } => {

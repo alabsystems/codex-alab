@@ -25,6 +25,8 @@ use regex_lite::Regex;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[path = "../../../alab-core/glue/exec_test_process.rs"]
+pub mod alab_test_process; // ALAB(defaults): run process-isolated ALab cases through the shared test support.
 pub mod apps_test_server;
 #[cfg(unix)]
 pub mod code_mode_host;

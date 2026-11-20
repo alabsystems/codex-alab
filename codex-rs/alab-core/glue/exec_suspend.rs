@@ -15,6 +15,7 @@ use tokio::sync::oneshot;
 pub struct SuspendedExec {
     tree: codex_core::ExecTreeSnapshot,
     options: ExecRecoveryOptions,
+    wall: Option<std::sync::Weak<codex_core::ExecQuotaWall>>,
 }
 impl SuspendedExec {
     pub fn thread(&self) -> ThreadId {
@@ -70,7 +71,8 @@ pub(crate) enum Request {
         thread: ThreadId,
         turn: String,
         configuration: Box<ExecConfiguration>,
-        reply: oneshot::Sender<Result<SuspendedExec, String>>,
+        wall: Option<codex_core::ExecQuotaDrain>,
+        reply: oneshot::Sender<Result<Option<SuspendedExec>, String>>,
     },
     ActivateIdleTree {
         thread: ThreadId,
@@ -88,6 +90,7 @@ pub(crate) struct State {
     bootstrap: bootstrap::State,
 }
 impl State {
+    #[cfg(test)]
     async fn suspend(
         &mut self,
         manager: &ThreadManager,
@@ -96,15 +99,33 @@ impl State {
         turn: &str,
         configuration: &ExecConfiguration,
     ) -> Result<SuspendedExec, String> {
+        self.suspend_if_observed(manager, admission, thread, turn, configuration, None)
+            .await?
+            .ok_or_else(|| "unconditional suspension was declined".into())
+    }
+    async fn suspend_if_observed(
+        &mut self,
+        manager: &ThreadManager,
+        admission: &crate::turn_admission::TurnAdmission,
+        thread: ThreadId,
+        turn: &str,
+        configuration: &ExecConfiguration,
+        wall: Option<&codex_core::ExecQuotaDrain>,
+    ) -> Result<Option<SuspendedExec>, String> {
         if let Some(completed) = &self.completed {
-            return if completed.thread() == thread && completed.turn() == turn {
-                Ok(completed.clone())
+            let same_wall = match (&completed.wall, wall) {
+                (Some(previous), Some(current)) => previous.ptr_eq(&current.observation()),
+                (None, None) => true,
+                _ => false,
+            };
+            return if completed.thread() == thread && completed.turn() == turn && same_wall {
+                Ok(Some(completed.clone()))
             } else {
                 Err("exec runtime was suspended for a different origin".into())
             };
         }
-        let completed = suspend(manager, admission, thread, turn, configuration).await?;
-        self.completed = Some(completed.clone());
+        let completed = suspend(manager, admission, thread, turn, configuration, wall).await?;
+        self.completed.clone_from(&completed);
         Ok(completed)
     }
 }
@@ -188,15 +209,17 @@ pub(crate) async fn process(
             thread,
             turn,
             configuration,
+            wall,
             reply,
         } => {
             let result = state
-                .suspend(
+                .suspend_if_observed(
                     &processor.thread_processor.thread_manager,
                     &processor.turn_admission,
                     thread,
                     &turn,
                     &configuration,
+                    wall.as_ref(),
                 )
                 .await;
             let _ = reply.send(result);
@@ -229,7 +252,8 @@ async fn suspend(
     thread_id: ThreadId,
     turn: &str,
     configuration: &ExecConfiguration,
-) -> Result<SuspendedExec, String> {
+    wall: Option<&codex_core::ExecQuotaDrain>,
+) -> Result<Option<SuspendedExec>, String> {
     let _pause = admission
         .pause()
         .await
@@ -238,6 +262,9 @@ async fn suspend(
         .get_thread(thread_id)
         .await
         .map_err(|_| "exec suspension thread is unavailable".to_owned())?;
+    let watch = wall.and_then(|_| thread.watch_exec_quota());
+    let current =
+        || wall.is_none_or(|drain| watch.as_ref().is_some_and(|watch| drain.current(watch)));
     if thread
         .thread_extension_data()
         .get::<HeadlessExec>()
@@ -247,10 +274,25 @@ async fn suspend(
             .await
             .is_none()
     {
+        if !current() {
+            return Ok(None);
+        }
         return Err("exec suspension origin is no longer active in this runtime".into());
     }
-    let plan = thread.prepare_exec_tree(turn, configuration).await?;
-    admission.begin_drain();
+    let plan = match thread.prepare_exec_tree(turn, configuration).await {
+        Err(_) if !current() => return Ok(None),
+        result => result?,
+    };
+    if let Some(wall) = wall {
+        if !watch
+            .as_ref()
+            .is_some_and(|watch| wall.commit(watch, || admission.begin_drain()))
+        {
+            return Ok(None);
+        }
+    } else {
+        admission.begin_drain();
+    }
     let captured = plan.suspend_and_capture().await?;
     let tree = codex_core::ExecTreeSnapshot::capture(&captured)?;
     let options = tree
@@ -259,7 +301,11 @@ async fn suspend(
         .and_then(codex_core::ExecThreadSnapshot::recovery)
         .cloned()
         .ok_or("captured tree has no original root turn")?;
-    Ok(SuspendedExec { tree, options })
+    Ok(Some(SuspendedExec {
+        tree,
+        options,
+        wall: wall.map(codex_core::ExecQuotaDrain::observation),
+    }))
 }
 #[cfg(test)]
 #[path = "exec_recovery_admission_tests.rs"]

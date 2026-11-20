@@ -146,10 +146,18 @@ At every intake, and when a catalog change is observed:
    smoke for an eligible account when available. Record service access failures as
    unverified availability, not client regressions or permission to use another ID.
 
-Availability and default selection are separate decisions. Expose supported models
-promptly; change ALab's default only after capability, quality, latency, cost and
-recovery evidence supports it. Catalog reads use existing authentication and refresh
-machinery; do not add an independent polling service or copy secrets into records.
+Expose supported models promptly. Sol is ALab's default family. A conversation
+following Sol, Astra or another versioned first-party family automatically selects
+its newest eligible release on startup, resume or catalog refresh. Verify the next
+turn uses that release with the saved provider and reasoning effort. Explicit model
+pins stay exact.
+Bedrock's built-in catalogs and Vertex's built-in catalog can also advance a
+versioned OpenAI model. Select from the saved provider's catalog and retain
+the full route, including Bedrock Runtime's routing prefix. For custom
+providers and explicitly configured catalogs, follow their declared successors. Review
+capability, quality, latency, cost and recovery when changing the default family.
+Use existing catalog authentication and refresh machinery. Keep credentials out
+of intake records.
 
 ## Feature ownership and modularity
 
@@ -203,7 +211,17 @@ for schema_mode in 0 1; do
 done
 ```
 
-Compare and stage the changed generated fixtures, including deleted files.
+For a conflict in either precomputed archive, compare the regenerated file
+with the merge base and both parents while Git still has all three index
+stages. Run this from the conflicted worktree, using the affected archive name.
+
+```sh
+python3 -IB alab/protocol_export_merge.py "$schema_scratch/precomputed/app-server-exports-experimental.json.zst"
+```
+
+The report compares TypeScript text and both sets of JSON schemas. If both
+parents changed the same value, review the reported path against the merged
+Rust source. Compare and stage the changed generated fixtures, including deletions.
 Regenerate the Python SDK from the stable JSON tree using the same frozen
 `uv` test group and `generate-types` command as
 `codex-rs/app-server-protocol/scripts/write_schema_fixtures.py`.
@@ -213,6 +231,13 @@ if generation or fixture parity fails. Pin ALab dependency requirements in owned
 manifests and retain upstream lock entries.
 
 ## Validation and reporting
+
+A `collect-part --scenario` invocation runs the exact Python wire tests named
+in those scenarios. The collector checks the protected process arguments and
+both the discovered and executed test identities. This lets independently
+declared scenarios finish when a different wire test fails. A scenario that
+requires the failed test remains open. Running the full feature still runs
+the entire fixture module.
 
 Focused native controllers should source `alab/focused-tests.sh` inside the
 already-admitted native profile, then call the shared capture helper:
@@ -303,6 +328,208 @@ are checked declarations: the caller must capture the real command status and
 source during execution. A record is not an authenticated execution receipt, and
 the tool cannot infer semantic coverage or live entitlement from test names.
 Existing focused observations at a different source cannot simply be relabeled.
+An affected feature can opt in to mandatory Rust test groups through
+`required_libtest_groups` in its committed inventory. Final validation uses
+that candidate's recipes to resolve the exact test names for each scenario
+that selects those groups. For the specific-refusal scenario, provider recovery
+requires the live refusal test and all four replay tests. This check applies
+to cached and imported evidence as well as a fresh run. Independent captures
+can supply different required names for the same scenario. Partial records
+can contribute a subset, and their union must contain every required name
+with a passing libtest result before the complete bundle qualifies.
+Historical candidates are judged against the contract in their own source.
+
+The collector maps affected scenarios to named tests in
+[`feature_recipes/scenarios.json`](../feature_recipes/scenarios.json). From the
+checkout that owns a pending sync, inspect the requested features and run their tests.
+
+```sh
+python3 alab/feature_campaign.py request --repo .git/alab-sync
+python3 alab/feature_campaign.py run --repo .git/alab-sync
+```
+
+For an upstream transport review, run either protected check directly. Set
+`candidate_worktree` to the absolute path of the clean candidate checkout and
+`output` to a fresh absolute directory for these receipts.
+
+```sh
+candidate=$(git -C "$candidate_worktree" rev-parse HEAD)
+mkdir -p "$output/code-mode/artifacts" "$output/connector/artifacts"
+alab/feature_recipes/run.sh outer "$candidate_worktree" "$candidate" \
+  "$output/code-mode/artifacts" code-mode-stdio >"$output/code-mode/run.log" 2>&1
+alab/feature_recipes/run.sh outer "$candidate_worktree" "$candidate" \
+  "$output/connector/artifacts" connector-logging \
+  connector_results_reach_websocket_without_payload_logs >"$output/connector/run.log" 2>&1
+```
+
+`code-mode-stdio` runs the process-owned host's gRPC session test and retains
+the matching CLI and host under `artifacts/bin`, with their Cargo metadata
+and artifact messages under `artifacts/helpers`. It selects the compiled
+integration test from Cargo's messages and launches it with that retained host.
+`connector-logging` requires
+one exact test name from the `codex-api` WebSocket logging integration target.
+Both checks run on request and leave frozen campaign coverage to its declared
+scenario recipes.
+
+The scheduled sync runs the native gate first. When its recorded failure requests
+a missing feature bundle, the sync runs the matching recipes. If every scenario
+has a recipe and the checks pass, it submits the same candidate to the full
+native gate once more. Both gate runs retain independent records. If a feature
+has no recipe or a scenario has an empty group list, the sync collects the
+runnable scenarios across all affected features, reports the missing scenario
+numbers and exits 1. The resulting part can be imported once coverage is
+complete.
+
+The collector verifies the native gate record and its log digest, freezes the
+recorded source, base and integrated upstream, and checks the scenario text
+against its recipes. A changed scenario contract stops collection before any
+build. The normal source-selected compiler, cache registrar and guarded runtime
+execute the tests. Candidate Python runs under the same protected profile as
+the native tests. It writes its named results to the declared artifact directory
+and uses the profile's temporary scratch for fixtures. The outer command guardian
+records its completion outside the writable artifact directory. One package
+test owns a narrower native profile. The reviewed host fixture only accepts
+identical package and profile controllers, then runs the candidate's dispatcher
+and policy inside that profile and checks the kernel's read and write decisions.
+A changed controller requires review. A managed detached worktree keeps its
+native target warm.
+`--workspace` can reuse a dedicated, clean detached worktree and fast-forward
+it to the requested source. Pass an independently collected `--part` to
+either command to validate its original scope and subtract its exact named
+tests from the work still needed. A name shared across stages requires a
+fresh execution. The existing part's declarations stay on their original
+scenarios.
+
+When one affected feature is ready before the others, collect its evidence
+against the recorded native failure. For example, run the skill-discovery
+recipe and retain the resulting part path.
+
+```sh
+python3 alab/feature_campaign.py collect-part --repo "$candidate_worktree" \
+  --record "$native_record" --feature skill-discovery
+```
+
+The JSON result names the file in `part`. The file keeps the entire frozen
+inventory and fills only the selected feature's checks. Receipts and captured
+logs remain in the local campaign directory. A later complete `run --part`
+against the same source, upstream and base can reuse those executions. The
+scheduled sync still requires every affected feature before compilation.
+
+A stopped single-feature run may have finished every test for some of its
+scenarios. Recover those rows using the original clean producer and candidate
+checkouts, the native gate record, and the exact campaign directory reported
+on stderr.
+
+```sh
+python3 alab/feature_campaign.py recover-part --repo "$candidate_worktree" \
+  --record "$native_record" --from-run "$stopped_run" --producer "$collector_worktree" \
+  --output "$evidence_dir/recovered-part.json"
+```
+
+The result lists the recovered and unresolved scenario numbers and returns the
+stopped stage's nonzero exit status. The output is created only when an entire
+scenario satisfies the candidate and producer selections. The candidate and its
+original execution workspace must retain the recorded source. The original
+collector path may be in a separate clean clone. It must contain the exact
+recorded recipe at the candidate commit or a revision published to private main.
+Recovery compares each prospective row's full stage and test selection with the
+candidate's registration. Rows with a different or missing registration remain
+unresolved while other complete rows can be exported. Recovery checks the recorded commands, completion receipts
+and named test logs without executing a stage. Use the recovered file with the
+usual `--part` or portable-progress commands. A missing completion receipt or a
+signal requires fresh execution.
+
+A partially configured feature can collect individual runnable scenarios.
+Number them from one in their frozen `features.toml` order. For example, to
+collect the first and fourth scenarios when their recipes are ready, run
+
+```sh
+python3 alab/feature_campaign.py collect-part --repo "$candidate_worktree" \
+  --record "$native_record" --feature "$feature_id" --scenario 1 --scenario 4
+```
+
+The recipe must list every scenario in source order. An empty `groups` list
+marks a pending scenario. Selecting one fails before execution, and `request`
+lists the feature as unsupported for a complete run. Each selection gets its
+own receipt directory and fills only its numbered rows in the part. Repeating
+the same selection validates those receipts. Once every affected feature has
+complete recipes, repeat `--part` on the full run to import independent
+observations and execute the remaining checks.
+
+Use the same cross-feature selection as the scheduled sync to collect a single
+part directly. Shared stages run once for all selected scenarios. The request
+reports unimplemented rows under `scenarios_without_recipes`, using the same
+one-based numbers as `--scenario`. Running the command again validates the
+previous stage receipts against the same source, base and recipes.
+
+```sh
+python3 alab/feature_campaign.py collect-ready --repo "$candidate_worktree" \
+  --record "$native_record"
+```
+
+To count the scenarios covered by local campaign parts, use the source,
+upstream frontier and base from their recorded gate.
+
+```sh
+python3 alab/feature_evidence.py progress --repo "$candidate_worktree" \
+  --source "$candidate" --upstream "$upstream" --base "$base" \
+  --record "$first_part" --part "$second_part"
+```
+
+Add `--summary` to see the candidate, how many ALab release scenarios have
+verified evidence, and which scenario numbers still need a result.
+The JSON output gives the total and per-feature counts, plus the number and
+description of every pending scenario. A row needs a verified observation and
+every typed test name required by the frozen inventory. Repeated parts count
+each row once. Invalid captures fail the command. For a portable primary record,
+pass its bundle directory with `--log-root`. Additional `--part` records use
+their own absolute log paths. Omit `--base` for an unscoped inventory.
+This read-only report grants no release qualification.
+
+To preserve a partial run for review on a different checkout or machine,
+use `export-progress` with the same records and a fresh destination.
+It copies the verified captures under their content hashes and writes
+`progress-record.json` after it rechecks them. Move the whole directory
+together. A checkout containing the three commits can reproduce the
+original counts after the old log paths disappear.
+
+```sh
+python3 alab/feature_evidence.py export-progress --source "$candidate" \
+  --upstream "$upstream" --base "$base" --record "$first_part" \
+  --part "$second_part" --destination "$archive"
+
+python3 alab/feature_evidence.py progress --source "$candidate" \
+  --upstream "$upstream" --base "$base" --log-root "$archive" \
+  --record "$archive/progress-record.json"
+```
+
+A later `export-progress` can take this portable record first with its
+`--log-root` and add new local parts for the same source. Release bundle
+publication continues to require complete coverage.
+
+Results live under the common Git directory in `alab-feature-campaign/`.
+Rerunning validates completed stage receipts and named test logs. The runner
+records each precompiler cache refusal and can retry it twice. A test failure
+stops the run with its actual status. After changing an execution condition,
+`--new-run` creates a separate run and preserves earlier attempts. A completed
+campaign atomically installs a validated bundle and invokes the ordinary
+feature gate. Its receipt covers the frozen upstream review. Native
+certification, signing, publication and running-binary adoption still have
+their own gates.
+
+A feature-stage leader becomes the authenticated `atpkg-publish toolchain run`
+process. On cancellation the publisher signals its original controller and
+waits for its native cohort to drain. The surviving campaign custodian holds
+the workspace lock through that wait, including when the collector dies.
+A cooperating stage may finish work already in flight before it returns 143.
+
+A forced loss of the native publisher itself removes the original cohort
+observer. The public toolchain interface exposes no way to reattach to that
+run. Retain the attempted log and receipt, keep that worktree at its recorded
+source until its original owners settle, and use a fresh detached worktree
+for independent qualification. A changed log digest invalidates the attempt.
+[Cancellation decision and evidence](../reviews/feature-stage-cancellation-2026-11-18.md)
+
 For portable retention, export a completed local record and its log bytes:
 
 ```sh
@@ -316,6 +543,18 @@ input record unchanged. Identical logs share one file. The bundle can move as a
 unit without its original logs; validation requires exact `logs/<sha256>.log`
 paths and refuses symlinks, escaping paths, missing files and changed bytes.
 Export runs no tests and provides no new execution or semantic authority.
+
+Independent workers can fill in copies of the same snapshot. Pass the first
+copy as `--record` and each additional copy as `--part` to `bundle`. All copies
+use the same candidate, upstream, inventory and review base, and leave unexecuted
+scenarios with an empty `checks` list. Export verifies each observation against
+its captured log, retains distinct checks for the same scenario and writes the
+bundle once the combined record covers every required scenario.
+
+```sh
+python3 alab/feature_evidence.py bundle --source "$candidate" --upstream "$upstream" \
+  --base "$base" --record "$build_checks" --part "$provider_checks" --destination "$bundle"
+```
 
 For an upstream integration, `--base <pre-sync-main-sha>` derives the affected
 feature set from complete committed intake reviews. Use the same base for
@@ -349,6 +588,16 @@ export with `feature_evidence.py bundle` to that default directory. Run
 `alab/sync.sh --continue` to retry qualification. Admission reads and rechecks the
 same bundle after interruption; a partial export never authorizes compilation.
 An adaptation or a changed integration base requires new matching evidence.
+
+If a retained bundle lacks a required case, keep it for review and capture the
+missing tests at the same candidate, upstream and base. Use the `bundle` command
+above with the original local observations, any additional `--part` records,
+and a fresh absolute destination in `$bundle`. Select that completed bundle
+when resuming the sync.
+
+```sh
+ALAB_FEATURE_BUNDLE="$bundle" alab/sync.sh --continue
+```
 
 `ALAB_FEATURE_BUNDLE` can name an absolute retained bundle elsewhere; the native
 gate adds that directory as read-only access in its existing protected profile.
@@ -402,6 +651,9 @@ unsupported, ambiguous, changed or unreadable input stays unknown with an error;
 the remaining source/lag and review observations still run. Stages without explicit
 inputs remain unknown. Fetch freshness, qualification, promotion and live model
 entitlement are not inferred from any of these inputs.
+The observer resolves the supplied package and executable pointers again after
+reading their manifests. If atpkg switches a pointer during that read, the
+affected stage reports the change. A fresh read can then identify the new build.
 Use the package manager's registered executable pointer, which may differ from
 its dispatcher on `PATH`. An opaque command shim without a directly associated
 artifact manifest stays unknown; the observer never runs it to guess its target.
@@ -409,9 +661,11 @@ artifact manifest stays unknown; the observer never runs it to guess its target.
 Extend this report with fetched/integrated/qualified/packaged/selected/running
 SHAs, fetch time, pending commit count and oldest pending age, current blocker,
 feature coverage gaps, and links to intake and qualification evidence. Distinguish
-"unknown" from "zero". Check installed identity explicitly; main landing does not
-mean a running session adopted it. Retain last known good package for rollback;
-rollback selects that artifact and never rewrites source history.
+"unknown" from "zero". To qualify a live update, start a conversation on the
+previous signed build, observe it adopt the new signed executable, and verify the
+next request succeeds on the same thread with its earlier history. Retain the
+last known good package for rollback, which selects that artifact and preserves
+source history.
 
 `sync.sh` runs `check.sh` through `qualification.py` and retains each attempt under
 `<git-common-dir>/alab-qualification/<source>/run-*`. The recorder preserves the

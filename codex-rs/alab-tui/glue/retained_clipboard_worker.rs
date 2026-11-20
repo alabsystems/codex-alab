@@ -17,8 +17,6 @@ pub(crate) use scopes::ScopeRestored;
 mod checkpoint;
 pub(crate) use checkpoint::BoundClipboard;
 pub(crate) use checkpoint::ClipboardData;
-pub(crate) use checkpoint::PreparedClipboard;
-pub(crate) use checkpoint::SealedClipboard;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {

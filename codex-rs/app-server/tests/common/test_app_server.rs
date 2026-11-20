@@ -146,6 +146,9 @@ use crate::json_logging::JsonLogCapture;
 use crate::local_websocket_exec_server::LocalWebsocketExecServer;
 use crate::rpc_delay::WebsocketDelayInterposer;
 
+#[path = "../../../alab-core/glue/tool_result_recovery_fixture.rs"]
+mod alab_recovery_fixture; // ALAB(tool-result-recovery): stop and reap the actual test child before reopening its thread.
+
 pub struct TestAppServer {
     next_request_id: AtomicI64,
     /// Retain this child process until the client is dropped. The Tokio runtime

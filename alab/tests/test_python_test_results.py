@@ -26,6 +26,28 @@ class PythonTestResultsTests(unittest.TestCase):
     def successful(self):
         return self.execute(lambda test: print('captured test output'))
 
+    def stopped(self, include_later):
+        executed = []
+
+        class Stopping(unittest.TestCase):
+            def test_one(self):
+                executed.append('first')
+
+            def run(self, result=None):
+                result = super().run(result)
+                result.stop()
+                return result
+
+        class Later(unittest.TestCase):
+            def test_two(self):
+                executed.append('second')
+                self.fail('the stopped selection must not hide this failure')
+
+        cases = [Stopping('test_one')]
+        if include_later:
+            cases.append(Later('test_two'))
+        return RESULTS.execute(unittest.TestSuite(cases)), executed
+
     def test_pass_captures_name_output_and_completion(self):
         record = self.successful()
         self.assertEqual(record['exit_status'], 0)
@@ -74,9 +96,31 @@ class PythonTestResultsTests(unittest.TestCase):
                 raise RuntimeError('fixture failed')
 
             record = self.execute(lambda test: None, fixture)
+            self.assertTrue(record['completed'])
             self.assertEqual(record['exit_status'], 1)
             self.assertEqual(record['tests_run'], 0)
             self.assertEqual(len(record['tests']), 1)
+
+    def test_stop_before_remaining_selection_keeps_an_incomplete_failed_record(self):
+        record, executed = self.stopped(include_later=True)
+        self.assertEqual(executed, ['first'])
+        self.assertEqual(record['tests_run'], 1)
+        self.assertEqual(record['tests'][0]['status'], 'passed')
+        self.assertTrue(record['tests'][0]['finished'])
+        self.assertFalse(record['completed'])
+        self.assertEqual(record['exit_status'], 1)
+        with self.assertRaises(ValueError):
+            RESULTS.passed_tests(record)
+
+    def test_stop_after_last_case_still_refuses_complete_success(self):
+        record, executed = self.stopped(include_later=False)
+        self.assertEqual(executed, ['first'])
+        self.assertEqual(record['tests_run'], 1)
+        self.assertEqual(record['tests'][0]['status'], 'passed')
+        self.assertFalse(record['completed'])
+        self.assertEqual(record['exit_status'], 1)
+        with self.assertRaises(ValueError):
+            RESULTS.passed_tests(record)
 
     def test_empty_selection_and_repeated_ids_cannot_qualify(self):
         self.assertEqual(RESULTS.execute(unittest.TestSuite())['exit_status'], 1)
@@ -126,6 +170,46 @@ class PythonTestResultsTests(unittest.TestCase):
             command[command.index('test_sample.py')] = 'missing_*.py'
             command[-1] = str(root / 'empty.json')
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 1)
+
+    @unittest.skipUnless(sys.platform != 'win32', 'requires POSIX SIGINT delivery')
+    def test_cli_handled_sigint_retains_incomplete_results_and_healthy_selection_still_passes(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            for interrupted in (True, False):
+                with self.subTest(interrupted=interrupted):
+                    suite = root / ('stopped' if interrupted else 'healthy')
+                    suite.mkdir()
+                    first, second = suite / 'first', suite / 'second'
+                    (suite / 'test_signal.py').write_text(
+                        'import os, signal, unittest\nfrom pathlib import Path\n'
+                        'class SignalSelection(unittest.TestCase):\n'
+                        ' def test_01(self):\n'
+                        f'  Path({str(first)!r}).write_text("first body ran")\n'
+                        '  unittest.installHandler()\n'
+                        + ('  os.kill(os.getpid(), signal.SIGINT)\n' if interrupted else '')
+                        + ' def test_02(self):\n'
+                        f'  Path({str(second)!r}).write_text("second body ran")\n'
+                        + ('  self.fail("selected failure must not disappear")\n' if interrupted else
+                           '  self.assertTrue(True)\n'))
+                    output = suite / 'result.json'
+                    command = [sys.executable, '-I', '-B', str(SCRIPT), '--start-directory',
+                               str(suite), '--pattern', 'test_signal.py', '--record', str(output)]
+                    done = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                    record = json.loads(output.read_text())
+                    self.assertEqual(first.read_text(), 'first body ran')
+                    self.assertEqual(second.exists(), not interrupted)
+                    self.assertEqual(record['tests_run'], 1 if interrupted else 2)
+                    self.assertTrue(all(row['finished'] and row['status'] == 'passed'
+                                        for row in record['tests']))
+                    self.assertEqual(record['completed'], not interrupted)
+                    self.assertEqual(record['exit_status'], int(interrupted))
+                    self.assertEqual(done.returncode, int(interrupted), done.stdout + done.stderr)
+                    self.assertEqual(done.stderr, '')
+                    if interrupted:
+                        with self.assertRaises(ValueError):
+                            RESULTS.passed_tests(record)
+                    else:
+                        self.assertEqual(len(RESULTS.passed_tests(record)), 2)
 
 
 if __name__ == '__main__':

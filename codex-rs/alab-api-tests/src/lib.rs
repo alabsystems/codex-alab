@@ -46,3 +46,34 @@ mod websocket_proxy_error_privacy_tests;
 mod websocket_rejection_body_tests;
 #[cfg(test)]
 mod websocket_semantic_error_ids_tests;
+
+#[cfg(test)]
+fn streaming_request(model: &str, prompt: impl Into<String>) -> codex_api::ResponsesApiRequest {
+    use codex_protocol::models::ResponseInputItem;
+    use codex_protocol::models::input_text;
+
+    let message = ResponseInputItem::Message {
+        role: "user".into(),
+        content: vec![input_text(prompt)],
+        phase: None,
+    };
+    codex_api::ResponsesApiRequest {
+        model: model.into(),
+        stream: true,
+        service_tier: None,
+        input: vec![message.into()],
+        tools: None,
+
+        tool_choice: "auto".into(),
+        parallel_tool_calls: true,
+        reasoning: None,
+        store: false,
+        stream_options: None,
+        include: vec![],
+        prompt_cache_key: None,
+        prompt_cache_options: None,
+        text: None,
+        client_metadata: None,
+        access_programs: None,
+    }
+}

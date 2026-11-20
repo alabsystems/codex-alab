@@ -282,7 +282,7 @@ impl SampleTask {
                 input.additional_context.insert(
                     "thread_snapshot".to_string(),
                     AdditionalContextEntry::new(
-                        THREAD_SNAPSHOT_NOTE.to_string(),
+                        codex_alab_core::execution::pending_sample_note(THREAD_SNAPSHOT_NOTE).to_string(), // ALAB(tool-result-recovery): a pending call can still finish in its source.
                         AdditionalContextKind::Application,
                     ),
                 );

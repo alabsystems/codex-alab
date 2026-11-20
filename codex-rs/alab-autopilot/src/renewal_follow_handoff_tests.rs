@@ -643,6 +643,7 @@ fn point_usage_wall(h: &Harness) -> (Option<Instant>, Option<String>) {
         Some(Wall::Usage {
             reset_at,
             reset_label,
+            ..
         }) => (reset_at, reset_label),
         wall => panic!("the ended turn stands at no usage wall: {wall:?}"),
     }
@@ -711,11 +712,15 @@ async fn a_yes_ended_turn_stands_at_the_reads_wall(
         "{window:?}: the 429 named {named_after:?} from the window's reset: the wall resets \
          {off:?} from the usage read's"
     );
-    let label = chrono::DateTime::from_timestamp(read.resets_at, 0)
+    let reset = chrono::DateTime::from_timestamp(read.resets_at, 0)
         .unwrap_or_else(|| panic!("the read's reset"))
-        .with_timezone(&chrono::Local)
-        .format("%H:%M")
-        .to_string();
+        .with_timezone(&chrono::Local);
+    let label = if reset.date_naive() == chrono::Local::now().date_naive() {
+        reset.format("%H:%M")
+    } else {
+        reset.format("%H:%M on %Y-%m-%d")
+    }
+    .to_string();
     assert_eq!(
         reset_label.as_deref(),
         Some(label.as_str()),
@@ -827,6 +832,7 @@ fn move_intent(h: &Harness, purpose: Purpose, account: &str, user: &str) -> Owed
         renewal: Some(AccountHandoff {
             purpose,
             destination: None,
+            limit: None,
             openai_scope: true,
             local: false,
             account: identity.account,

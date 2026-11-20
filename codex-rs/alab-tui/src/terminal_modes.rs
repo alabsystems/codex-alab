@@ -412,10 +412,6 @@ mod native {
         state.original.is_some() && admission().committed()
     }
     include!("terminal_original_editor_modes.rs");
-    #[cfg(test)]
-    mod original_editor_tests {
-        include!("terminal_original_editor_modes_tests.rs");
-    }
     pub(super) fn editor_owned() -> bool {
         ORIGINAL
             .lock()
@@ -454,6 +450,10 @@ mod native {
         let mode = snapshot.original.decode(running)?;
         state.original = Some(Original { terminal, mode });
         Ok(())
+    }
+    #[cfg(test)]
+    mod original_editor_tests {
+        include!("terminal_original_editor_modes_tests.rs");
     }
 }
 #[cfg(all(test, unix))]

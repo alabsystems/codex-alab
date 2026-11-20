@@ -388,6 +388,7 @@ fn only_selected_request_refusals_use_event_ids_and_transport_headers_keep_prior
             token_usage: None,
             usage_metadata: None,
             reasoning_removals: None,
+            interrupted: false,
             end_turn: None,
         };
         assert!(super::super::websocket_result(Some(&diagnostic), Ok(completed)).is_ok());
@@ -602,6 +603,7 @@ fn status_qualified_provider_errors_preserve_values_without_frame_ids() {
             ApiError::ModelNotFound {
                 message: PRIVATE.into(),
                 status: Some(http::StatusCode::NOT_FOUND),
+                alab_empty_stream: false,
             },
             "model_not_found",
         ),
@@ -639,7 +641,7 @@ fn status_qualified_provider_errors_preserve_values_without_frame_ids() {
             };
             assert_eq!(std::mem::discriminant(&returned), original_kind);
             match returned {
-                ApiError::ModelNotFound { message, status }
+                ApiError::ModelNotFound { message, status, .. }
                 | ApiError::ContentPolicyViolation { message, status } => {
                     assert_eq!(message, PRIVATE);
                     assert_eq!(status, original_status);

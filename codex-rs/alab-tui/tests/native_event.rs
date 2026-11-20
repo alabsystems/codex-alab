@@ -73,6 +73,7 @@ fn a_native_event_moves_the_upgrade_scan_alone_and_still_refuses_its_commit() {
         renewal: Some(AccountHandoff {
             purpose: Purpose::Login,
             destination: None,
+            limit: None,
             openai_scope: true,
             local: false,
             account: "a".repeat(64),

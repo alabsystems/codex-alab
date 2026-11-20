@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "base": "24e236514bebcef874c2d38ce5df26164aa50ca4",
+  "target": "ca21fe65d18a9b6326759fb4263c65dfbb645aa5",
+  "frontier": "24e236514bebcef874c2d38ce5df26164aa50ca4",
+  "commits": [
+    {
+      "sha": "ca21fe65d18a9b6326759fb4263c65dfbb645aa5",
+      "subject": "Tag Guardian review counts with turn origin (#62225)",
+      "paths": [
+        "codex-rs/core/src/guardian/review_request.rs",
+        "codex-rs/core/tests/suite/guardian_automation_metrics_tests.rs",
+        "codex-rs/core/tests/suite/guardian_review.rs",
+        "codex-rs/ext/guardian-reviewer/src/metrics.rs",
+        "codex-rs/ext/guardian-reviewer/src/reporting.rs",
+        "codex-rs/ext/guardian-reviewer/src/reporting_tests.rs",
+        "codex-rs/ext/guardian-reviewer/src/review_tests.rs"
+      ],
+      "classes": [
+        "telemetry"
+      ],
+      "features": [
+        "execution-continuity",
+        "product-policy"
+      ],
+      "decision": "adopt",
+      "reason": "Count Guardian reviews by the issuing turn provenance while preserving review policy and bounded metric labels.",
+      "evidence": [
+        "Reviewed the exact seven paths against 24e236514b. Binary diff SHA-256 0d8d411d11058fc278eadea913f27a3dc9ae8ecb1e20c6e266cce7f0a30cccbf.",
+        "The review captures the admitted turn trigger at report construction, including the trigger inherited by a delegated turn. Later steering has no effect on the captured label.",
+        "Only the count gains turn_origin. Known automation triggers coalesce to automation, missing or empty goes to unknown, and every remaining input goes to other. Raw client text is excluded from labels.",
+        "Source-declared controls only. guardian_metrics_distinguish_automation_main_and_subagent_turns checks actual turn propagation. review_report_bounds_turn_origin_on_both_verdicts covers bounded classification on both verdicts."
+      ],
+      "revisit": "Run the report labeling controls and actual root/delegated turn metrics fixture with account and review policy preserved."
+    }
+  ]
+}

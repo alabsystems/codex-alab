@@ -629,4 +629,3 @@ mod jobs;
 
 #[path = "retained_original_editor_c0_stage.rs"]
 mod c0;
-pub(crate) use c0::Transfer as C0EditorTransfer;

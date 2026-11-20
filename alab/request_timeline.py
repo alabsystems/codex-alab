@@ -122,9 +122,12 @@ def _sqlite_failure(error):
 
 
 def read_timeline(db, *, pid=None, process_uuid=None, thread_id=None,
-                  limit=100, since=None):
+                  limit=100, since=None, target=None):
     """Return latest selected rows in row-ID order, without attempt pairing."""
     _validate_scope(pid, process_uuid, thread_id, limit, since)
+    if target is not None and (type(target) is not str or target not in TARGETS):
+        raise TimelineError("invalid_target")
+    targets = TARGETS if target is None else (target,)
     try:
         path = Path(db).resolve(strict=True)
         before = path.stat()
@@ -154,10 +157,10 @@ def read_timeline(db, *, pid=None, process_uuid=None, thread_id=None,
         connection.execute("BEGIN")
         _schema(connection)
         connection.set_authorizer(_authorize)
-        target_placeholders = ",".join("?" for _ in TARGETS)
+        target_placeholders = ",".join("?" for _ in targets)
         clauses = [f"target COLLATE BINARY IN ({target_placeholders})",
                    "level COLLATE BINARY IN (?,?,?,?,?)"]
-        arguments = [*TARGETS, *LEVELS]
+        arguments = [*targets, *LEVELS]
         if pid is not None:
             clauses.append("process_uuid LIKE ?")
             arguments.append(f"pid:{pid}:%")
@@ -205,10 +208,10 @@ def read_timeline(db, *, pid=None, process_uuid=None, thread_id=None,
     rows = []
     previous = {}
     invalid_scope_rows = 0
-    for identity, seconds, nanos, level, target, process, thread in reversed(raw_rows[:limit]):
+    for identity, seconds, nanos, level, row_target, process, thread in reversed(raw_rows[:limit]):
         if (type(identity) is not int or not 1 <= identity <= 2**63 - 1
                 or type(level) is not str or level not in LEVELS
-                or type(target) is not str or target not in TARGETS):
+                or type(row_target) is not str or row_target not in targets):
             raise TimelineError("invalid_metadata")
         process = _process(_ascii(process))
         thread = _canonical_uuid(_ascii(thread))
@@ -220,7 +223,7 @@ def read_timeline(db, *, pid=None, process_uuid=None, thread_id=None,
         timestamp = (seconds * 1_000_000_000 + nanos if
                      type(seconds) is int and 0 <= seconds <= 2**63 - 1
                      and type(nanos) is int and 0 <= nanos < 1_000_000_000 else None)
-        key = (process, thread, target, level) if process and thread else None
+        key = (process, thread, row_target, level) if process and thread else None
         gap = None
         gap_status = "identity_unavailable" if key is None else "first_selected_row"
         if timestamp is None:
@@ -237,14 +240,16 @@ def read_timeline(db, *, pid=None, process_uuid=None, thread_id=None,
             previous[key] = timestamp
         rows.append({"id": identity, "ts": seconds if timestamp is not None else None,
                      "ts_nanos": nanos if timestamp is not None else None,
-                     "level": level, "target": target, "process_uuid": process,
+                     "level": level, "target": row_target, "process_uuid": process,
                      "thread_id": thread, "selected_row_gap_ns": gap,
                      "row_gap_status": gap_status})
+    scope = {"pid": pid, "process_uuid": process_uuid, "thread_id": thread_id, "since_epoch_seconds": since}
+    if target is not None:
+        scope["target"] = target
     return {"schema": "logs_2/feedback_log_body", "rows": rows,
             "limit": limit, "more_rows_available": len(raw_rows) > limit,
             "omitted_invalid_scope_rows": invalid_scope_rows,
-            "scope": {"pid": pid, "process_uuid": process_uuid,
-                      "thread_id": thread_id, "since_epoch_seconds": since},
+            "scope": scope,
             "gap_meaning": "Stored wall-clock gaps between selected rows with the same validated process, thread, target and level; not retry, deadline or outage durations."}
 
 
@@ -261,6 +266,7 @@ def main(argv=None):
     parser.add_argument("--pid", type=int)
     parser.add_argument("--process-uuid", help="exact canonical pid:N:UUID identity")
     parser.add_argument("--thread-id", help="canonical thread UUID")
+    parser.add_argument("--target", help="select one exact diagnostic target: " + ", ".join(TARGETS))
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--since", type=int, help="inclusive epoch seconds")
     arguments = parser.parse_args(argv)
@@ -270,7 +276,7 @@ def main(argv=None):
             result = read_timeline(arguments.db, pid=arguments.pid,
                                    process_uuid=arguments.process_uuid,
                                    thread_id=arguments.thread_id, limit=arguments.limit,
-                                   since=arguments.since)
+                                   since=arguments.since, target=arguments.target)
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
             return 0
         except TimelineError:

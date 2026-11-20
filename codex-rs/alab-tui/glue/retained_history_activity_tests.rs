@@ -397,3 +397,168 @@ fn malformed_cycle_missing_detail_and_changed_dynamic_alias_are_refused() -> io:
         "dynamic alias changed its original call identity",
     )
 }
+
+#[test]
+fn retained_streamed_preview_zero_only_finishes_after_an_untimed_observed_zero() -> io::Result<()> {
+    use crate::exec_cell::CommandOutput;
+    use codex_app_server_protocol::CommandExecutionStatus;
+
+    let mut pending = new_active_exec_command(
+        "call".into(),
+        vec!["printf".into(), "preview".into()],
+        Vec::new(),
+        CommandExecutionSource::Agent,
+        None,
+        false,
+    );
+    assert!(pending.append_output("call", "first"));
+    let mut capture = Capture::default();
+    let root = capture.intern(&(Arc::new(pending) as Arc<dyn HistoryCell>))?;
+    let mut lines = native::Capture::default();
+    let bytes = capture.encode(&mut lines, LIMIT)?;
+    let mut graph: serde_json::Value = serde_json::from_slice(&bytes).map_err(native::invalid)?;
+    assert_eq!(graph["schema"], json!(6));
+    graph["schema"] = json!(5);
+    let call = &mut graph["cells"][0]["original"]["calls"][0];
+    assert_eq!(call["callId"], json!("call"));
+    assert!(call["duration"].is_null());
+    let output = &mut call["output"];
+    assert!(output["liveOutput"].is_object());
+    assert!(output.get("reportedStatus").is_none());
+    // Before optional exit codes, CommandOutput::default() encoded a streamed preview as zero.
+    output["exitCode"] = json!(0);
+    let bytes = serde_json::to_vec(&graph).map_err(native::invalid)?;
+    let mut shared = native::Restored::new(lines.export()?)?;
+    let mut restored =
+        Restored::decode(&bytes, LIMIT, &mut shared, &mut RestoreContext::default())?.cell(root)?;
+    {
+        let call = native_cell::<ExecCell>(&mut restored)?;
+        assert!(call.is_active());
+        assert!(call.active_start_time().is_some());
+        assert_eq!(call.group.calls[0].output.as_ref().unwrap().exit_code, None);
+        let preview: Vec<_> = call
+            .transcript_lines(80)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            preview.iter().any(|line| line.contains("first")),
+            "{preview:?}"
+        );
+        assert!(
+            !preview
+                .iter()
+                .any(|line| line.contains('✓') || line.contains('✗')),
+            "{preview:?}"
+        );
+        assert!(call.append_output("call", " second\n"));
+        assert!(
+            call.transcript_lines(80)
+                .iter()
+                .any(|line| line.to_string() == "first second")
+        );
+        let result = CommandOutput::from_execution(
+            CommandExecutionStatus::Completed,
+            Some(0),
+            CommandExecutionSource::Agent,
+            Some("final output".into()),
+        );
+        assert!(call.complete_call("call", result, None::<Duration>));
+        assert!(!call.is_active());
+    }
+    let mut after = roundtrip(std::slice::from_ref(&restored))?;
+    assert_eq!(after.len(), 1);
+    let finished = native_cell::<ExecCell>(&mut after[0])?;
+    assert!(!finished.is_active());
+    assert!(finished.active_start_time().is_none());
+    let [call] = finished.group.calls.as_slice() else {
+        panic!("one restored command")
+    };
+    assert_eq!(call.call_id, "call");
+    assert_eq!(call.duration, None);
+    assert_eq!(
+        call.output.as_ref().and_then(|output| output.exit_code),
+        Some(0)
+    );
+    let result: Vec<_> = finished
+        .transcript_lines(80)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(result.iter().any(|line| line == "final output"));
+    assert_eq!(result.last().map(String::as_str), Some("✓"));
+    Ok(())
+}
+
+#[test]
+fn frozen_v5_command_graph_preserves_final_exit_and_rejects_v6_outcomes() -> io::Result<()> {
+    let mut graph = json!({
+        "schema": 5,
+        "cells": [{"kind": "exec", "original": {
+            "calls": [{
+                "callId": "exit-seven", "command": ["false"], "parsed": [],
+                "output": {"exitCode": 7, "aggregatedOutput": "original", "liveOutput": null},
+                "source": "agent", "startTime": null, "duration": {"secs": 1, "nanos": 0},
+                "interactionInput": null
+            }],
+            "details": {"entries": []}, "animationsEnabled": false
+        }}],
+        "inline": {"schema": 1, "caches": []}, "activity": {"rows": []}, "frames": 0,
+        "status": {"cards": [], "agents": [], "rates": [], "usage": {"estimates": [], "labels": []}}
+    });
+    let decode = |graph: &serde_json::Value| -> io::Result<Restored> {
+        let mut shared = native::Restored::new(native::Capture::default().export()?)?;
+        Restored::decode(
+            &serde_json::to_vec(graph).map_err(native::invalid)?,
+            LIMIT,
+            &mut shared,
+            &mut RestoreContext::default(),
+        )
+    };
+    let root = decode(&graph)?.cell(CellRef(0))?;
+    let exec = root.as_any().downcast_ref::<ExecCell>().unwrap();
+    assert!(!exec.is_active());
+    let output = exec.group.calls[0].output.as_ref().unwrap();
+    assert_eq!(output.exit_code, Some(7));
+    let mut capture = Capture::default();
+    capture.intern(&root)?;
+    let bytes = capture.encode(&mut native::Capture::default(), LIMIT)?;
+    let migrated: serde_json::Value = serde_json::from_slice(&bytes).map_err(native::invalid)?;
+    assert_eq!(migrated["schema"], json!(6));
+    assert_eq!(
+        migrated["cells"][0]["original"]["calls"][0]["output"],
+        graph["cells"][0]["original"]["calls"][0]["output"]
+    );
+
+    graph["cells"][0]["original"]["calls"][0]["output"]["reportedStatus"] = json!("failed");
+    assert!(decode(&graph).is_err());
+    // The widget can own a unique command outside the shared graph as well.
+    let mut empty = graph.clone();
+    let body = empty["cells"].as_array_mut().unwrap().pop().unwrap();
+    let mut shared = native::Restored::new(native::Capture::default().export()?)?;
+    let mut resources = RestoreContext::default();
+    let empty = Restored::decode(
+        &serde_json::to_vec(&empty).map_err(native::invalid)?,
+        LIMIT,
+        &mut shared,
+        &mut resources,
+    )?;
+    let unique = serde_json::from_value(body).map_err(native::invalid)?;
+    assert!(
+        empty
+            .restore_unique(unique, &mut shared, &mut resources)
+            .is_err()
+    );
+    graph["schema"] = json!(6);
+    assert!(decode(&graph).is_ok());
+
+    let output = &mut graph["cells"][0]["original"]["calls"][0]["output"];
+    output.as_object_mut().unwrap().remove("reportedStatus");
+    output["exitCode"] = json!(null);
+    assert!(decode(&graph).is_ok());
+    graph["schema"] = json!(5);
+    assert!(decode(&graph).is_err());
+    graph["schema"] = json!(7);
+    assert!(decode(&graph).is_err());
+    Ok(())
+}

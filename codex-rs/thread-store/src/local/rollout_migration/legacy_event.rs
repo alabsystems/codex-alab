@@ -310,8 +310,8 @@ pub(super) fn completed_item(
                 status: event.status.clone().into(),
                 aggregated_output: (!event.aggregated_output.is_empty())
                     .then(|| event.aggregated_output.clone()),
-                exit_code: Some(event.exit_code),
-                duration: Some(event.duration),
+                exit_code: event.observed_exit_code(), // ALAB(shell-output): keep an absent process exit distinct from old integer records.
+                duration: event.observed_duration(), // ALAB(shell-output): migrate only a recorded command duration.
             }),
             Some(event.turn_id.clone()),
         )),

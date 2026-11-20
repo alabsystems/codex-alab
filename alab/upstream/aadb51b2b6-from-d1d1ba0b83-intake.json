@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "base": "d1d1ba0b837d34f314b7f469896e8babbc91f949",
+  "target": "aadb51b2b60c488a7aa047775876c196eb60cb2f",
+  "frontier": "d1d1ba0b837d34f314b7f469896e8babbc91f949",
+  "commits": [
+    {
+      "sha": "aadb51b2b60c488a7aa047775876c196eb60cb2f",
+      "subject": "Test saved chat hover highlighting in the sidebar chooser (#62400)",
+      "paths": [
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/tests/sidebar_chooser_hover_tests.rs"
+      ],
+      "classes": [
+        "other"
+      ],
+      "features": [
+        "native-ui",
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Keep the upstream saved-chat hover regression unchanged. It exercises the same fullscreen chooser and dispatch used by the fork.",
+      "evidence": [
+        "The diff adds one test module and its registration. It introduces no production or generated files. The combined test module matches the upstream blob.",
+        "The fixture paints a saved chat with a title and preview and sends mouse movement through App::handle_tui_event. It inspects both background colors in the terminal buffer, checks that the selected row stays put, and observes a redraw entering the preview and leaving for the heading. Moving within the same saved row requests no extra redraw.",
+        "The fork retains its mouse-wheel, selection and retained-paint paths. The recorded target-scoped test complements the broader hover, click and draft-preservation controls."
+      ],
+      "revisit": "Run hovering_a_saved_chat_highlights_both_lines_without_moving_selection in the source-selected native TUI suite on the integrated commit."
+    }
+  ]
+}

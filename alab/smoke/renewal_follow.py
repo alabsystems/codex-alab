@@ -221,6 +221,7 @@ def validate_durable_plan(events, wall, expected_starts=2):
     starts = []
     calls = []
     outputs = []
+    first_terminal = None
     for index, event in enumerate(events):
         payload = event.get("payload", {})
         kind = payload.get("type")
@@ -228,10 +229,13 @@ def validate_durable_plan(events, wall, expected_starts=2):
             probe.require(kind != "plan_update", "unexpected persisted plan UI event")
             if kind in ("task_started", "turn_started"):
                 starts.append((index, payload.get("turn_id")))
-        if event.get("type") == "response_item":
-            if kind in ("function_call", "custom_tool_call", "tool_search_call"):
+            elif first_terminal is None and payload.get("turn_id") == wall and kind in (
+                    "task_complete", "turn_complete", "turn_aborted"):
+                first_terminal = index
+        if event.get("type") == "response_item" and isinstance(kind, str):
+            if kind in provider_fixture.TOOL_CALL_TYPES:
                 calls.append((index, payload))
-            elif kind in ("function_call_output", "custom_tool_call_output", "tool_search_output"):
+            elif kind in provider_fixture.TOOL_OUTPUT_TYPES:
                 outputs.append((index, payload))
     probe.require([turn for _, turn in starts] == [wall] * expected_starts,
                   "native recovery changed or duplicated original turn")
@@ -239,6 +243,10 @@ def validate_durable_plan(events, wall, expected_starts=2):
                   "completed plan call or output was lost or duplicated")
     call_index, call = calls[0]
     output_index, output = outputs[0]
+    for item in (call, output):
+        metadata = item.get("internal_chat_message_metadata_passthrough")
+        probe.require(metadata is None or (isinstance(metadata, dict) and metadata.get("turn_id") in (None, wall)),
+                      "completed plan tool record has invalid or conflicting turn attribution")
     probe.require(call.get("type") == "function_call" and call.get("name") == "update_plan"
         and call.get("call_id") == probe.CALL_ID,
         "completed plan call identity changed")
@@ -251,8 +259,11 @@ def validate_durable_plan(events, wall, expected_starts=2):
     probe.require(output.get("type") == "function_call_output"
         and output.get("call_id") == probe.CALL_ID and output.get("output") == "Plan updated",
         "completed plan output changed")
-    probe.require(starts[0][0] < call_index < output_index < starts[1][0],
+    probe.require(starts and starts[0][0] < call_index < output_index
+                  and (len(starts) == 1 or output_index < starts[1][0]),
                   "completed plan did not finish exactly once before native recovery")
+    if first_terminal is not None:
+        probe.require(output_index < first_terminal, "completed plan result was recorded after the first turn ended")
     return [turn for _, turn in starts]
 
 
@@ -302,13 +313,12 @@ def successor_rest(record, thread):
 
 def validate_completed_original_turn(events, wall, expected_starts=2):
     starts = validate_durable_plan(events, wall, expected_starts)
-    boundaries = [(index, event["payload"]) for index, event in enumerate(events)
+    boundaries = [event["payload"] for event in events
         if event.get("type") == "event_msg" and event.get("payload", {}).get("type") in
         ("task_started", "turn_started", "task_complete", "turn_complete", "turn_aborted")]
-    probe.require([payload.get("turn_id") for _, payload in boundaries] == [wall] * (2 * expected_starts)
-        and [payload["type"] for _, payload in boundaries] in
-        (["task_started", "task_complete"] * expected_starts,
-         ["turn_started", "turn_complete"] * expected_starts),
+    expected = [("task_started", "turn_started"), ("task_complete", "turn_complete")] * expected_starts
+    probe.require(len(boundaries) == len(expected) and all(
+        payload.get("turn_id") == wall and payload["type"] in kinds for payload, kinds in zip(boundaries, expected)),
         "original native turn did not complete exactly once after recovery")
     return starts
 
@@ -317,6 +327,7 @@ def validate_completed_original_turn(events, wall, expected_starts=2):
 QUOTA_ACCOUNTS = {"old": ("source", "source-account", "fixture-user"),
                   "new": ("target", "target-account", "target-user"),
                   "next": ("final", "final-account", "final-user")}
+ROOT_USAGE_PATH = "/api/codex/usage"  # Native usage_url_from_base for a fixture origin with no path.
 CREDITS_PATH = "/rate-limit-reset-credits"
 
 
@@ -330,15 +341,18 @@ def token_part(value):
 
 
 def access_token(generation, account="fixture-account", *, email="fixture@example.invalid",
-                 user="fixture-user"):
+                 user="fixture-user", account_user_id=None):
     """A fixture login's access token: an unsigned JWT, as a real one is a JWT.
 
     Its payload carries the identity claims of the login's id token, an expiry thirty
     days off (so no client refreshes it) and the private claim `fixture_generation`,
-    by which this fixture knows the login. It has no chatgpt_account_user_id.
+    by which this fixture knows the login. Account-scoped tests can supply a membership ID.
     """
+    claims = identity_claims(account, email, user)
+    if account_user_id is not None:
+        claims["https://api.openai.com/auth"]["chatgpt_account_user_id"] = account_user_id
     return token_part({"alg": "none"}) + "." + token_part({
-        **identity_claims(account, email, user), "exp": int(time.time()) + 30 * 86400,
+        **claims, "exp": int(time.time()) + 30 * 86400,
         "fixture_generation": generation}) + ".sig"
 
 
@@ -366,6 +380,12 @@ def bearer_generation(headers):
 def request_account(headers):
     """Which fixture login sent a request; never its bearer text."""
     return QUOTA_ACCOUNTS.get(bearer_generation(headers), (None,))[0]
+
+
+def routing_account_matches(headers, generation):
+    """Both test slots carry a workspace ID. Retain only whether its one header matched."""
+    account = QUOTA_ACCOUNTS.get(generation)
+    return account is not None and headers.get_all("ChatGPT-Account-Id", []) == [account[1]]
 
 
 def refresh_generation(payload):
@@ -1163,10 +1183,7 @@ def lost_login_verdict(root, events, requests, receipt, policy, old_auth, new_au
     proof["sourceUsageReadsByHost"] = len(own_reads)
     proof.update(host_pool_unmoved(root))
     proof.update(login_files_proof(old_auth, new_auth, logins))
-    typed = [text for request in requests for text in user_texts(request) if text != probe.PROMPT
-             and not text.lstrip().startswith("<")]
-    probe.require(not typed, "something was typed beside the original prompt")
-    proof.update(thread_proof(rollout))
+    proof.update(thread_proof(rollout, requests=requests))
     asks = [stamp for _, stamp in prepares if stamp <= ready]
     proof.update(
         policyPrintedCodexRotationLogin=True,
@@ -1201,7 +1218,7 @@ def login_move_watched(seen_us, now_us):
     return now_us >= seen_us + LOGIN_MOVED_WATCH_SECONDS * 1_000_000
 
 
-def thread_proof(rollout, answered=True):
+def thread_proof(rollout, answered=True, *, requests=()):
     """What the thread's own rollout says: where its turn ended, and what was typed.
 
     `rollout` is the thread's persisted events. Its turn ended once with codex's
@@ -1210,19 +1227,25 @@ def thread_proof(rollout, answered=True):
     prompt: the model's context (`<environment_context>` and the like) aside, no other
     user message exists.
     """
-    ends = [event["payload"] for event in rollout if event.get("type") == "event_msg"
-            and event.get("payload", {}).get("type") in ("task_complete", "turn_complete")]
-    errors = [(end.get("error") or {}).get("codex_error_info") for end in ends]
+    errors = []
+    for event in rollout:
+        if event.get("type") != "event_msg":
+            continue
+        payload = event["payload"]
+        kind = payload.get("type")
+        probe.require(kind != "turn_aborted", "login recovery rollout contains an aborted turn")
+        if kind in ("task_complete", "turn_complete"):
+            error = payload.get("error")
+            probe.require(error is None or (isinstance(error, dict) and error.get("codex_error_info") is not None),
+                          "turn completed with an unclassified error")
+            errors.append(error["codex_error_info"] if error is not None else None)
     probe.require(errors == (["unauthorized", None] if answered else ["unauthorized"]),
         "the turn did not end once at the login wall" + (" and once answered" if answered else
         " and stay there") + f": {errors}")
-    typed = [part.get("text") for event in rollout if event.get("type") == "response_item"
-             and event.get("payload", {}).get("type") == "message"
-             and event["payload"].get("role") == "user"
-             for part in event["payload"].get("content") or [] if isinstance(part, dict)]
-    typed = [text for text in typed if not (isinstance(text, str) and text.lstrip().startswith("<"))]
-    probe.require(typed == [probe.PROMPT],
-        f"the thread holds {len(typed)} typed user messages, not the one prompt")
+    try:
+        provider_fixture.check_unsteered_input(rollout, requests)
+    except provider_fixture.FixtureFault as error:
+        raise RuntimeError(str(error)) from error
     return {"turnEndedAtLoginWall": True, "userMessagesInThread": 1}
 
 
@@ -1232,15 +1255,17 @@ def thread_rollout(root, thread=None):
     events = []
     for rollout in sorted((root / "codex-home" / "sessions").rglob("*.jsonl")):
         if thread is None or thread in rollout.name:
-            events.extend(json.loads(line) for line in rollout.read_text().splitlines())
+            # Rollout records are separated by LF. Unicode line separators are valid message text.
+            with rollout.open("rb") as stream:
+                events.extend(json.loads(line.decode("utf-8")) for line in stream)
     return events
 
 
 def user_texts(request):
-    """The text of each user message part of a model request's input."""
-    return [part.get("text") for item in request["body"].get("input", [])
-            if item.get("type") == "message" and item.get("role") == "user"
-            for part in item.get("content", []) if isinstance(part, dict)]
+    try:
+        return provider_fixture.user_message_texts(request["body"].get("input"))
+    except provider_fixture.FixtureFault as error:
+        raise RuntimeError(str(error)) from error
 
 
 def login_move_evidence(root, events, new_auth):
@@ -1350,7 +1375,7 @@ def login_wall_stood(root, events, now_us):
             and now_us >= refused + LOGIN_WALL_HOLD_SECONDS * 1_000_000)
 
 
-def login_stayed_verdict(root, events, policy, case, old_auth, new_auth, logins, rollout, held_us):
+def login_stayed_verdict(root, events, policy, case, old_auth, new_auth, logins, rollout, held_us, *, requests):
     """The oracle of a lost-login case in which nothing is moved, and its record.
 
     `case` is the case's LOST_LOGIN_CASES entry, `held_us` the host's clock when the loop
@@ -1413,7 +1438,7 @@ def login_stayed_verdict(root, events, policy, case, old_auth, new_auth, logins,
         LOGIN_NOT_HELD + "the host traced a rotation line")
     proof.update(host_pool_unmoved(root))
     proof.update(login_files_proof(old_auth, new_auth, logins))
-    proof.update(thread_proof(rollout, answered=False))
+    proof.update(thread_proof(rollout, answered=False, requests=requests))
     proof.update(
         policyPrintedCodexRotationLogin=policy["codexRotationLogin"], policyLogins=policy["logins"],
         vetoKept=expected, stoppedBy="codex-alab's veto" if expected else "the host's policy prints no word",
@@ -1687,6 +1712,8 @@ def require_case_proof(case, report):
 
 
 class Model(probe.Mock):
+    limit = "codex"
+
     def __init__(self, root, weekly_quota=False, all_exhausted=False, chain=False, wall=None,
                  lost_login=None, wall_names_reset=True):
         super().__init__(False)
@@ -1771,6 +1798,14 @@ class Model(probe.Mock):
             return provider_fixture.usage("fixture-account", "fixture-user", week_used=0, allowed=True)
         generation = generation if generation in QUOTA_ACCOUNTS else "old"
         _, account, user = QUOTA_ACCOUNTS[generation]
+        if self.limit != "codex":
+            now = int(time.time())
+            spent = generation == "old" and self.source_walled
+            body = provider_fixture.usage(account, user, week_used=10, session_used=5, allowed=True, now=now)
+            body["additional_rate_limits"] = [provider_fixture.additional_limit(self.limit, self.limit,
+                allowed=not spent, primary=provider_fixture.window(0, provider_fixture.SESSION_WINDOW_SECONDS, 3600, now),
+                secondary=provider_fixture.window(100 if spent else 0, provider_fixture.WEEK_WINDOW_SECONDS, 86400, now))]
+            return body
         if self.wall is not None and generation == "old":
             with self.lock:
                 served = self.wall_served
@@ -1817,7 +1852,7 @@ class Model(probe.Mock):
         `usage` is the reading already taken for this response, when one was.
         """
         return provider_fixture.limit_headers(
-            self.usage_body(generation) if usage is None else usage, wall=wall)
+            self.usage_body(generation) if usage is None else usage, wall=wall, limit=self.limit)
 
     def refused(self, record, generation, message):
         """The 429 of a model request `generation`'s login sent at its wall.
@@ -1830,7 +1865,7 @@ class Model(probe.Mock):
         usage = self.usage_body(generation)
         reply = provider_fixture.check("refusal", provider_fixture.refusal(
             usage, message, headers=self.limit_headers(generation, wall=True, usage=usage),
-            names_reset=self.wall_names_reset))
+            names_reset=self.wall_names_reset, limit=self.limit))
         record["responseHeaders"] = reply["headers"]
         record["refusalNamedReset"] = "resets_at" in reply["body"]["error"]
         return reply["status"], json.dumps(reply["body"]).encode(), "application/json", None, record
@@ -1970,6 +2005,61 @@ def usage_figures(body):
             "sessionResetsIn": limit["primary_window"]["reset_after_seconds"]}
 
 
+def fixture_renewal_identity(generation):
+    """Native renewal identity of one fixture login, as written to its receipt."""
+    _, account, user = QUOTA_ACCOUNTS[generation]
+    return {key: hashlib.sha256(f"aterm/codex-renewal/{key}/v1\0{value}".encode()).hexdigest()
+            for key, value in (("account", account), ("user", user))}
+
+
+def native_usage_between_requests(events):
+    """Observed interval and whole native reads from the source wall to the first target request."""
+    wall = next((e.get("responseWrittenUs") for e in events if e.get("kind") == "foreground"
+                 and e.get("account") == "source" and e.get("status") == 429), None)
+    target = next((e for e in events if e.get("kind") == "foreground" and e.get("account") == "target"), None)
+    before = target.get("monotonicUs") if target is not None else None
+    # A pending target permits diagnostics. Once its request is recorded, both
+    # boundaries must be observed. A tie cannot establish strict ordering.
+    reads = [e for e in events if e.get("method") == "GET" and e.get("client") == "host"
+             and e.get("path", "").endswith("/usage") and "weekUsed" in e and "allowed" in e
+             and e.get("routingAccountMatched") is True and e.get("usageEndpointMatched") is True
+             and wall is not None and e.get("responseWrittenUs") is not None
+             and wall < e["monotonicUs"] <= e["responseWrittenUs"]
+             and (target is None or (before is not None and e["responseWrittenUs"] < before))]
+    return wall, before, reads
+
+
+def named_usage_readings(reads, limit):
+    return [(e.get("account"), e["sessionUsed"], e["weekUsed"], e["allowed"], named["weekUsed"], named["allowed"])
+            for e in reads if (named := e.get("additionalLimits", {}).get(limit))]
+
+
+def latest_handoff_usage_matches(reads, limit):
+    """Verify the last complete quota responses for both fixture accounts, including completion ties."""
+    for account, quota in (("source", (100, False)), ("target", (0, True))):
+        account_reads = [read for read in reads if read["account"] == account]
+        if not account_reads:
+            return False
+        last = max(read["responseWrittenUs"] for read in account_reads)
+        for read in account_reads:
+            if read["responseWrittenUs"] != last:
+                continue
+            bucket = read
+            if limit != "codex":
+                if (read["sessionUsed"], read["weekUsed"], read["allowed"]) != (5, 10, True):
+                    return False
+                bucket = read.get("additionalLimits", {}).get(limit) or {}
+            if (bucket.get("weekUsed"), bucket.get("allowed")) != quota:
+                return False
+    return True
+
+
+def named_usage_between_requests(events, limit):
+    """Completed native exchanges for the ordinary and named buckets during a handoff."""
+    _, _, reads = native_usage_between_requests(events)
+    return named_usage_readings(reads, limit)
+
+
 def spent_window_on_success(status, headers):
     """The header of an answered model response that states a spent window, or None.
 
@@ -1985,7 +2075,21 @@ def spent_window_on_success(status, headers):
 
 
 
-def serve(model, secure=True, issuer_only=False):
+def configure_provider(root, port, usage_url):
+    """Configure packaged Codex to use the authenticated TLS fixture and its usage service."""
+    probe.configure(root, port)
+    path = root / "codex-home" / "config.toml"
+    text = path.read_text().replace("requires_openai_auth = false", "requires_openai_auth = true")
+    text = text.replace('name = "local capacity smoke"', 'name = "OpenAI"')
+    text = text.replace("http://127.0.0.1:", "https://127.0.0.1:")
+    text = text.replace("[tools.update_plan]", "[features]\nenable_request_compression = false\n[tools.update_plan]")
+    probe.require('name = "OpenAI"' in text and "requires_openai_auth = true" in text,
+                  "fixture does not use the actual first-party provider contract")
+    path.write_text(f'cli_auth_credentials_store = "file"\nchatgpt_base_url = "{usage_url}"\n' + text)
+    return path
+
+
+def serve(model, secure=True, issuer_only=False, *, handoff_usage_path=None, issued_bearer_matches=None):
     """Serve `model` on a loopback port: under the fixture's TLS, or without (`secure`).
 
     `issuer_only` is the logins' issuer of a lost-login case and nothing else: it answers
@@ -2024,6 +2128,21 @@ def serve(model, secure=True, issuer_only=False):
         def log_message(self, *_args):
             pass
 
+        def accepts_login(self, event):
+            if issued_bearer_matches is None:
+                return True
+            values = self.headers.get_all("Authorization", [])
+            matched = len(values) == 1 and issued_bearer_matches(bearer_generation(self.headers), values[0])
+            with model.lock:
+                event["issuedBearerMatched"] = matched
+                if not matched:
+                    event["status"] = 401
+                    model.fixture_faults.append({"path": self.path.split("?", 1)[0],
+                                                 "error": "provider request did not present an issued fixture bearer"})
+            if not matched:
+                self.send_error(401)
+            return matched
+
         def not_the_issuers(self, method):
             """Refuse, on the issuer's listener, a request that is no token request."""
             path = self.path.split("?", 1)[0]
@@ -2046,6 +2165,8 @@ def serve(model, secure=True, issuer_only=False):
             with model.lock:
                 model.http_events.append(event)
                 (model.root / "http-events-live.json").write_text(json.dumps(model.http_events))
+            if path.endswith("/usage") and not self.accepts_login(event):
+                return
             accounts = model.weekly_quota or model.lost_login is not None
             if model.lost_login is not None:
                 # A lost-login case's oracles count what each login was answered.
@@ -2086,8 +2207,21 @@ def serve(model, secure=True, issuer_only=False):
                     # What the reader was told, for the oracles: the verdict and each
                     # window's figure, never the reply.
                     with model.lock:
+                        if model.weekly_quota:
+                            event["routingAccountMatched"] = routing_account_matches(self.headers, generation)
+                            # Only the listener whose origin configured the slot can attest this URL.
+                            event["usageEndpointMatched"] = self.path == handoff_usage_path
                         event["allowed"] = body["rate_limit"]["allowed"]
                         event.update(usage_figures(body))
+                        if body.get("additional_rate_limits"):
+                            event["additionalLimits"] = {
+                                entry["metered_feature"]: {
+                                    "allowed": limit["allowed"],
+                                    "weekUsed": (limit.get("secondary_window") or {}).get("used_percent"),
+                                }
+                                for entry in body["additional_rate_limits"]
+                                if (limit := entry.get("rate_limit")) is not None
+                            }
             except Exception as error:
                 # Seen by the controller's loop (require_no_fixture_fault), not by the client.
                 with model.lock:
@@ -2110,6 +2244,8 @@ def serve(model, secure=True, issuer_only=False):
             self.send_header("content-length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            with model.lock:
+                event["responseWrittenUs"] = monotonic_us()
 
         def do_POST(self):
             if self.not_the_issuers("POST"):
@@ -2127,6 +2263,8 @@ def serve(model, secure=True, issuer_only=False):
                 return
             payload = self.rfile.read(length)
             path = self.path.split("?", 1)[0]
+            if path.endswith("/responses") and not self.accepts_login(event):
+                return
             record = {}
             if path.endswith(CREDITS_PATH + "/consume"):
                 # Nothing can be redeemed here. Any case that redeems fails its own
@@ -2178,6 +2316,8 @@ def serve(model, secure=True, issuer_only=False):
                     }
                     event["kind"] = record["kind"]
                     event["status"] = status
+                    if model.weekly_quota:
+                        event["routingAccountMatched"] = routing_account_matches(self.headers, generation)
                     if model.login_lost is not None and status == 401:
                         # From this many requests on, the source's token was refused.
                         event["requestsAtLoss"] = model.login_lost[2]
@@ -2192,6 +2332,8 @@ def serve(model, secure=True, issuer_only=False):
                 self.send_header(key, value)
             self.end_headers()
             self.wfile.write(data)
+            with model.lock:
+                event["responseWrittenUs"] = monotonic_us()
     if not secure:
         return probe.start_listener(Handler)
 
@@ -2222,8 +2364,10 @@ def fixture_tls(root):
     subprocess.run(["/usr/bin/openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
         "-subj", "/CN=127.0.0.1", "-keyout", str(server_key), "-out", str(request)],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # This new CA issues one leaf. An explicit serial avoids a shared .srl file
+    # when LibreSSL truncates a dotted absolute path to derive its serial filename.
     subprocess.run(["/usr/bin/openssl", "x509", "-req", "-days", "1", "-in", str(request),
-        "-CA", str(cert), "-CAkey", str(key), "-CAcreateserial", "-extfile", str(extensions),
+        "-CA", str(cert), "-CAkey", str(key), "-set_serial", "1", "-extfile", str(extensions),
         "-out", str(server_cert)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     server_key.chmod(0o600)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -2259,12 +2403,13 @@ def process_evidence(record):
 
 
 def fake_auth(path, generation, issuer, account="fixture-account", *,
-              email="fixture@example.invalid", user="fixture-user"):
+              email="fixture@example.invalid", user="fixture-user", account_user_id=None):
     token = token_part({"alg": "none"}) + "." + token_part(identity_claims(account, email, user)) + ".sig"
     path.parent.mkdir()
     probe.write_json(path, {"auth_mode": "chatgpt", "OPENAI_API_KEY": None,
         "tokens": {"id_token": token,
-                   "access_token": access_token(generation, account, email=email, user=user),
+                   "access_token": access_token(generation, account, email=email, user=user,
+                                                account_user_id=account_user_id),
                    "refresh_token": f"fixture-refresh-{generation}", "account_id": account,
                    "oauth_provenance": {"issuer": issuer, "client_id": "fixture-client"}},
         "last_refresh": datetime.now(timezone.utc).isoformat()})
@@ -2900,18 +3045,9 @@ def _run(args, started):
         if lost_login is not None and lost_login[2] == PLAIN_ISSUER:
             issuer_listener = serve(model, secure=False, issuer_only=True)
             issuer_server = issuer_listener[0]
-        probe.configure(root, server.server_port)
-        provider_config = root / "codex-home" / "config.toml"
-        text = provider_config.read_text().replace("requires_openai_auth = false", "requires_openai_auth = true")
-        text = text.replace('name = "local capacity smoke"', 'name = "OpenAI"')
-        scheme = "https"
-        text = text.replace("http://127.0.0.1:", f"{scheme}://127.0.0.1:")
-        text = text.replace("[tools.update_plan]", "[features]\nenable_request_compression = false\n[tools.update_plan]")
-        probe.require('name = "OpenAI"' in text and "requires_openai_auth = true" in text,
-                      "fixture does not use the actual first-party provider contract")
-        provider_config.write_text(f'cli_auth_credentials_store = "file"\nchatgpt_base_url = "{scheme}://127.0.0.1:{server.server_port}"\n' + text)
+        issuer = f"https://127.0.0.1:{server.server_port}"
+        configure_provider(root, server.server_port, issuer)
         old, new = root / "auth-old" / "auth.json", root / "auth-new" / "auth.json"
-        issuer = f"{scheme}://127.0.0.1:{server.server_port}"
         if issuer_server is not None:
             issuer = f"http://127.0.0.1:{issuer_server.server_port}"
         fake_auth(old, "old", issuer, "source-account" if two_accounts else "fixture-account")
@@ -3823,10 +3959,7 @@ def _run(args, started):
                             probe.require(report["renewedProcess"]["exe"] == str(codex), "unexpected renewed image")
                             probe.require(model.requests[-1]["newTokenMatched"], "renewed request did not use new token")
                             report["newTokenMatched"] = True
-                            rollout_events = []
-                            for rollout in (root / "codex-home" / "sessions").rglob("*.jsonl"):
-                                if report["thread"] in rollout.name:
-                                    rollout_events.extend(json.loads(line) for line in rollout.read_text().splitlines())
+                            rollout_events = thread_rollout(root, report["thread"])
                             native_starts = validate_completed_original_turn(rollout_events, report["wall"], 3 if chain else 2)
                             report["completedPlanPreserved"] = True
                             report["nativeTurnIds"] = native_starts
@@ -3949,7 +4082,7 @@ def _run(args, started):
             else:
                 report["lostLoginStayed"] = login_stayed_verdict(root, events,
                     report.get("hostLoginPolicy"), lost_login, old, new, login_digests,
-                    thread_rollout(root), report.get("loginWallWatchedUntilUs", 0))
+                    thread_rollout(root), report.get("loginWallWatchedUntilUs", 0), requests=model.requests)
         # The cases that end with the turn still refused sent it twice at least.
         unanswered = lost_stays or args.case in ("owner-stop", "owner-stop-after-signal", "post-signal-expiry-diagnostic", "weekly-quota-rollback", "weekly-quota-exhausted")
         probe.require(len(model.requests) >= (2 if unanswered else 3),

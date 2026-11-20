@@ -12,6 +12,13 @@ upstream's `main` at least daily, and carrying a thin layer of ALab changes on t
 OpenAI's product; report a codex-alab problem here, not to OpenAI. For OpenAI's own build, see
 [openai/codex](https://github.com/openai/codex).
 
+<a href="alab/design/codex-opening-banner.md#preview">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="alab/design/assets/codex-opening-banner-69-light.png">
+    <img src="alab/design/assets/codex-opening-banner.png" alt="Codex ALab in aterm with the Codex mark, rainbow kitty, release pair and Cruise / Land / Off switch">
+  </picture>
+</a>
+
 ## A drop-in `codex`
 
 - The binary is `codex`, with upstream's subcommands and flags. You sign in with your own
@@ -23,41 +30,68 @@ OpenAI's product; report a codex-alab problem here, not to OpenAI. For OpenAI's 
 - Every ALab choice is a packaged default, the lowest config layer: your `config.toml`, a
   profile, a project config or `-c` wins over each one.
 
-[`alab/smoke/dropin.py`](alab/smoke/dropin.py) checks this against OpenAI's own build of
-codex, with a scratch `CODEX_HOME`: the `--help` tree (74 pages on 2026-10-16, where the only
-two differences were flags upstream itself added since that vendor version), `codex exec
---experimental-json` against a local mock model, `app-server` over stdio, `mcp list`, a
-`config.toml` override of an ALab default, the files left in `CODEX_HOME`, and `auth.json`.
+The 0.170.0 candidate passed all 18 comparisons with OpenAI's released binary,
+covering 77 help pages, exec events, app-server schemas, configuration, MCP and
+login. The two additional CLI commands expose ALab's packaged defaults and aterm
+model policy. [Comparison results and release status](alab/reviews/openai-0.170-alignment-plan-2026-11-18.md)
+
+## Resume after switching accounts
+
+On signed ALab 0.11.0 in aterm, open `/accounts` to find the slot labels.
+To move an idle conversation, close the pane and enter **`/accounts use <label>`**.
+After the restart, `/status` shows the connected email and conversation ID.
+For a session that already exited, use **`codex --no-daemon resume <thread-id>`**
+with the selected login. The exit summary gives the ID. If you lost it,
+`codex --no-daemon migrate-rollouts --verbose` lists local session IDs in a dry
+run. The resume guide also shows how to find a session by preview and project.
+[Account guide and full-address lookup](alab/interface.md#sign-in-and-separate-accounts)
+
+On the reviewed 0.170 build, sign in with the account you want to use and run
+**`codex resume`**. The enhanced picker shows active conversations from every
+login and project sharing the same local Codex home, including work started by
+`codex exec`. Select the conversation. If prompted, choose **Use session
+directory** to run tools in its original project. If you moved the project,
+start the picker in its new directory. The updated local picker highlights
+**Use current directory** when the saved path is gone.
+If the original app still has the conversation open, close it there and
+press **R** in the same resume picker.
+The next turn uses the currently signed-in account.
+[Resume guide](alab/README.md#resuming-local-work-after-switching-accounts)
 
 ## Which OpenAI Codex it is built from
 
-Each build names its upstream base apart from its own version: the newest OpenAI Codex
-stable release whose branch point it has merged, and the exact
-[openai/codex](https://github.com/openai/codex) `main` commit it merged last. On
-2026-10-21 that is `rust-v0.163.0` and `e8aa7c1678ca`, 241 upstream commits past the
-release's branch point.
+The ALab release and the Codex base have independent version numbers. A marked
+release branch records the official OpenAI tag and its exact commit. A package built
+from the development history records the newest OpenAI Codex stable release whose
+branch point it includes and the exact upstream commit. A package built from a
+published source snapshot can recover its Codex release from the ALab version ledger.
+The snapshot alone does not identify the exact upstream commit.
 
-- **In codex:** the launch card, the session header and `/status` read `codex-alab
-  v0.164.0-dev.12814 · based on OpenAI Codex 0.163.0`, for example. Primary labels keep the
-  release and build number, leaving the opaque source hash to version details. The launch
-  banner names the readable ALab version and says `based on OpenAI Codex 0.163.0` where
-  it has room. `/alab version` (also `/alab update`) shows the full running and installed
-  package versions, update state, and full ALab and OpenAI source commits for the running
-  build. `codex --version` still prints the full `codex-cli <version>`, as upstream's does.
-- **In a package:** `alab-build.json` at the package root (`aterm pkg which codex` names
-  the package's `bin/codex`) records it:
+- **In an enhanced session**, the launch card, composer and `/status` show the ALab release
+  followed by its Codex base, for example `0.11 on Codex 0.169`. A nonzero patch stays
+  visible, as in `0.169.1`. Click the release pair in the composer or use `/alab version`
+  (also `/alab update`) to see the full running and installed package versions, update state
+  and available source commits.
+  `codex --version` prints the full `codex-cli <version>`.
+- **In the package**, `alab-build.json` records the available provenance. For example,
+  managed build `2026111701` contains these fields.
 
   ```json
-  "upstream": {
-    "release": "rust-v0.163.0",
-    "commits_since_release": 241,
-    "commit": "e8aa7c1678caa9a368243d72bf0e9b7859d97f15",
-    "commit_date": "2026-10-20T13:50:13Z"
+  {
+    "version": "0.11.0",
+    "baseline": "0.169.0",
+    "upstream": {
+      "release": "rust-v0.169.0",
+      "commits_since_release": 43,
+      "commit": "ce3031018ef130e653ed4d9c5bb971652de97161",
+      "commit_date": "2026-11-12T15:35:27Z"
+    }
   }
   ```
 
-  A package built before 2026-10-21 has no `upstream` block, and one built on 2026-10-21
-  has no `commits_since_release`.
+  A snapshot-built package with a ledger baseline records `baseline` and omits
+  `upstream` when it lacks upstream history. Older packages can also omit individual
+  fields. Use `aterm pkg which codex` to locate the installed package.
 - **On the release pages:** `alab/package.sh --upstream-base [--commit <rev>]` prints the
   line that names it, `Based on upstream openai/codex rust-v0.163.0 + 241 commits
   (e8aa7c1678ca, 2026-10-20)`. A source release's GitHub page carries that line for its
@@ -106,7 +140,8 @@ Added:
 - **Capacity recovery.** Model-at-capacity failures retry automatically with backoff,
   retaining the selected model, current input and completed work during responses and
   foreground context compaction. Malformed or timer-unsafe retry advice falls back to
-  normal backoff. Interrupt the turn to stop waiting.
+  normal backoff. Interrupt the turn to stop waiting. To tell when an existing
+  turn has resumed, see [checking a capacity wait](alab/CAPACITY_RECOVERY.md#check-a-waiting-tab).
 - **Kimi Code subscription models.** `codex --profile kimi` selects K3 within 256K through the
   global Kimi Code endpoint; `codex --profile kimi-cn` selects the China endpoint. Set
   `KIMI_API_KEY` from the Kimi Code Console for the kimi.ai subscription. The bundled catalog
@@ -115,13 +150,11 @@ Added:
   installation or hand-written `models.json` is needed; an explicit `model_catalog_json` still wins.
   Transient concurrency and overload responses retry with backoff; subscription quota walls remain
   terminal instead of becoming generic retry loops.
-- **The rainbow kitty.** A launch banner: aterm's codex kitty riding aterm's spectrum, with
-  "bloatware-free · nag-free · optimized for aterm" beside it, what was measured against
-  OpenAI's Codex 0.164 as shipped on 2026-10-23 (about 6× less memory, no background daemon, 1 HTTPS
-  connection open at idle instead of 5; `codex-rs/alab-tui/src/banner/claims.rs` holds the
-  numbers and the date), and the upstream source the build is based on. Inside [aterm](https://github.com/alabsystems/aterm),
-  Rainbow Kitty is also available through `/pets`, drawn from the binary and never downloaded.
-  No pet is selected by default, leaving the full prompt width available.
+- **The rainbow kitty.** In aterm, the launch card draws the OpenAI Codex mark at the upper
+  left and a flying rainbow kitty beside the session details. Narrow panes give the release
+  pair and session details priority. The composer’s **Cruise / Land / Off** switch sets
+  Autopilot, and `/alab menu` opens its picker from the keyboard. In aterm, `/pets` can
+  also add the bundled Rainbow Kitty to the prompt. [Dark and light previews](alab/design/codex-opening-banner.md#preview)
 - **A native aterm harness.** Inside aterm, codex-alab claims its own session over aterm's
   control socket and does itself what aterm otherwise does by reading the screen
   ([`alab/CONTRACT.md`](alab/CONTRACT.md)): it reports its state, answers its launch folder's
@@ -144,9 +177,9 @@ aterm pkg which codex             # the installed source and build
 codex --version
 ```
 
-Public `vX.Y.0` releases are source snapshots. Installed binaries carry a version such as
-`X.Y.0-dev.<count>+g<sha>` even in the production channel; atpkg selects them by the signed
-build number, not by comparing that version with OpenAI's. Other targets use OpenAI's build.
+Public `vX.Y.0` releases are source snapshots. Installed packages can carry a plain release
+such as `0.11.0` or a development version such as `X.Y.0-dev.<count>+codex.<baseline>.g<sha>`.
+atpkg selects the package by its signed build number. Other targets use OpenAI's build.
 To choose OpenAI's build on this machine, run `aterm pkg update codex --vendor`; use
 `aterm pkg update codex --alab` to return to codex-alab's channel.
 

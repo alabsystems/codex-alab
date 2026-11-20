@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "base": "0e011c00928a16579b0bda47473cee986628cb51",
+  "target": "9d8ca1df71dd95e0bb77b22207236f29a83bdc5f",
+  "frontier": "0e011c00928a16579b0bda47473cee986628cb51",
+  "commits": [
+    {
+      "sha": "9d8ca1df71dd95e0bb77b22207236f29a83bdc5f",
+      "subject": "Preserve queued agent messages when a parent turn is interrupted (#62348)",
+      "paths": [
+        "codex-rs/core/src/tasks/mod.rs",
+        "codex-rs/core/tests/suite/host_turn_admission.rs",
+        "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__host_turn_admission__injected_child_final_survives_parent_interrupt.snap"
+      ],
+      "classes": [
+        "fix"
+      ],
+      "features": [
+        "execution-continuity",
+        "exec-handoff"
+      ],
+      "decision": "adopt",
+      "reason": "Persist a child's acknowledged message when the parent is interrupted during sampling so the next turn on the same conversation receives it once.",
+      "evidence": [
+        "On the preceding 0.12 development binary b8a4b5899 (SHA-256 f6f54dd4c1e0dbc925ce99672068fc00fb1e9fbff21ecbc43ba326a1e5183104), a real app-server acknowledged thread/inject_items with a final agent message while a loopback provider held the first sample. After turn/interrupt, the original rollout contained zero such messages. A second user turn completed on the same thread. Neither of the two provider requests contained the message.",
+        "Upstream collects annotated agent messages from the interrupted turn, restores the other pending inputs for their existing cleanup, and flushes the history before the terminal notification even when the interruption marker is disabled. The fork's goal completion and terminal-result paths are adjacent to this code. All three upstream file changes merged without a conflict. The complete stable patch ID on the combined source eb2b4323f9 matches upstream at 092fbd1b51098d4a065d77dc9cf5b6093495e16c.",
+        "The new upstream regression inspects saved history immediately after TurnAborted and both provider requests. Native execution on the integrated source and the equivalent app-server wire check remain pending."
+      ],
+      "revisit": ""
+    }
+  ]
+}

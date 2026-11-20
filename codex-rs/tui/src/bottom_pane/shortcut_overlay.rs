@@ -91,6 +91,7 @@ fn bindings(props: &FooterProps) -> [(&'static str, Vec<Entry>); 3] {
                 .then_some(key_hint::shift(K::Tab).into()),
             "Change mode",
         ),
+        Entry::hint(hints.open_autopilot.filter(|_| codex_alab_tui::interface::enabled()), "Open Autopilot"), // ALAB(interface): show the configured picker shortcut in Enhanced.
         Entry::hint(hints.reasoning_down, "Less reasoning"),
         Entry::hint(hints.reasoning_up, "More reasoning"),
         Entry::hint(hints.toggle_voice, "Voice"),

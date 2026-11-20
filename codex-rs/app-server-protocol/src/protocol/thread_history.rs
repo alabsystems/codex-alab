@@ -2780,6 +2780,8 @@ mod tests {
         );
     }
 
+    include!("../../../alab-core/glue/command_exit_history_tests.rs"); // ALAB(shell-output): exercise the canonical completion and its actual compatibility copy.
+
     #[test]
     fn preserves_command_plugin_id_and_redacts_secrets_across_legacy_upsert() {
         let turn_id = "turn-1";
@@ -2857,7 +2859,9 @@ mod tests {
                 interaction_input: None,
                 aggregated_output: "hello world\n".to_string(),
                 exit_code: 0,
+                exit_code_unavailable: false, // ALAB(shell-output): legacy fixture reports a numeric exit.
                 duration: Duration::from_millis(12),
+                duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
                 status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -3582,7 +3586,9 @@ mod tests {
                 interaction_input: None,
                 aggregated_output: "hello world\n".into(),
                 exit_code: 0,
+                exit_code_unavailable: false, // ALAB(shell-output): legacy fixture reports a numeric exit.
                 duration: Duration::from_millis(12),
+                duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
                 status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
@@ -3876,7 +3882,9 @@ mod tests {
                 interaction_input: None,
                 aggregated_output: "exec command rejected by user".into(),
                 exit_code: -1,
+                exit_code_unavailable: false, // ALAB(shell-output): legacy fixture reports a numeric exit.
                 duration: Duration::ZERO,
+                duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
                 status: CoreExecCommandStatus::Declined,
             }),
             EventMsg::PatchApplyEnd(PatchApplyEndEvent {
@@ -4283,7 +4291,9 @@ mod tests {
                 interaction_input: None,
                 aggregated_output: "done\n".into(),
                 exit_code: 0,
+                exit_code_unavailable: false, // ALAB(shell-output): legacy fixture reports a numeric exit.
                 duration: Duration::from_millis(5),
+                duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
                 status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -4394,7 +4404,9 @@ mod tests {
                 interaction_input: None,
                 aggregated_output: "done\n".into(),
                 exit_code: 0,
+                exit_code_unavailable: false, // ALAB(shell-output): legacy fixture reports a numeric exit.
                 duration: Duration::from_millis(5),
+                duration_unavailable: false, // ALAB(shell-output): the fixture reports its elapsed time.
                 status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {

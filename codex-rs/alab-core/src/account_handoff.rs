@@ -59,6 +59,8 @@ pub struct Destination {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountHandoff {
     pub purpose: Purpose,
+    /// The named quota bucket requested by this move. Ordinary quota carries no name.
+    pub limit: Option<String>,
     /// Evidence of the original foreground OpenAI subscription request.
     pub openai_scope: bool,
     /// A same-file login recovery has no native restart receipt.
@@ -105,6 +107,9 @@ impl AccountHandoff {
             || origin.len() > 512
             || origin.chars().any(char::is_control)
             || !self.openai_scope
+            || self.limit.as_deref().is_some_and(|id| {
+                self.purpose != Purpose::WeeklyQuota || !crate::wall_kind::valid_limit_id(id)
+            })
             || self.starts == 0
             || !hex(&self.account, 64)
             || !hex(&self.user, 64)
@@ -168,6 +173,7 @@ mod tests {
     fn handoff(purpose: Purpose) -> AccountHandoff {
         AccountHandoff {
             purpose,
+            limit: None,
             openai_scope: true,
             local: false,
             account: "a".repeat(64),

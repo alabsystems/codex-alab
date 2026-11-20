@@ -1,0 +1,11 @@
+<!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
+
+# Intake from 39a7b53fa4 through 84a93030e7
+
+Reviewed the five commits and their source paths in the fetched range. The intake record binds the exact patches. Runtime and release qualification remain pending.
+
+- `8dcd56d0cb` adds an explicit in-process authentication choice for observing an existing realtime call. The default continues to use model-provider authentication. External header mode requires a host-selected sideband endpoint and header credentials, and clears the provider's headers. Keep this choice opt-in and separate from TUI call creation. Before activation, verify endpoint and calling workload authorization, no inference credential forwarding, cancellation and reconnect. The TUI's HTTP creation path already admits its selected credential at the endpoint, but its newly constructed local auth owner still needs to match the active backend's native owner. Native sideband transport must also demonstrate its own source and destination admission.
+- `b8f6787e95` updates three PTY test files. Adopt the bundled model catalog fixture and the typed initialization handshake. The daemon recovery case now observes the version probe and checks that choosing embedded mode leaves no queued reconnect. Run the editor and daemon cases with the merged binary and check the ALab draft and backend ownership witnesses.
+- `53cd1894aa` limits Node detection to an exact first-line shebang, with a binary negative control. Both files are under the existing `scripts/install` removal. Verify whole-path absence in the merge and retain atpkg as the ALab installer and update owner.
+- `5f775c7f4f` adds explicit `/rc` actions for the verified local managed daemon. Preserve the request's backend ID through status and mutation, existing disable and backend policy, and pairing code redaction. Test Cloud with a parked local daemon, a switched backend, no managed daemon, and a timed-out mutation whose resulting state is unknown.
+- `84a93030e7` applies the Windows sandbox service access policy while startup is pending, before running the package lifecycle. Adopt the narrower control policy and preserve setup and query access. Qualification needs Windows service startup, allowed setup/query access, denied unprivileged service control, and administrative stop and uninstall.

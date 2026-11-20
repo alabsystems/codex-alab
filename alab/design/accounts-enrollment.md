@@ -1,6 +1,10 @@
 <!-- Copyright 2026 Andrew Yates; SPDX-License-Identifier: Apache-2.0 -->
 # Native account enrollment operations
 
+The [Registry-driven browser sign-in design](accounts-browser-enrollment.md)
+specifies how the native operation selects the provider identity, isolated
+browser session and delivery mailbox for a Codex subscription.
+
 Status: implementation design, derived from native origin/main
 `91a7cb18812af55a4e9fc9c28b453e7b98477b05`; no live sign-in or credential
 inspection was performed for this audit. This extends `accounts.md` and does not

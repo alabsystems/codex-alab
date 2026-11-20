@@ -4,14 +4,37 @@
 //! Model polling follows live experience changes, including an already sleeping worker.
 
 use super::*;
+use std::collections::HashMap;
 
 pub(super) fn spawn(model_catalog: &Arc<ModelCatalog>) -> ModelsRefreshWorker {
-    spawn_with_mode(
+    let worker = spawn_with_mode(
         model_catalog,
         codex_alab_core::experience_changes(),
         codex_alab_core::MODELS_REFRESH_INTERVAL,
         MODELS_REFRESH_INTERVAL,
-    )
+    );
+    let model_catalog = Arc::downgrade(model_catalog);
+    let shutdown = worker.shutdown.clone();
+    tokio::spawn(async move {
+        let mut revisions = HashMap::new();
+        let observe = async {
+            loop {
+                // Native filesystem events can be absent for an excluded session
+                // directory. Only read the file when its local revision changes.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let Some(catalog) = model_catalog.upgrade() else {
+                    break;
+                };
+                catalog.alab_confirm_peer_catalogs(&mut revisions).await;
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {}
+            () = observe => {}
+        }
+    });
+    worker
 }
 
 pub(super) fn spawn_with_mode(

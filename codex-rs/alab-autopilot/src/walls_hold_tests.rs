@@ -15,11 +15,13 @@ use crate::replies::FUTILE_AFTER_TRIES;
 use crate::replies::LIMIT_STANDS;
 use crate::replies::LIMIT_UNREAD;
 use crate::replies::Told;
+use codex_alab_core::wall_kind::LimitClass;
 use pretty_assertions::assert_eq;
 
 /// The usage window's wall, its reset `reset` (Codex's `resets_at`) or none.
 fn usage(reset: Option<Instant>) -> Wall {
     Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: reset,
         reset_label: reset.map(|_| "16:00".to_string()),
     }

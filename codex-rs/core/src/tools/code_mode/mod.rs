@@ -168,6 +168,8 @@ impl CodeModeService {
         self.session().await?.terminate(request).await
     }
 
+    pub(crate) fn alab_has_active_cells(&self) -> bool { !self.dispatch_broker.active_cell_ids().is_empty() } // ALAB(defaults): a yielded cell still owns live work during model recovery.
+
     pub(crate) async fn interrupt_active_cells(&self) {
         let Some(session) = self.session.get() else {
             return;

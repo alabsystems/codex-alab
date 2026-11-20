@@ -128,6 +128,7 @@ impl BottomPane {
             .keymap_contexts()
             .with(KeymapContext::Global)
             .with(KeymapContext::Chat)
+            .with_autopilot(true)
             .with(KeymapContext::Voice);
         let bound = crate::keymap::keymap_action_ids().any(|action| {
             // Ctrl+S means "newer match" only while history search owns input.

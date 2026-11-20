@@ -57,7 +57,6 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
-use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
 use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
@@ -396,13 +395,14 @@ async fn emit_failed_initial_exec_end_if_unstored(
     output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
     fallback_output: String,
     message: String,
+    observed_exit: Option<i32>,
     wall_time: Duration,
 ) {
     if process_stored {
         return;
     }
 
-    emit_failed_exec_end_for_unified_exec(
+    emit_exec_end_for_unified_exec(
         sandbox_type,
         Arc::clone(&context.session),
         Arc::clone(&context.step_context.turn),
@@ -414,8 +414,10 @@ async fn emit_failed_initial_exec_end_if_unstored(
         plugin_attribution,
         output_buffer,
         fallback_output,
-        message,
+        observed_exit,
         wall_time,
+        /*timed_out*/ false,
+        Some(message),
     )
     .await;
 }
@@ -445,15 +447,19 @@ fn terminate_process_on_network_denial(
 }
 
 impl UnifiedExecProcessManager {
-    pub(crate) async fn allocate_process_id(&self) -> i32 {
+    pub(crate) async fn reserve_process_id(&self) -> (i32, Arc<()>) { // ALAB(shell-invocation): the request owns the number until every numeric release is done.
         loop {
             let mut store = self.process_store.lock().await;
+            if store.readers.is_closed() { store.readers = Default::default(); } // ALAB(shell-output): a new launch after a bulk close starts a fresh reader generation.
+            store.in_flight_launches.retain(|_, owner| owner.strong_count() != 0); // ALAB(shell-invocation): dropping a cancelled request returns its unpublished number.
 
             let process_id = if should_use_deterministic_process_ids() {
                 // test or deterministic mode
                 store
                     .reserved_process_ids
                     .iter()
+                    .chain(store.in_flight_launches.keys()) // ALAB(shell-invocation): bulk cleanup resets deterministic history while earlier calls still own their numbers.
+                    .chain(store.processes.keys()) // ALAB(shell-invocation): every surviving writer keeps its number.
                     .copied()
                     .max()
                     .map(|m| std::cmp::max(m, 999) + 1)
@@ -463,12 +469,11 @@ impl UnifiedExecProcessManager {
                 rand::rng().random_range(1_000..100_000)
             };
 
-            if store.reserved_process_ids.contains(&process_id) {
+            let Some(lease) = store.reserve_launch_number(process_id) else { // ALAB(shell-invocation): admit the new number under the same registry lock.
                 continue;
-            }
-
-            store.reserved_process_ids.insert(process_id);
-            return process_id;
+            };
+            store.shell_bindings.issue(process_id); // ALAB(shell-invocation): track reissue even after process release.
+            return (process_id, lease); // ALAB(shell-invocation): every outstanding launch carries its own reservation.
         }
     }
 
@@ -677,7 +682,15 @@ impl UnifiedExecProcessManager {
         ))
         .unwrap_or(usize::MAX);
         let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
-        let collected = CapturedStream::from(&collected_output);
+        let mut collected = CapturedStream::from(&collected_output);
+        // ALAB(shell-output): carry the exact process log to either result formatter.
+        collected.shell_log = process
+            .output_handles()
+            .output_buffer
+            .lock()
+            .await
+            .shell_log
+            .clone();
         let text = collected.text.clone();
         let chunk_id = generate_chunk_id();
         if deferred_network_approval
@@ -699,6 +712,7 @@ impl UnifiedExecProcessManager {
                 Arc::clone(&output_buffer),
                 text.clone(),
                 message.clone(),
+                process.observed_exit_code(),
                 wall_time,
             )
             .await;
@@ -721,6 +735,7 @@ impl UnifiedExecProcessManager {
                 Arc::clone(&output_buffer),
                 text.clone(),
                 message.clone(),
+                process.observed_exit_code(),
                 wall_time,
             )
             .await;
@@ -738,7 +753,7 @@ impl UnifiedExecProcessManager {
                 OutputRetention::UntilCollected
             };
             match self
-                .refresh_process_state(process_id, &process, retention)
+                .refresh_process_state(process_id, &process, retention, None) // ALAB(shell-output): initial collection has no prior running tool result.
                 .await
             {
                 ProcessStatus::Alive {
@@ -809,6 +824,7 @@ impl UnifiedExecProcessManager {
                     Arc::clone(&output_buffer),
                     text.clone(),
                     message.clone(),
+                    process.observed_exit_code(),
                     wall_time,
                 )
                 .await;
@@ -816,9 +832,8 @@ impl UnifiedExecProcessManager {
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
             let exit_code = process.exit_code();
-            let exit = exit_code.unwrap_or(-1);
             initial_exec_command_guard
-                .finish_plugin_metrics(context, exit)
+                .finish_plugin_metrics(context, exit_code.unwrap_or(-1))
                 .await;
             emit_exec_end_for_unified_exec(
                 process.sandbox_type(),
@@ -832,9 +847,10 @@ impl UnifiedExecProcessManager {
                 plugin_attribution.clone(),
                 Arc::clone(&output_buffer),
                 text.clone(),
-                exit,
+                process.observed_exit_code(), // ALAB(shell-output): the tool may report a timeout code independently.
                 wall_time,
                 process.timed_out(),
+                None,
             )
             .await;
 
@@ -848,7 +864,10 @@ impl UnifiedExecProcessManager {
             (None, exit_code)
         };
 
-        let response = ExecCommandToolOutput {
+        if response_process_id.is_none() && let Some(log) = &collected.shell_log { process.drain_finished_local_failure(log, exit_code).await; } // ALAB(shell-output): consume the finite native queue before dropping a one-shot result.
+        if let Some(log) = collected.shell_log.as_mut() { log.allow_tool_tail(&process, response_process_id, exit_code); } // ALAB(shell-output): bind non-timeout native status to this one result.
+        if response_process_id.is_some() && let Some(log) = &collected.shell_log { log.initial_response(collected_output.total_bytes()); } // ALAB(shell-output): compare raw capture with the bytes collected for the initial running response.
+        let mut response = ExecCommandToolOutput { // ALAB(shell-output): freeze exact first-call evidence before releasing the original reader.
             event_call_id: context.call_id.clone(),
             chunk_id,
             wall_time,
@@ -868,6 +887,7 @@ impl UnifiedExecProcessManager {
                 .then(|| prepared.cwd.clone()),
         };
 
+        self.finish_first_shell_result(context, &process, process_id, &request.source, &mut response, collected_output.total_bytes()).await; // ALAB(shell-output): read-only ownership for both stored and immediate local failures.
         Ok(response)
     }
 
@@ -1061,7 +1081,15 @@ impl UnifiedExecProcessManager {
             collected_output.total_bytes(),
         ))
         .unwrap_or(usize::MAX);
-        let collected = CapturedStream::from(&collected_output);
+        let mut collected = CapturedStream::from(&collected_output);
+        // ALAB(shell-output): carry the exact process log to either result formatter.
+        collected.shell_log = process
+            .output_handles()
+            .output_buffer
+            .lock()
+            .await
+            .shell_log
+            .clone();
         let chunk_id = generate_chunk_id();
         if network_approval
             .as_ref()
@@ -1088,7 +1116,7 @@ impl UnifiedExecProcessManager {
 
         // Only finalize remote sessions after both process exit and output collection.
         let status = self
-            .refresh_process_state(process_id, locked_process, OutputRetention::UntilCollected)
+            .refresh_process_state(process_id, locked_process, OutputRetention::UntilCollected, request.interaction_event.as_ref().and(collected.shell_log.as_ref())) // ALAB(shell-output): detach the failed original reader from its writable ID on a real poll.
             .await;
         let (process_id, exit_code, event_call_id) = match status {
             ProcessStatus::Alive {
@@ -1115,7 +1143,8 @@ impl UnifiedExecProcessManager {
             }
         };
 
-        let response = ExecCommandToolOutput {
+        if let Some(log) = collected.shell_log.as_mut() { log.allow_tool_tail(&process, process_id, exit_code); } // ALAB(shell-output): bind non-timeout native status to this one poll.
+        let mut response = ExecCommandToolOutput { // ALAB(shell-output): retain the exact final disclosure.
             event_call_id,
             chunk_id,
             wall_time,
@@ -1129,9 +1158,10 @@ impl UnifiedExecProcessManager {
             tool_cwd,
         };
 
+        if let Some(event) = &request.interaction_event { super::shell_observation::record(event.session, event.source, request.terminal.process_id, &mut response, Some(collected_output.total_bytes())).await; } // ALAB(shell-output): commit the bytes this poll actually collected in terminal interaction order.
         let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
         if should_emit_interaction
-            && let Some(WriteStdinInteractionEvent { session, turn }) = request.interaction_event
+            && let Some(WriteStdinInteractionEvent { session, turn, .. }) = request.interaction_event
         {
             let interaction = TerminalInteractionEvent {
                 call_id: response.event_call_id.clone(),
@@ -1154,6 +1184,7 @@ impl UnifiedExecProcessManager {
         process_id: i32,
         expected_process: &Arc<UnifiedExecProcess>,
         retention: OutputRetention,
+        poll_log: Option<&super::shell_output::ShellLog>, // ALAB(shell-output): original capture carried by the native poll.
     ) -> ProcessStatus {
         let mut store = self.process_store.lock().await;
         let Some(entry) = store
@@ -1189,6 +1220,9 @@ impl UnifiedExecProcessManager {
             let Some(entry) = store.remove(process_id) else {
                 return ProcessStatus::Unknown;
             };
+            let evicted_reader = store.readers.keep(&entry.process, poll_log, exit_code, store.processes.len()); // ALAB(shell-output): release the public handle and preserve raw output in one store operation.
+            drop(store); // ALAB(shell-output): reader cleanup never holds the store lock.
+            if let Some(reader) = evicted_reader { let _ = reader.await; } // ALAB(shell-output): even a temporarily oversized upstream process store cannot accumulate readers.
             ProcessStatus::Exited {
                 exit_code,
                 entry: Box::new(entry),
@@ -1277,11 +1311,12 @@ impl UnifiedExecProcessManager {
             session: Arc::downgrade(&context.session),
             last_used: started_at,
         };
-        let pruned_entry = {
+        let (pruned_entry, evicted_reader) = { // ALAB(shell-output): reclaimed raw readers share the process cap.
             let mut store = self.process_store.lock().await;
+            let evicted_reader = store.readers.make_room(store.processes.len()); // ALAB(shell-output): reclaim the oldest reader before a live process.
             let pruned_entry = Self::prune_processes_if_needed(&mut store);
             store.processes.insert(process_id, entry);
-            pruned_entry
+            (pruned_entry, evicted_reader) // ALAB(shell-output): finish reclaimed output outside the store lock.
         };
         spawn_exit_watcher(
             Arc::clone(&process),
@@ -1296,6 +1331,7 @@ impl UnifiedExecProcessManager {
             plugin_metrics_sidecar,
         );
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
+        if let Some(reader) = evicted_reader { let _ = reader.await; } // ALAB(shell-output): freeze captured bytes before releasing the original native reader.
         if let Some(pruned_entry) = pruned_entry {
             unregister_network_approval_for_entry(&pruned_entry).await;
             pruned_entry.process.terminate();
@@ -1315,6 +1351,7 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
         environment: &codex_exec_server::Environment,
+        denied_shell_log: &mut Option<super::shell_output::ShellLog>, // ALAB(shell-output): keep output local to this attempt.
     ) -> Result<UnifiedExecProcess, ToolError> {
         let network_policy_decider = network_proxy_launch
             .as_ref()
@@ -1341,7 +1378,10 @@ impl UnifiedExecProcessManager {
         )
         .await
         .map_err(|err| match err {
-            UnifiedExecError::SandboxDenied { output, .. } => {
+            UnifiedExecError::SandboxDenied {
+                output, shell_log, ..
+            } => {
+                *denied_shell_log = shell_log; // ALAB(shell-output): policy receives the ordinary denial.
                 ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
                     output: Box::new(output),
                     network_policy_decision: None,
@@ -1362,6 +1402,11 @@ impl UnifiedExecProcessManager {
         tty: bool,
         environment: &codex_exec_server::Environment,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
+        // ALAB(shell-output): capture only unified shell tool calls, before launch.
+        let mut shell_log = tool_ctx // ALAB(shell-output): bind the native reader to the manager generation that launched it.
+            .filter(|ctx| ctx.tool_name.name == "exec_command")
+            .and_then(|ctx| self.shell_logs.start(ctx, environment.is_remote()));
+        if let Some(log) = shell_log.as_mut() && log.durable_owner() { log.bind_launch_generation(&self.process_store.lock().await.readers); } // ALAB(shell-output): completed cleanup invalidates earlier launches without blocking new commands.
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();
             let params = exec_server_params_for_request(
@@ -1386,6 +1431,23 @@ impl UnifiedExecProcessManager {
                         .start_with_network_policy_decider(params, decider)
                         .await
                 }
+                // ALAB(shell-output): capture before the local server replay buffer.
+                None if !environment.is_remote() && shell_log.is_some() => {
+                    let log = shell_log.clone();
+                    backend
+                        .start_with_local_capture_observer( // ALAB(shell-output): preserve original EOF evidence.
+                            params,
+                            Arc::new(move |chunk| {
+                                if let Some(log) = &log {
+                                    match chunk {
+                                        codex_exec_server::LocalOutput::Bytes(bytes) => log.append(bytes), // ALAB(shell-output): original raw bytes.
+                                        codex_exec_server::LocalOutput::Closed { native_eof } => log.close_raw(native_eof), // ALAB(shell-output): validate physical EOF.
+                                    }
+                                }
+                            }),
+                        )
+                        .await
+                }
                 None => backend.start(params).await,
             }
             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
@@ -1394,8 +1456,13 @@ impl UnifiedExecProcessManager {
             } else {
                 OutputDrainPolicy::BoundedAfterExit
             };
-            return UnifiedExecProcess::from_exec_server_started(started, output_drain_policy)
-                .await;
+            // ALAB(shell-output): attach the capture before the event drain.
+            return UnifiedExecProcess::from_exec_server_started(
+                started,
+                output_drain_policy,
+                shell_log,
+            )
+            .await;
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -1466,7 +1533,7 @@ impl UnifiedExecProcessManager {
         .await;
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox).await
+        UnifiedExecProcess::from_spawned(spawned, request.sandbox, shell_log).await // ALAB(shell-output): capture before pipe drain.
     }
 
     #[tracing::instrument(
@@ -1540,7 +1607,7 @@ impl UnifiedExecProcessManager {
                         } else {
                             output.aggregated_output.text.clone()
                         };
-                        UnifiedExecError::sandbox_denied(message, output)
+                        UnifiedExecError::sandbox_denied(message, output, runtime.denied_shell_log) // ALAB(shell-output): recover the producing attempt.
                     }
                     _ => UnifiedExecError::create_process(format!("{err:?}")),
                 },
@@ -1790,7 +1857,7 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
-        let entries: Vec<ProcessEntry> = {
+        let (entries, readers) = { // ALAB(shell-output): include finalized commands whose original readers are still draining.
             let mut processes = self.process_store.lock().await;
             let entries: Vec<ProcessEntry> = processes
                 .processes
@@ -1798,10 +1865,12 @@ impl UnifiedExecProcessManager {
                 .map(|(_, entry)| entry)
                 .collect();
             processes.reserved_process_ids.clear();
-            entries
+            (entries, processes.readers.close_all()) // ALAB(shell-output): take all live and unwritable owners atomically.
         };
 
+        readers.wait().await; // ALAB(shell-output): settle EOF or label an interrupted drain before replacement.
         for entry in entries {
+            super::shell_observation::settle_before_termination(&entry.process).await; // ALAB(shell-invocation): flush observed exits before requesting termination of remaining commands.
             unregister_network_approval_for_entry(&entry).await;
             entry.process.terminate();
         }

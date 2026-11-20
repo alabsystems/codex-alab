@@ -506,7 +506,7 @@ async fn typed_capacity_sampling(code: &str, steer: bool) {
             .get::<LiveCapacityWait>()
             .expect("actual live capacity wait");
         assert_eq!(
-            live.publish_reason_if_current(std::time::Instant::now, |reason| reason),
+            live.publish_reason_if_current(std::time::Instant::now, |reason, _| reason),
             Some(reason)
         );
         let submission = crate::session::turn_input::handle(
@@ -542,7 +542,7 @@ async fn typed_capacity_sampling(code: &str, steer: bool) {
         };
         assert!(matches!(error.details(), CodexErrorDetails::TurnAborted));
         assert!(
-            live.publish_reason_if_current(std::time::Instant::now, |reason| reason)
+            live.publish_reason_if_current(std::time::Instant::now, |reason, _| reason)
                 .is_none()
         );
     } else {

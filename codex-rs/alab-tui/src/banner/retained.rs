@@ -125,6 +125,7 @@ impl BannerData {
             depth,
             theme: Theme {
                 bg: self.background,
+                ..Theme::default()
             },
             version: self.version,
             upstream: self.upstream,
@@ -135,6 +136,25 @@ impl BannerData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_unreported_background_omits_the_hosts_foreground_policy() -> io::Result<()> {
+        let historical = Banner::new(Style::Codex, Depth::TrueColor, Theme::default(), "0.11")
+            .with_upstream(Some("0.169".into()));
+        let local = Banner {
+            theme: historical.theme.with_terminal_foreground_if_unreported(),
+            ..historical.clone()
+        };
+        let encoded = serde_json::to_vec(&BannerData::capture(&local))?;
+        assert_eq!(
+            encoded,
+            serde_json::to_vec(&BannerData::capture(&historical))?
+        );
+        let restored = serde_json::from_slice::<BannerData>(&encoded)?.restore()?;
+        assert_eq!(restored, historical);
+        Ok(())
+    }
+
     #[test]
     fn actual_banner_fields_and_measure_reducer_survive_owned_historical_restore() -> io::Result<()>
     {

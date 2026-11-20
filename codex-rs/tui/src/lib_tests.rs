@@ -320,20 +320,6 @@ pub(crate) fn write_session_rollout(
     Ok(thread_id)
 }
 
-#[test]
-fn startup_removes_legacy_tui_log_file() -> std::io::Result<()> {
-    let temp_dir = TempDir::new()?;
-    let legacy_log_dir = temp_dir.path().join("log");
-    std::fs::create_dir_all(&legacy_log_dir)?;
-    let legacy_log = legacy_log_dir.join(TUI_LOG_FILE_NAME);
-    std::fs::write(&legacy_log, "legacy log")?;
-
-    remove_legacy_tui_log_file(temp_dir.path());
-
-    assert!(!legacy_log.exists());
-    Ok(())
-}
-
 #[tokio::test]
 async fn startup_services_use_final_cloud_managed_http_policy() -> color_eyre::Result<()> {
     for (configured_respect_system_proxy, managed_respect_system_proxy) in

@@ -412,18 +412,16 @@ impl BottomPane {
         {
             return Err(invalid("delayed queue normalization lost an actual row"));
         }
+        let mut positions = vec![0; order.len()];
+        for (position, original) in order.into_iter().enumerate() {
+            positions[original] = position;
+        }
         let mut original = std::mem::take(&mut self.delayed_approval_requests)
             .into_iter()
-            .map(Some)
+            .enumerate()
             .collect::<Vec<_>>();
-        self.delayed_approval_requests = order
-            .into_iter()
-            .map(|index| {
-                original[index]
-                    .take()
-                    .expect("validated whole actual row order")
-            })
-            .collect();
+        original.sort_unstable_by_key(|(index, _)| positions[*index]);
+        self.delayed_approval_requests = original.into_iter().map(|(_, row)| row).collect();
         Ok(())
     }
 }

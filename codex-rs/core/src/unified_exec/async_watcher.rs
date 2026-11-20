@@ -18,16 +18,11 @@ use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::plugins::metrics::finish_and_track_measurements;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use crate::tools::events::ToolEmitter;
+use crate::tools::events::ExecCommandResult;
 use crate::tools::events::ToolEventCtx;
-use crate::tools::events::ToolEventFailure;
-use crate::tools::events::ToolEventStage;
 use codex_core_plugins::PluginCommandAttribution;
-use codex_protocol::exec_output::ExecToolCallOutput;
-use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
-use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_utils_path_uri::PathUri;
 
@@ -191,54 +186,38 @@ pub(crate) fn spawn_exit_watcher(
         let plugin_metrics_sidecar = plugin_metrics_sidecar
             .as_ref()
             .and_then(take_plugin_metrics_sidecar);
-        if let Some(message) = process.failure_message() {
+        let failure = process.failure_message();
+        if failure.is_some() {
             drop(plugin_metrics_sidecar);
-            emit_failed_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                message,
-                duration,
-            )
-            .await;
         } else {
-            let exit_code = process.exit_code().unwrap_or(-1);
-            let timed_out = process.timed_out();
             finish_and_track_measurements(
                 plugin_metrics_sidecar,
-                exit_code,
+                process.exit_code().unwrap_or(-1),
                 &session_ref,
                 &turn_ref,
                 &model_context,
                 &call_id,
             )
             .await;
-            emit_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                exit_code,
-                duration,
-                timed_out,
-            )
-            .await;
         }
+        emit_exec_end_for_unified_exec(
+            process.sandbox_type(),
+            session_ref,
+            turn_ref,
+            model_info,
+            call_id,
+            command,
+            cwd,
+            Some(process_id.to_string()),
+            plugin_attribution,
+            output_buffer,
+            String::new(),
+            process.observed_exit_code(),
+            duration,
+            process.timed_out(),
+            failure,
+        )
+        .await;
     });
 }
 
@@ -324,117 +303,7 @@ impl Emitter {
     }
 }
 
-/// Emit an ExecCommandEnd event for a unified exec session, using the transcript
-/// as the primary source of aggregated_output and falling back to the provided
-/// text when the transcript is empty.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn emit_exec_end_for_unified_exec(
-    sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
-    session_ref: Arc<Session>,
-    turn_ref: Arc<TurnContext>,
-    model_info: Arc<CatalogModel>,
-    call_id: String,
-    command: Vec<String>,
-    cwd: PathUri,
-    process_id: Option<String>,
-    plugin_attribution: Option<PluginCommandAttribution>,
-    output_buffer: Arc<Mutex<OutputBuffers>>,
-    fallback_output: String,
-    exit_code: i32,
-    duration: Duration,
-    timed_out: bool,
-) {
-    let aggregated_output = resolve_aggregated_output(&output_buffer, fallback_output).await;
-    let output = ExecToolCallOutput {
-        exit_code,
-        stdout: StreamOutput::new(aggregated_output.clone()),
-        stderr: StreamOutput::new(String::new()),
-        aggregated_output: StreamOutput::new(aggregated_output),
-        duration,
-        timed_out,
-    };
-    let mut event_ctx = ToolEventCtx::new(
-        session_ref.as_ref(),
-        turn_ref.as_ref(),
-        &model_info,
-        &call_id,
-        /*turn_diff_tracker*/ None,
-    );
-    event_ctx.sandbox_type = sandbox_type;
-    let emitter = ToolEmitter::unified_exec(
-        &command,
-        cwd,
-        ExecCommandSource::UnifiedExecStartup,
-        process_id,
-        plugin_attribution,
-    );
-    emitter
-        .emit(
-            event_ctx,
-            ToolEventStage::Success {
-                output,
-                applied_patch_delta: None,
-            },
-        )
-        .await;
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn emit_failed_exec_end_for_unified_exec(
-    sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
-    session_ref: Arc<Session>,
-    turn_ref: Arc<TurnContext>,
-    model_info: Arc<CatalogModel>,
-    call_id: String,
-    command: Vec<String>,
-    cwd: PathUri,
-    process_id: Option<String>,
-    plugin_attribution: Option<PluginCommandAttribution>,
-    output_buffer: Arc<Mutex<OutputBuffers>>,
-    fallback_output: String,
-    message: String,
-    duration: Duration,
-) {
-    let stdout = if fallback_output.is_empty() {
-        resolve_aggregated_output(&output_buffer, fallback_output).await
-    } else {
-        fallback_output
-    };
-    let aggregated_output = if stdout.is_empty() {
-        message.clone()
-    } else {
-        format!("{stdout}\n{message}")
-    };
-    let output = ExecToolCallOutput {
-        exit_code: -1,
-        stdout: StreamOutput::new(stdout),
-        stderr: StreamOutput::new(message),
-        aggregated_output: StreamOutput::new(aggregated_output),
-        duration,
-        timed_out: false,
-    };
-    let mut event_ctx = ToolEventCtx::new(
-        session_ref.as_ref(),
-        turn_ref.as_ref(),
-        &model_info,
-        &call_id,
-        /*turn_diff_tracker*/ None,
-    );
-    event_ctx.sandbox_type = sandbox_type;
-    let emitter = ToolEmitter::unified_exec(
-        &command,
-        cwd,
-        ExecCommandSource::UnifiedExecStartup,
-        process_id,
-        plugin_attribution,
-    );
-    emitter
-        .emit(
-            event_ctx,
-            ToolEventStage::Failure(ToolEventFailure::Output(output)),
-        )
-        .await;
-}
+include!("../../../alab-core/glue/unified_process_completion.rs"); // ALAB(shell-output): record the actual process exit for initial and background completions.
 
 /// Keep only a potentially incomplete UTF-8 suffix; malformed bytes remain raw.
 /// A UTF-8 scalar spans at most four bytes, so its incomplete tail fits in three.

@@ -6,11 +6,15 @@ mod shared_instructions;
 mod shutdown;
 #[path = "../../alab-core/glue/exec_review_registration.rs"]
 pub(crate) mod alab_exec_review; // ALAB(exec-review): retain private review delegates in the owning tree.
+#[path = "../../alab-core/glue/fork_history_marker.rs"]
+mod alab_fork_history_marker; // ALAB(tool-result-recovery): distinguish a copied boundary from a real interrupt.
 
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
 pub use shutdown::AgentTreeShutdownFailureReason;
 pub use shutdown::AgentTreeShutdownReport;
+pub use shutdown::LoadedSuspendedAgent;
+pub use shutdown::SuspendedAgentTree;
 pub(crate) use shutdown::thread_store_error_kind;
 
 use crate::CodexAppsToolsCache;
@@ -42,7 +46,7 @@ use crate::session::session::Session;
 use crate::session::startup::SessionStartup;
 use crate::session::startup::SessionStartupGuard;
 use crate::tasks::InterruptedTurnHistoryMarker;
-use crate::tasks::interrupted_turn_history_marker;
+use self::alab_fork_history_marker::interrupted_turn_history_marker; // ALAB(tool-result-recovery): use fork guidance only when constructing fork history.
 use crate::thread_startup_metadata::ThreadStartupMetadata;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
@@ -916,6 +920,7 @@ impl ThreadManager {
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
                 model_catalog: model_catalog::ThreadModelCatalog::new(
+                    false, // ALAB(defaults): this test constructor has no configured provider ID.
                     provider,
                     /*catalog*/ None,
                     Arc::new(codex_models_manager::manager::ModelCatalogSettings::disk(
@@ -1138,7 +1143,7 @@ impl ThreadManager {
         config: &Config,
         factory: &dyn ModelCatalogFactory,
     ) -> SharedModelsManager {
-        factory.build(
+        codex_model_provider::alab_openai_api_catalog::build(factory, config.alab_follows_explicit_api_catalog(), // ALAB(defaults): temporary catalogs also retain registry context.
             self.catalog_auth_context(config)
                 .model_provider(config.model_provider.clone()),
             config.model_catalog.clone(),
@@ -2099,6 +2104,22 @@ impl ThreadManagerState {
             })
     }
 
+    pub(crate) async fn load_legacy_model_context(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> CodexResult<StoredModelContext> {
+        let history = self
+            .thread_store
+            .load_history(params)
+            .await
+            .map_err(thread_store_rollout_read_error)?;
+        Ok(StoredModelContext {
+            thread_id: history.thread_id,
+            revision: history.revision,
+            items: history.items,
+        })
+    }
+
     pub(crate) async fn load_latest_model_context(
         &self,
         params: LoadThreadHistoryParams,
@@ -2137,11 +2158,31 @@ impl ThreadManagerState {
         } else {
             None
         };
+        self.send_pinned_op(
+            &thread,
+            op,
+            parent_turn_id,
+            root_turn_id,
+            residency_guard,
+            message_delivery,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_pinned_op(
+        &self,
+        thread: &CodexThread,
+        op: Op,
+        parent_turn_id: Option<String>,
+        root_turn_id: Option<String>,
+        residency_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+        message_delivery: Option<crate::agent_communication::MessageDelivery>,
+    ) -> CodexResult<String> {
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
             && let Some(captured_op) = capture_test_op(&op)
         {
-            log.push((thread_id, captured_op));
+            log.push((thread.session.thread_id, captured_op));
         }
         thread
             .io
@@ -2480,7 +2521,16 @@ impl ThreadManagerState {
             .with_mcp_ema_cancellation(cancellation);
         let runtime = request.agent_control.runtime().clone();
         let _exec_start = runtime.admit_exec_tree_start()?; // ALAB(exec-tree): include reloads and private child startups in the barrier.
-        let membership = runtime.admit_start()?;
+        let options = &request.options;
+        let source = options
+            .session_source
+            .as_ref()
+            .unwrap_or(&self.session_source);
+        request.parent_thread_id = request
+            .parent_thread_id
+            .or_else(|| options.initial_history.get_resumed_parent_thread_id())
+            .or_else(|| source.parent_thread_id());
+        let membership = runtime.admit_session(request.parent_thread_id)?;
         let owns_startup = request.startup.is_none();
         let startup_state = Arc::clone(
             request
@@ -2680,14 +2730,6 @@ impl ThreadManagerState {
             }
             (_, control) => control,
         };
-        let parent_thread_id = parent_thread_id
-            .or_else(|| initial_history.get_resumed_parent_thread_id())
-            .or(match &session_source {
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                }) => Some(*parent_thread_id),
-                _ => None,
-            });
         // Both resume entry points must restore identities before children can be loaded lazily.
         if let InitialHistory::Resumed(resumed) = &initial_history
             && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)

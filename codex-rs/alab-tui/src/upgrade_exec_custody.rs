@@ -28,6 +28,7 @@ pub const PROTOCOL: u32 = 2;
 /// Bound the source snapshot before allocating or reading destination state.
 pub const MAX_STATE_BYTES: usize = 256 * 1024 * 1024;
 struct Adopted {
+    build: u64,
     _lease: File,
     state: Mutex<Option<Vec<u8>>>,
 }
@@ -67,6 +68,33 @@ pub fn take_state_if(matches: impl FnOnce(&[u8]) -> bool) -> Option<Vec<u8>> {
     }
     state.take()
 }
+/// Install one matching data namespace before retiring its original bytes.
+/// Mismatch, error and unwind leave the same allocation in custody. Success
+/// means the callback installed its own data owner; it supplies no SDK grant.
+/// The predicate is only a namespace test. The synchronous callback holds the
+/// custody lock and must not re-enter any custody state API. Runtime staging
+/// nests startup, input and terminal-mode locks in that order, before threads.
+pub(crate) fn install_state_if<T>(
+    matches: impl FnOnce(&[u8]) -> bool,
+    install: impl FnOnce(&[u8]) -> io::Result<T>,
+) -> io::Result<Option<T>> {
+    let Some(adopted) = ADOPTED.get() else {
+        return Ok(None);
+    };
+    let mut state = adopted
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(bytes) = state.as_deref() else {
+        return Ok(None);
+    };
+    if !matches(bytes) {
+        return Ok(None);
+    }
+    let installed = install(bytes)?;
+    *state = None;
+    Ok(Some(installed))
+}
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// A library consumer cannot advertise this protocol without running its early
@@ -77,6 +105,11 @@ pub(crate) fn startup_protocol() -> u32 {
     } else {
         0
     }
+}
+
+/// Exact build from the package receipt checked against this running image and its lease.
+pub(crate) fn adopted_build() -> Option<u64> {
+    ADOPTED.get().map(|custody| custody.build)
 }
 
 pub(crate) fn adopted() -> bool {
@@ -248,6 +281,7 @@ pub unsafe fn adopt_before_threads() -> io::Result<()> {
     }
     ADOPTED
         .set(Adopted {
+            build: received.receipt.build,
             _lease: received.lease,
             state: Mutex::new(state),
         })
@@ -511,6 +545,36 @@ mod tests {
         frame
     }
 
+    // Frozen released terminal DATA, not a positive terminal/Native claim.
+    // The late-startup control rejects before input or mode adoption is called.
+    fn refused_runtime_payload() -> Vec<u8> {
+        const FRAME: &[u8] = br#"codex-runtime-state-v2
+{"version":2,"primary":"00000000-0000-4000-8000-000000000001","goals":null,"terminal":{
+  "input":{"version":1,"buffer":[],"ready":[],"escape":null,"discarded_sequence":null},
+  "modes":{"version":1,"operating_system":"macos","terminal":{"device":1,"inode":2,"rdevice":3},
+    "original":{"flags":[11010,3,19200,1483],"characters":[4,255,255,127,23,21,18,255,3,28,26,25,17,19,22,15,1,0,20,255],"input_speed":9600,"output_speed":9600,"line":0},
+    "running":{"flags":[10240,2,19200,67],"characters":[4,255,255,127,23,21,18,255,3,28,26,25,17,19,22,15,1,0,20,255],"input_speed":9600,"output_speed":9600,"line":0}},
+  "startup":{"version":1,"cursor":[0,0],"colors":null,"enhanced_keys":false,
+    "terminal_app_over_ssh":false,"reports_key_releases":true,"da1_supported":false,"tmux_image_base":null,
+    "viewport":[0,0,80,24],"saved_viewport":null,"hidden_cursor":true,"visible_history_rows":0,
+    "screen":{"active":true,"mouse_active":true,"mouse_capture_disabled":false,"input_configured":true,
+      "keyboard_active":true,"parent_reports_key_releases":true,"pointer":0},
+    "focused":true,"owned_screen":true,"alt_screen_enabled":true,"mouse_capture":0},
+  "editor":{"synthetic_terminal_failure_fixture":true}}}"#;
+        FRAME.to_vec()
+    }
+
+    fn retained_state() -> (usize, usize, Vec<u8>) {
+        let state = ADOPTED
+            .get()
+            .unwrap()
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = state.as_ref().expect("original data remains in custody");
+        (bytes.as_ptr() as usize, bytes.capacity(), bytes.clone())
+    }
+
     fn blocked(path: &Path) {
         assert!(
             matches!(
@@ -594,6 +658,10 @@ mod tests {
             let mode = std::env::var("ALAB_TEST_EXEC_CUSTODY_MODE").unwrap();
             let payload = if mode.starts_with("runtime-cli") {
                 runtime_payload()
+            } else if mode == "runtime-stage-malformed" {
+                b"codex-runtime-state-v5\n{".to_vec()
+            } else if mode == "runtime-stage-too-late" {
+                refused_runtime_payload()
             } else {
                 payload()
             };
@@ -612,7 +680,28 @@ mod tests {
                 child_command(&target, &root, "no-hook")
             } else if mode.starts_with("runtime-cli") {
                 let mut command = std::process::Command::new(&target);
-                if mode == "runtime-cli-constructor" {
+                if mode == "runtime-cli-parser" {
+                    use sha2::Digest;
+                    command
+                        .args([
+                            "--exact",
+                            "alab_upgrade_startup::pty::admitted_local_resume_child",
+                            "--ignored",
+                            "--nocapture",
+                            "--test-threads=1",
+                        ])
+                        .env("ATERM_CODEX_SOURCE_LAUNCH", "isolated-parser-fixture")
+                        .env(
+                            "ALAB_TEST_CHECKPOINT_SHA256",
+                            format!("{:x}", sha2::Sha256::digest(&payload)),
+                        );
+                } else if mode == "runtime-cli-retained-backend" {
+                    command.args([
+                        "--alab-retained-service",
+                        "resume",
+                        "00000000-0000-4000-8000-000000000001",
+                    ]);
+                } else if mode == "runtime-cli-constructor" {
                     command
                         .args(["resume", "00000000-0000-4000-8000-000000000001"])
                         .env("ATERM_CODEX_SOURCE_LAUNCH", "invalid-native-constructor");
@@ -656,12 +745,99 @@ mod tests {
             std::env::var("ALAB_TEST_EXEC_CUSTODY_PID").unwrap(),
             std::process::id().to_string()
         );
+        assert_eq!(adopted_build(), Some(7));
         let lease = &ADOPTED.get().unwrap()._lease;
         assert!(
             rustix::io::fcntl_getfd(lease)
                 .unwrap()
                 .contains(rustix::io::FdFlags::CLOEXEC)
         );
+        if matches!(
+            phase.as_str(),
+            "runtime-stage-malformed" | "runtime-stage-too-late"
+        ) {
+            let original = retained_state();
+            if phase == "runtime-stage-too-late" {
+                assert!(crate::upgrade_state::data(&original.2).is_ok());
+                assert!(crate::upgrade_startup::begin().is_none());
+            }
+            assert!(crate::upgrade_state::pending().is_none());
+            let first = crate::upgrade_state::stage_before_runtime()
+                .err()
+                .expect("the original frame must refuse staging");
+            if phase == "runtime-stage-too-late" {
+                assert_eq!(
+                    first.to_string(),
+                    "terminal startup restoration is too late"
+                );
+            }
+            assert_eq!(retained_state(), original);
+            blocked(&root.join("original.lease"));
+            let second = crate::upgrade_state::stage_before_runtime()
+                .err()
+                .expect("retry must observe the same frame, not absence");
+            assert_eq!(second.kind(), first.kind());
+            assert_eq!(second.to_string(), first.to_string());
+            assert_eq!(retained_state(), original);
+            assert!(crate::upgrade_state::pending().is_none());
+            blocked(&root.join("original.lease"));
+            println!("ALAB_EXEC_STATE_OK");
+            return;
+        }
+        if phase == "state-install-transaction" {
+            let original = retained_state();
+            let foreign = install_state_if(
+                |_| false,
+                |_| -> io::Result<()> { panic!("foreign namespace reached install") },
+            )
+            .unwrap();
+            assert!(foreign.is_none());
+            assert_eq!(retained_state(), original);
+            let refused = install_state_if(
+                |_| true,
+                |_| -> io::Result<()> { Err(invalid("original install refusal")) },
+            )
+            .unwrap_err();
+            assert_eq!(refused.to_string(), "original install refusal");
+            assert_eq!(retained_state(), original);
+            for predicate_panics in [false, true] {
+                let panicked = std::panic::catch_unwind(|| {
+                    install_state_if(
+                        |_| {
+                            assert!(!predicate_panics, "original predicate panic");
+                            true
+                        },
+                        |_| -> io::Result<()> { panic!("original installer panic") },
+                    )
+                });
+                assert!(panicked.is_err());
+                assert_eq!(retained_state(), original);
+                blocked(&root.join("original.lease"));
+            }
+            let installed = install_state_if(
+                |bytes| bytes == original.2.as_slice(),
+                |bytes| {
+                    assert_eq!(bytes, original.2.as_slice());
+                    blocked(&root.join("original.lease"));
+                    Ok(bytes.to_vec())
+                },
+            )
+            .unwrap()
+            .expect("successful consumer receives its installed data");
+            assert_eq!(installed, original.2);
+            assert!(take_state().is_none(), "only success retires original data");
+            assert!(
+                install_state_if(
+                    |_| panic!("empty state reached predicate"),
+                    |_| -> io::Result<()> { panic!("empty state reached installer") },
+                )
+                .unwrap()
+                .is_none()
+            );
+            blocked(&root.join("original.lease"));
+            println!("ALAB_EXEC_STATE_OK");
+            return;
+        }
         assert_eq!(
             take_state_if(|_| false),
             None,
@@ -725,6 +901,32 @@ mod tests {
         run(child_command(&root.join("bin/codex"), &root, "foreign"));
         blocked(&root.join("original.lease"));
         drop(channel);
+        released(&root.join("original.lease"));
+    }
+
+    #[test]
+    fn exec_runtime_stage_errors_keep_original_frame_and_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("bin")).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), root.join("bin/codex")).unwrap();
+        for mode in ["runtime-stage-malformed", "runtime-stage-too-late"] {
+            let mut command = child_command(&std::env::current_exe().unwrap(), &root, "source");
+            command.env("ALAB_TEST_EXEC_CUSTODY_MODE", mode);
+            run(command);
+            released(&root.join("original.lease"));
+        }
+    }
+
+    #[test]
+    fn exec_install_transaction_preserves_refused_panicking_and_foreign_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("bin")).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), root.join("bin/codex")).unwrap();
+        let mut command = child_command(&std::env::current_exe().unwrap(), &root, "source");
+        command.env("ALAB_TEST_EXEC_CUSTODY_MODE", "state-install-transaction");
+        run(command);
         released(&root.join("original.lease"));
     }
 
@@ -794,18 +996,31 @@ mod tests {
     #[test]
     #[ignore = "requires an explicitly built Codex CLI with typed runtime staging"]
     fn real_cli_restores_the_terminal_when_constructor_or_arguments_fail() {
-        use std::os::fd::FromRawFd;
-        for mode in [
+        run_runtime_cli_cases(&[
             "runtime-cli-no-hook",
             "runtime-cli-constructor",
             "runtime-cli-arguments",
-        ] {
+            "runtime-cli-retained-backend",
+        ]);
+    }
+
+    #[test]
+    #[ignore = "requires the same-source codex CLI test executable"]
+    fn original_pty_checkpoint_routes_one_native_admission_to_an_explicit_local_resume() {
+        run_runtime_cli_cases(&["runtime-cli-parser"]);
+    }
+
+    fn run_runtime_cli_cases(modes: &[&str]) {
+        use std::os::fd::FromRawFd;
+        for &mode in modes {
             let directory = tempfile::tempdir().unwrap();
             let root = directory.path().canonicalize().unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
             std::fs::copy(
                 if mode == "runtime-cli-no-hook" {
                     std::env::current_exe().unwrap().into_os_string()
+                } else if mode == "runtime-cli-parser" {
+                    std::env::var_os("ALAB_TEST_UPGRADE_CLI_TEST").unwrap()
                 } else {
                     std::env::var_os("ALAB_TEST_UPGRADE_TARGET").unwrap()
                 },
@@ -878,9 +1093,10 @@ mod tests {
                     Err(error) => panic!("PTY read failed: {error}"),
                 }
                 if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
-                    assert!(
-                        !status.success(),
-                        "unexpected CLI success: {}",
+                    assert_eq!(
+                        status.success(),
+                        mode == "runtime-cli-parser",
+                        "unexpected CLI status {status} for {mode}: {}",
                         String::from_utf8_lossy(&output)
                     );
                     child.0.take();
@@ -905,6 +1121,10 @@ mod tests {
             let text = String::from_utf8_lossy(&output);
             let expected = if mode == "runtime-cli-no-hook" {
                 "ALAB_NO_TERMINAL_RECOVERY"
+            } else if mode == "runtime-cli-parser" {
+                "ALAB_ORIGINAL_RESUME_ROUTED"
+            } else if mode == "runtime-cli-retained-backend" {
+                "retained backend cannot restore a source-exec forest"
             } else if mode == "runtime-cli-constructor" {
                 "managed credential refresh is unavailable"
             } else {

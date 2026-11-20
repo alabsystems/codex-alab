@@ -18,6 +18,135 @@ use codex_protocol::items::UserMessageItem;
 
 const HANG: Duration = Duration::from_secs(60);
 
+/// The host's answer can change after a policy was observed. Only the ordinary
+/// Cruise continuation may take a model turn while the host declines replacement.
+#[test]
+fn unavailable_replacement_leaves_the_original_cruise_continuation_eligible() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let mut h = Harness::new().await;
+            asking(&h).await;
+            let command = format!("@{} native-act info source-exec", h.fake.sid());
+            h.fake.reply_always(&command, UNAVAILABLE);
+            let prior_queries = capability_queries(&h, &command);
+            let before = h.rt.accepted_turns.load(Ordering::SeqCst);
+            Arc::clone(&h.autopilot).consider_upgrade().await;
+            assert!(capability_queries(&h, &command) > prior_queries);
+            assert_eq!(notices(&h), 0);
+            assert_eq!(lock(&h.autopilot.ask).asks(), 0);
+            assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), before);
+
+            h.hold_model_response().await;
+            h.immediate_point().await;
+            idle(&h).await;
+            wait_for_supervisor(|| {
+                h.fake.acts().iter().any(|act| act == words::RULE_CONTINUE)
+                    && h.rt.accepted_turns.load(Ordering::SeqCst) == before + 1
+            })
+            .await;
+            assert_eq!(notices(&h), 0);
+            assert_eq!(lock(&h.autopilot.ask).asks(), 0);
+            assert!(h.requests.try_recv().is_err());
+            h.test
+                .codex
+                .shutdown_and_wait()
+                .await
+                .expect("native shutdown");
+        })
+        .await
+        .expect("unavailable replacement hang detector");
+    });
+}
+
+#[test]
+fn monitor_rechecks_unconfirmed_capability_and_final_admission_reads_the_host_again() {
+    native_test(|| async {
+        tokio::time::timeout(HANG, async {
+            let mut h = Harness::new().await;
+            enable_asking(&h).await;
+            let command = format!("@{} native-act info source-exec", h.fake.sid());
+            let before = h.rt.accepted_turns.load(Ordering::SeqCst);
+            for raw in ["OK native source-exec execution=available\n", UNAVAILABLE] {
+                h.fake.reply_always(&command, raw);
+                let prior_queries = capability_queries(&h, &command);
+                Arc::clone(&h.autopilot).consider_upgrade().await;
+                assert!(capability_queries(&h, &command) > prior_queries);
+                assert_eq!(notices(&h), 0);
+                assert_eq!(lock(&h.autopilot.ask).asks(), 0);
+                assert_eq!(h.rt.accepted_turns.load(Ordering::SeqCst), before);
+            }
+            let reply = "Ready for the restart.";
+            answer(&h, reply).await;
+            let (entered, at_start) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            *lock(&h.rt.before_start) = Some((entered, released));
+            h.fake.reply_always(&command, SOURCE_EXEC_AVAILABLE);
+            let prior_queries = capability_queries(&h, &command);
+            Arc::clone(&h.autopilot).consider_upgrade().await;
+            at_start
+                .await
+                .expect("the positive recheck delivers the notice");
+            assert!(capability_queries(&h, &command) > prior_queries);
+            assert_eq!(lock(&h.autopilot.ask).asks(), 1);
+
+            // A refresh can finish after this notice was booked. The refusal belongs
+            // to the same target, even while its original readiness reply is pending.
+            let policy = h.autopilot.sup.policy().expect("current upgrade policy");
+            h.fake.reply_always(&command, UNAVAILABLE);
+            let refusal = h
+                .autopilot
+                .refresh_notice_capability(&policy)
+                .await
+                .expect("same target and claim")
+                .expect_err("host declined replacement");
+            assert_eq!(h.autopilot.upgrade_unconfirmed(), Some(refusal));
+            h.fake.reply_always(&command, SOURCE_EXEC_AVAILABLE);
+            let before_recovery = capability_queries(&h, &command);
+            Arc::clone(&h.autopilot).consider_upgrade().await;
+            assert!(capability_queries(&h, &command) > before_recovery);
+            assert_eq!(lock(&h.autopilot.ask).asks(), 1);
+            assert!(matches!(step_now(&h), AskStep::Wait { .. }));
+
+            // The notice was offered under a positive observation. Change the host
+            // before the model answers it and exercise the genuine final admission.
+            *lock(&h.autopilot.upgrade_target_fixture) = None;
+            h.fake.reply_always(&command, UNAVAILABLE);
+            let prior_queries = capability_queries(&h, &command);
+            release.send(()).expect("notice turn starts");
+            notice_answered(&h, reply).await;
+            wait_for_supervisor(|| {
+                h.autopilot.sup.journal().iter().any(|entry| {
+                    entry.starts_with("upgrade target admission:") && entry.contains("unavailable")
+                })
+            })
+            .await;
+            assert!(capability_queries(&h, &command) > prior_queries);
+            assert_eq!(notices(&h), 1);
+            assert!(lock(&h.autopilot.ask).ready());
+            assert!(h.requests.try_recv().is_err());
+            assert!(!h.shared.exec_pending());
+            h.test
+                .codex
+                .shutdown_and_wait()
+                .await
+                .expect("native shutdown");
+        })
+        .await
+        .expect("replacement capability transition hang detector");
+    });
+}
+
+const UNAVAILABLE: &str =
+    "OK native source-exec preparation=0 execution=unavailable input-fence=1\n";
+
+fn capability_queries(h: &Harness, command: &str) -> usize {
+    h.fake
+        .requests()
+        .iter()
+        .filter(|request| request.as_str() == command)
+        .count()
+}
+
 fn notices(h: &Harness) -> usize {
     h.fake
         .acts()
@@ -101,14 +230,7 @@ fn upgrade_ask_types_one_notice_and_re_execs_only_on_a_ready_answer() {
         native_test(move || async move {
             tokio::time::timeout(HANG, async {
                 let mut h = Harness::new().await;
-                h.fake.set_policy_key("upgrade_ask", "true");
-                wait_for_supervisor(|| {
-                    h.autopilot
-                        .sup
-                        .policy()
-                        .is_some_and(|policy| policy.upgrade_ask && policy.upgrade)
-                })
-                .await;
+                asking(&h).await;
                 assert!(h.shared.is_root_thread(h.rt.key()) && h.shared.displays(h.rt.key()));
                 h.immediate_point().await;
                 answer(&h, reply).await;
@@ -150,8 +272,7 @@ fn upgrade_ask_types_one_notice_and_re_execs_only_on_a_ready_answer() {
     }
 }
 
-/// `upgrade_ask = true` read by the policy.
-async fn asking(h: &Harness) {
+async fn enable_asking(h: &Harness) {
     h.fake.set_policy_key("upgrade_ask", "true");
     wait_for_supervisor(|| {
         h.autopilot
@@ -160,6 +281,17 @@ async fn asking(h: &Harness) {
             .is_some_and(|policy| policy.upgrade_ask && policy.upgrade)
     })
     .await;
+}
+
+/// Exercise a decision at idle after a monitor has observed an executable host.
+async fn asking(h: &Harness) {
+    enable_asking(h).await;
+    let policy = h.autopilot.sup.policy().expect("fresh upgrade policy");
+    h.autopilot
+        .refresh_notice_capability(&policy)
+        .await
+        .expect("current update target and host claim")
+        .expect("host can replace this frontend");
 }
 
 /// The round's notice typed into the root thread, as codex-alab's act books it: the round

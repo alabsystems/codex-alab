@@ -72,33 +72,20 @@ impl ExecCell {
         if call.is_unified_exec_interaction()
             && !self.is_active()
             && call.output.as_ref().is_some_and(|output| {
-                output.exit_code == 0 && output.lines().all(|line| line.trim().is_empty())
+                output.succeeded() && output.lines().all(|line| line.trim().is_empty())
             })
         {
             return Vec::new();
         }
-        let nonzero_exit = call.output.as_ref().filter(|output| output.exit_code != 0);
-        let marker = if nonzero_exit.is_some() {
-            "•".bold()
-        } else if self.is_active() {
+        // ALAB(shell-output): use the same outcome semantics in compact and expanded rows.
+        let (marker, title) = call.compact_result(self.is_active(), || {
             activity_indicator(
                 call.start_time,
                 MotionMode::from_animations_enabled(self.animations_enabled()),
                 ReducedMotionIndicator::StaticBullet,
             )
             .unwrap_or_else(|| "•".dim())
-        } else {
-            "•".green().bold()
-        };
-        let title = if let Some(output) = nonzero_exit {
-            format!("Exited (status {})", output.exit_code)
-        } else if self.is_active() {
-            "Running".to_owned()
-        } else if call.is_unified_exec_interaction() {
-            "Background output".to_owned()
-        } else {
-            "Ran".to_owned()
-        };
+        });
         let script = strip_bash_lc_and_escape(&call.command);
         // Highlight before clipping so the compact row keeps the same shell token colors.
         let mut command_lines = highlight_bash_to_lines(&script).into_iter();

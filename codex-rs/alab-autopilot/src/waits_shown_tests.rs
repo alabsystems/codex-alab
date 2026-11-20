@@ -12,9 +12,10 @@
 
 use super::*;
 use crate::words;
+use codex_alab_core::wall_kind::LimitClass;
 
 const WAIT: &str = "codex-alab-wait";
-const RESET: &str = "waiting for the usage reset at 15:00";
+const RESET: &str = "usage reset at 15:00 · automatic retry follows";
 
 /// The policy that waits a usage limit out (`limit_wait`; the fake's own policy leaves it off).
 const WAITS_LIMITS: &[(&str, &str)] = &[("limit_wait", "true")];
@@ -40,6 +41,7 @@ fn wait_writes(h: &Harness) -> (usize, usize) {
 /// A usage wall whose reset comes `ahead` from now, or (`None`) came ten minutes ago.
 fn usage(ahead: Option<Duration>) -> Wall {
     Wall::Usage {
+        limit_class: LimitClass::Ordinary,
         reset_at: Some(match ahead {
             Some(ahead) => Instant::now() + ahead,
             None => Instant::now() - Duration::from_secs(600),
@@ -389,7 +391,7 @@ fn a_wait_whose_act_did_not_go_comes_down() {
     core_test_support::test_codex::run_test_with_large_stack(
         "a wait whose act did not go",
         || async {
-            tokio::time::timeout(Duration::from_secs(60), act_not_gone())
+            tokio::time::timeout(Duration::from_secs(60), act_not_gone(None))
                 .await
                 .unwrap_or_else(|_| panic!("never: the act's outcome"));
             Ok(())
@@ -398,8 +400,26 @@ fn a_wait_whose_act_did_not_go_comes_down() {
     .unwrap_or_else(|err| panic!("native core test: {err}"));
 }
 
-async fn act_not_gone() {
+/// A Plan refusal belongs to the point that decided it, even while its earlier wait's
+/// removal awaits aterm. A real later native start and stop on the same runtime supersede
+/// that point; an unchanged point still raises its ordinary Plan ask.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn a_plan_refusal_wait_clear_keeps_attention_at_its_original_native_point() {
+    crate::extension::native_test(|| async {
+        for newer_point in [false, true] {
+            tokio::time::timeout(Duration::from_secs(300), act_not_gone(Some(newer_point)))
+                .await
+                .unwrap_or_else(|_| panic!("Plan wait-clear custody (newer point: {newer_point})"));
+        }
+    });
+}
+
+async fn act_not_gone(wait_clear_custody: Option<bool>) {
     use codex_core::config::Config;
+    use codex_extension_api::TurnLifecycleContributor;
+    use codex_extension_api::TurnStartInput;
+    use codex_extension_api::TurnStopInput;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
@@ -418,7 +438,14 @@ async fn act_not_gone() {
     let sup = Supervisor::new(SupervisorOptions {
         shared,
         endpoint: Arc::new(move || Some(endpoint.clone())),
-        client: ClientOptions::default(),
+        client: if wait_clear_custody.is_some() {
+            ClientOptions {
+                timeout: Duration::from_secs(30),
+                ..ClientOptions::default()
+            }
+        } else {
+            ClientOptions::default()
+        },
     });
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
     let autopilot = Autopilot::new(Arc::clone(&sup), None, None, Timing::default(), |_| true);
@@ -469,6 +496,109 @@ async fn act_not_gone() {
     core_test_support::submit_thread_settings(&test.codex, mode(ModeKind::Plan))
         .await
         .unwrap_or_else(|err| panic!("Plan mode: {err}"));
+    if let Some(newer_point) = wait_clear_custody {
+        const CLEAR: &str = "meta unset attention owner=codex-alab-wait";
+        rt.with_state(|state| {
+            state.observe_person_turn();
+            state.observe_turn_end(ended(Some("Stage 1 is in."), None), &Timing::default());
+            state.short_streak = 1;
+        });
+        Arc::clone(&autopilot).evaluate(Arc::clone(&rt)).await;
+        let shown = wait_up().expect("the old continuation's displayed backoff");
+        assert!(shown.starts_with(&words::short_backoff_wait(1, Duration::from_secs(120))));
+        assert!(!sup.attention_stands(rt.key(), "plan"));
+        fake.gate(CLEAR);
+        rt.with_state(|state| state.short_streak = 0);
+        let point = rt.state().point_at();
+        let pilot = Arc::clone(&autopilot);
+        let runtime = Arc::clone(&rt);
+        let mut evaluating = tokio::spawn(async move { pilot.evaluate(runtime).await });
+        tokio::select! {
+            () = wait_until("the Plan refusal reaches its wait clear", || {
+                fake.gated_requests().iter().any(|line| line.ends_with(CLEAR))
+            }) => {}
+            result = &mut evaluating => panic!("Plan refusal ended before its wait clear: {result:?}"),
+        }
+        assert_eq!(wait_up().as_deref(), Some(shown.as_str()));
+        assert!(!sup.attention_stands(rt.key(), "plan"));
+        // Own the next evaluation before native completion can queue it, so it
+        // cannot hide an obsolete entry inserted by the held evaluator.
+        let mut next_evaluation = Box::pin(rt.hold_eval_when_free());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(next_evaluation.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        if newer_point {
+            let session = ExtensionData::new("plan-refusal-session");
+            let successor = ExtensionData::new("turn-after-plan-refusal");
+            let settings = test.codex.thread_settings_snapshot().await;
+            let thread_store = test.codex.thread_extension_data();
+            autopilot
+                .on_turn_start(TurnStartInput {
+                    turn_id: successor.level_id(),
+                    collaboration_mode: &settings.collaboration_mode,
+                    token_usage_at_turn_start: None,
+                    session_store: &session,
+                    thread_store,
+                    turn_store: &successor,
+                })
+                .await;
+            autopilot
+                .on_turn_stop(TurnStopInput {
+                    session_store: &session,
+                    thread_store,
+                    turn_store: &successor,
+                })
+                .await;
+            assert_ne!(rt.state().point_at(), point);
+            assert_eq!(
+                rt.state().point_turn_id.as_deref(),
+                Some(successor.level_id())
+            );
+            assert!(!shared.turn_running_on(rt.key()));
+            assert!(Arc::ptr_eq(
+                &autopilot
+                    .thread_rt(rt.key())
+                    .expect("same registered runtime"),
+                &rt,
+            ));
+        }
+        let successor_point = rt.state().point_at();
+        let successor_turn = rt.state().point_turn_id;
+        assert!(
+            !evaluating.is_finished(),
+            "the real wait clear still holds the refusal"
+        );
+        fake.open_gate(CLEAR);
+        evaluating.await.expect("finish the original Plan refusal");
+        let next_evaluation = next_evaluation.await;
+        assert_eq!(sup.attention_stands(rt.key(), "plan"), !newer_point);
+        assert_eq!(
+            fake.attention()
+                .get("codex-alab")
+                .is_some_and(|ask| ask.starts_with("plan: Plan mode leaves")),
+            !newer_point,
+        );
+        assert_eq!(wait_up(), None);
+        assert_eq!(rt.state().point_at(), successor_point);
+        assert_eq!(rt.state().point_turn_id, successor_turn);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "Plan refusal and the native-hook fixture make no provider request",
+        );
+        Autopilot::cancel_timer(&rt).await;
+        test.codex
+            .shutdown_and_wait()
+            .await
+            .expect("native shutdown");
+        drop(next_evaluation);
+        return;
+    }
     back_off_then_act(&autopilot, &rt, &fake).await;
     assert!(
         fake.attention()

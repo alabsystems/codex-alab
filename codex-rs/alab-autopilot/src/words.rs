@@ -1528,7 +1528,8 @@ pub enum Said {
     Irreversible(String),
 }
 
-/// Judges the worker's last words ([`Said`]) exactly as aterm's `classify_said` does: read
+/// Judges the worker's last words ([`Said`]) using aterm's question rules, with the
+/// native exception for a report of a machine dependency. The report is read
 /// without the report's NEEDS YOU lines ([`needs::without_needs`]), so `NEEDS YOU: approval to
 /// publish` is no stop phrase asked of the harness.
 #[must_use]
@@ -1539,10 +1540,374 @@ pub fn classify_said(tail: Option<&str>) -> Said {
     classify_said_read(&needs::without_needs(tail))
 }
 
+// A work item can depend on an automated check without asking the person to
+// decide anything. Read the whole clause: a named person, an unknown gate or
+// a second instruction is not evidence of a machine-only dependency.
+fn machine_check_report(clause: &str) -> bool {
+    let Some((before, after)) = clause.split_once(" blocked on ") else {
+        return false;
+    };
+    let before = before.strip_suffix(" still").unwrap_or(before);
+    let Some(subject) = [" is", " are", " remains", " remain"]
+        .iter()
+        .find_map(|verb| before.strip_suffix(verb))
+    else {
+        return false;
+    };
+    let subject = subject.trim_matches(['*', '_', ' ']);
+    let (prefix, noun) = subject.rsplit_once(' ').unwrap_or(("", subject));
+    if !matches!(
+        noun,
+        "release"
+            | "releases"
+            | "build"
+            | "builds"
+            | "package"
+            | "packages"
+            | "deployment"
+            | "deployments"
+            | "pipeline"
+            | "pipelines"
+            | "job"
+            | "jobs"
+    ) {
+        return false;
+    }
+    // Only a bare or determined noun phrase, never an embedded request such
+    // as "Can I assume the release is blocked on CI checks".
+    if let Some(first) = prefix.split_whitespace().next()
+        && (!matches!(first, "a" | "an" | "the" | "this" | "these" | "our")
+            || may_ask_for_action(prefix.strip_prefix(first).unwrap_or(prefix)))
+    {
+        return false;
+    }
+    let check = after.strip_prefix("the ").unwrap_or(after);
+    let Some((kind, check)) = check.rsplit_once(' ') else {
+        return check == "ci";
+    };
+    matches!(
+        kind,
+        "ci" | "compiler" | "trust compiler" | "automated" | "unit" | "integration"
+    ) && matches!(
+        check,
+        "check" | "checks" | "test" | "tests" | "verification" | "certification"
+    )
+}
+
+// Exempt the stop only when every clause is accounted for. In particular,
+// an imperative that refers to production can omit both a destructive verb
+// and the person being asked. An unfamiliar clause keeps the original stop.
+fn only_reports_machine_blocks(text: &str, flat: &str) -> bool {
+    if text.contains('?') {
+        return false;
+    }
+    let mut reports = 0;
+    text.lines().all(|line| {
+        let line = line.trim();
+        let line = if opens_item(line) {
+            line.split_once(char::is_whitespace)
+                .map_or(line, |(_, body)| body)
+        } else {
+            line
+        };
+        // Preserve words inside emphasis and inline code; an instruction in
+        // either still guards the report. Periods inside a version or a URL
+        // do not start a sentence.
+        let line = line.replace(['*', '`'], "").replace("__", "");
+        let flat = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut start = 0;
+        for (at, c) in flat.char_indices() {
+            let end = at + c.len_utf8();
+            if matches!(c, ',' | ';' | '!' | '—' | '–')
+                || (matches!(c, '.' | ':') && (end == flat.len() || flat[end..].starts_with(' ')))
+            {
+                if !is_report_part(&flat[start..at], &mut reports) {
+                    return false;
+                }
+                start = end;
+            }
+        }
+        is_report_part(&flat[start..], &mut reports)
+    }) && reports == flat.matches("blocked on").count()
+}
+
+fn is_report_part(part: &str, reports: &mut usize) -> bool {
+    let part = part.trim();
+    let part = part
+        .strip_prefix("and ")
+        .or_else(|| part.strip_prefix("but "))
+        .unwrap_or(part);
+    part.split(" and ")
+        .flat_map(|p| p.split(" but "))
+        .all(|clause| {
+            if clause.contains("blocked on") {
+                *reports += 1;
+                return machine_check_report(clause);
+            }
+            !may_ask_for_action(clause) && states_progress(clause)
+        })
+}
+
+// Positive forms for surrounding progress: a report with its subject and
+// predicate, an observation in the past tense, or a reporting attachment.
+// Unknown beginnings (including a bare verb addressed to the operator) keep
+// the historical decision, however the proposed action is worded.
+fn states_progress(part: &str) -> bool {
+    let mut words = part.split_whitespace();
+    let Some(subject) = words.next() else {
+        return true;
+    };
+    let second = words.next();
+    if part.starts_with('[') {
+        return part.split(" · ").all(|link| {
+            let Some((label, destination)) =
+                link.strip_prefix('[').and_then(|s| s.split_once("]("))
+            else {
+                return false;
+            };
+            let Some(path) = destination.strip_suffix(')') else {
+                return false;
+            };
+            if path.is_empty()
+                || path.contains(['(', ')', '[', ']'])
+                || path.contains(char::is_whitespace)
+            {
+                return false;
+            }
+            // A caption can name a source. Retain all visible words and
+            // accept only short nominal labels, never an arbitrary link.
+            let mut words = label.split_whitespace();
+            let noun = words.next_back().unwrap_or_default();
+            !may_ask_for_action(label)
+                && words.count() <= 1
+                && matches!(
+                    noun,
+                    "log"
+                        | "logs"
+                        | "record"
+                        | "records"
+                        | "results"
+                        | "report"
+                        | "output"
+                        | "evidence"
+                        | "receipt"
+                        | "verification"
+                        | "regression"
+                )
+        });
+    }
+    // Past-tense observations can omit their subject ("Verified the patch").
+    let observed = |w: &str| {
+        matches!(
+            w,
+            "verified"
+                | "tested"
+                | "checked"
+                | "landed"
+                | "measured"
+                | "recovered"
+                | "passed"
+                | "recorded"
+                | "reported"
+                | "reclaimed"
+                | "finished"
+                | "completed"
+                | "failed"
+                | "followed"
+        )
+    };
+    if observed(subject) {
+        return true;
+    }
+
+    // A possessive names the owner of an object. Restrict an elliptical
+    // object to a source or build path and leave other possessives guarded.
+    if subject.ends_with("'s") && matches!(second, Some("source" | "cargo" | "build")) {
+        return true;
+    }
+    // An unfinished fragment can name somebody else's decision. Recognize
+    // mechanical completion and quantified progress, preserving other waits.
+    if subject == "pending" {
+        return part == "pending completion";
+    }
+    if subject == "during" {
+        return matches!(
+            part.strip_prefix("during ")
+                .and_then(|s| s.strip_prefix("the ")),
+            Some("build" | "test" | "tests" | "check" | "checks")
+        );
+    }
+    if subject == "still" {
+        return storage_amount(second, words.next())
+            && matches!(
+                words.next(),
+                Some(
+                    "free"
+                        | "available"
+                        | "remaining"
+                        | "short"
+                        | "above"
+                        | "below"
+                        | "under"
+                        | "over"
+                )
+            )
+            && words.all(|w| {
+                matches!(
+                    w,
+                    "of" | "its"
+                        | "the"
+                        | "build"
+                        | "disk"
+                        | "target"
+                        | "budget"
+                        | "floor"
+                        | "limit"
+                )
+            });
+    }
+    if matches!(
+        subject,
+        "bringing" | "raising" | "lowering" | "increasing" | "reducing"
+    ) {
+        return part.rsplit_once(" to ").is_some_and(|(_, amount)| {
+            let mut value = amount.split_whitespace();
+            storage_amount(value.next(), value.next()) && value.next().is_none()
+        });
+    }
+    if subject.ends_with("ing") && second == Some("would") {
+        return matches!(
+            words.next(),
+            Some("load" | "run" | "restart" | "resume" | "reuse")
+        );
+    }
+    if matches!(subject, "doesn't" | "didn't") {
+        return true;
+    }
+    if second == Some("followed") {
+        return true;
+    }
+    let subject_lead = matches!(
+        subject,
+        "i" | "it"
+            | "we"
+            | "a"
+            | "an"
+            | "the"
+            | "this"
+            | "these"
+            | "our"
+            | "all"
+            | "both"
+            | "local"
+            | "tab"
+            | "cruise"
+            | "exports"
+            | "tests"
+            | "ci"
+            | "compiler"
+            | "job"
+            | "build"
+            | "patch"
+    );
+    if !subject_lead {
+        return false;
+    }
+    let mut predicate = part.split_whitespace().skip(1).peekable();
+    while let Some(w) = predicate.next() {
+        match w {
+            // Do not borrow a predicate from a subordinate clause in a
+            // request ("the team asked us to wait because tests passed").
+            "to" | "us" | "that" | "when" | "because" | "before" | "after" | "whether" => {
+                return false;
+            }
+            "is" | "are" | "was" | "were" => {
+                let state = predicate.next();
+                return matches!(
+                    state,
+                    Some(
+                        "ready"
+                            | "clean"
+                            | "green"
+                            | "done"
+                            | "running"
+                            | "complete"
+                            | "queued"
+                            | "finished"
+                            | "verified"
+                            | "unchanged"
+                            | "untouched"
+                            | "available"
+                    )
+                ) || (state == Some("on")
+                    && matches!(predicate.next(), Some("main" | "private" | "remote")));
+            }
+            "gave" => return predicate.next() == Some("no"),
+            "can" => return predicate.next() == Some("still"),
+            "holds" | "clears" | "stops" | "resumes" | "checks" => return true,
+            _ if observed(w) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn storage_amount(value: Option<&str>, unit: Option<&str>) -> bool {
+    value.is_some_and(|s| s.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0))
+        && matches!(
+            unit,
+            Some("b" | "bytes" | "kb" | "mb" | "gb" | "tb" | "kib" | "mib" | "gib" | "tib")
+        )
+}
+
+// "Release" can name the subject of another progress report as well. Only
+// discount that noun with a determiner and a declarative predicate. Keep
+// every word after the noun, including any independent destructive verb.
+fn after_reported_release(part: &str) -> &str {
+    let mut words = part.splitn(3, ' ');
+    match (words.next(), words.next(), words.next()) {
+        (Some("the" | "this" | "these" | "our"), Some("release" | "releases"), Some(rest))
+            if rest
+                .split_whitespace()
+                .take(3)
+                .any(|w| matches!(w, "is" | "are" | "was" | "were")) =>
+        {
+            rest
+        }
+        _ => part,
+    }
+}
+
+fn may_ask_for_action(part: &str) -> bool {
+    if destructive_word(after_reported_release(part)).is_some() {
+        return true;
+    }
+    let words = part
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty());
+    let mut previous = None;
+    for word in words {
+        match word {
+            "you" | "your" | "please" | "permission" | "permit" | "approval" | "approve"
+            | "authorize" | "authorise" | "consent" | "confirm" | "grant" | "sign" | "proceed"
+            | "ahead" | "greenlight" | "them" | "hold" | "held" | "owner" | "operator"
+            | "human" | "unless" | "until" | "if" => return true,
+            // "It stops the build" describes the machine. "Push it now"
+            // can refer to the release regardless of what follows "it".
+            "it" if !matches!(previous, None | Some("and" | "but")) => return true,
+            _ => {}
+        }
+        previous = Some(word);
+    }
+    matches!(previous, Some("this" | "that" | "so"))
+}
+
 fn classify_said_read(tail: &str) -> Said {
     let lower = yes_no_asks(&tail.to_lowercase().replace('\u{2019}', "'"));
     let flat = lower.split_whitespace().collect::<Vec<_>>().join(" ");
-    if let Some(p) = STOP_PHRASES.iter().find(|p| flat.contains(*p)) {
+    if let Some(p) = STOP_PHRASES.iter().find(|p| {
+        flat.contains(**p) && (**p != "blocked on" || !only_reports_machine_blocks(&lower, &flat))
+    }) {
         if let Some(w) = destructive_word(&flat) {
             return Said::Irreversible(format!("the worker said \"{p}\" of an act that would {w}"));
         }
@@ -1993,6 +2358,40 @@ pub fn types_again_at(words: &str, at: std::time::Instant, now: std::time::Insta
     format!("{words}{TYPES_AGAIN}{clock}")
 }
 
+const RETRY_AT: &str = " · automatic retry at ";
+
+/// Render each instant in its own local offset, including when the wait crosses DST.
+pub(crate) fn usage_clock(
+    at: chrono::DateTime<chrono::FixedOffset>,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> String {
+    let format = if at.date_naive() == now.date_naive() {
+        "%H:%M"
+    } else {
+        "%H:%M on %Y-%m-%d"
+    };
+    at.format(format).to_string()
+}
+
+/// Convert the remaining monotonic delay to the local clock shown in the Waiting row.
+pub(crate) fn usage_clock_after(at: std::time::Instant, now: std::time::Instant) -> Option<String> {
+    let local = chrono::Local::now();
+    let left = chrono::Duration::from_std(at.checked_duration_since(now)?).ok()?;
+    let deadline = local.checked_add_signed(left)?;
+    Some(usage_clock(deadline.fixed_offset(), local.fixed_offset()))
+}
+
+pub(crate) fn usage_retry_at(
+    reason: &str,
+    at: std::time::Instant,
+    now: std::time::Instant,
+) -> String {
+    match usage_clock_after(at, now) {
+        Some(clock) => format!("{reason}{RETRY_AT}{clock}"),
+        None => "waiting for an automatic usage retry".into(),
+    }
+}
+
 /// A wait's words without the clock time [`types_again_at`] put after them: a later wait that
 /// moves the act (the host's wake settle) leaves the words, and their time is no longer when
 /// it types.
@@ -2000,5 +2399,6 @@ pub fn types_again_at(words: &str, at: std::time::Instant, now: std::time::Insta
 pub fn without_clock(shown: &str) -> &str {
     shown
         .split_once(TYPES_AGAIN)
+        .or_else(|| shown.split_once(RETRY_AT))
         .map_or(shown, |(words, _)| words)
 }

@@ -433,14 +433,10 @@ impl ExternalAgentSessionImporter {
                 )
             })?;
         let models_manager = self.thread_manager.get_models_manager();
-        let model = models_manager
-            .get_default_model(
-                &config.model,
-                /*allow_provider_model_fallback*/ false,
-                RefreshStrategy::Offline,
-                config.http_client_factory(),
-            )
-            .await;
+        let model = config.alab_resolve_catalog_model(models_manager.as_ref(), false, RefreshStrategy::Offline).await; // ALAB(defaults): imported sessions use the same offline family selection.
+        if model.is_empty() && config.alab_uses_sol_default() { // ALAB(defaults): never write an empty model ID to an imported thread.
+            return Err(SessionImportStepFailure::new("model_unavailable", config.alab_no_default_model_message().to_owned()));
+        }
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;

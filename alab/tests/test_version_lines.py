@@ -75,7 +75,7 @@ class VersionLineTests(unittest.TestCase):
     def layer(self, version="0.1.0", client="0.165.0"):
         """ALab's tooling, VERSION and (unless None) alab/client-version, committed."""
         (self.alab / "alab").mkdir(exist_ok=True)
-        for name in ("package.sh", "lib.sh", "command_guard.py", "github.py", "cli_status.py", "versions.py"):
+        for name in ("package.sh", "lib.sh", "upstream_intake.py", "command_guard.py", "github.py", "cli_status.py", "versions.py"):
             shutil.copy2(ROOT / "alab" / name, self.alab / "alab" / name)
         if version is None:
             (self.alab / "VERSION").unlink(missing_ok=True)

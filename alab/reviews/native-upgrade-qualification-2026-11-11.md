@@ -87,3 +87,32 @@ Rerun the exact signed-package case when the installed native host supplies
 `pkg admit-executable`. Do not substitute a fixture for that boundary. The
 current host failure is recorded above; the independent CLI custody work
 was completed without waiting for a host update.
+
+## November 19 signed-package admission on aterm 0.208.0
+
+The installed `/Applications/aterm.app/Contents/MacOS/aterm` (build
+`1795032367`) provided `pkg admit-executable`. Its signed index 165 selected
+Codex 0.11.0 build `2026111701`. The maintained
+`upgrade_admission::tests::signed_public_package_through_original_native_child`
+passed once in 1.03 seconds with zero ignored tests. The test accepted the
+kernel PID of the native child it started, received the lease and executable
+descriptors, and verified the requested build and physical file identities.
+
+Trust 15698 produced the test executable on source
+`7d4c203953e747552f137084f73b3d9bc97ac929`. To repeat the observation, set
+`ALAB_TEST_ADMISSION_NATIVE` to the installed aterm executable and
+`ALAB_TEST_ADMISSION_IMAGE` and `ALAB_TEST_ADMISSION_BUILD` to the
+`physical_executable` and `build` returned by `aterm pkg which --json codex`.
+Run the source-selected `codex-alab-tui` libtest with
+`--exact upgrade_admission::tests::signed_public_package_through_original_native_child --ignored --show-output`.
+
+| Observed artifact | SHA-256 |
+| --- | --- |
+| Installed signed Codex 0.11.0 | `090aacf5157ce4326da1744ab8869218dff31dc4fb7bde1f9bd226736f7022b3` |
+| Development test executable | `95613e3e200f74bacb2ef818fff12911125f4b4363f7c6a3e6a86cf36fa89023` |
+| Native test log | `5f2c39925a8baa294362ad9222458a919be27b2caedd3ede4d27e8eef0977af4` |
+
+The installed session answered `aterm ctl @self native-act info source-exec`
+with `preparation=1 execution=unavailable input-fence=1`. Package admission
+now succeeds independently. Replacing a running signed process still requires
+the host to grant execution for that session.

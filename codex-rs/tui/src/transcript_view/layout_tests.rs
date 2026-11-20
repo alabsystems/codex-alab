@@ -199,8 +199,8 @@ fn fullscreen_image_previews_follow_layout_without_entering_text_surfaces() {
     assert!(
         view.entry_layout(&cells, /*index*/ 0, /*full_content*/ true)
             .unwrap()
-            .image
-            .is_none()
+            .images
+            .is_empty()
     );
 
     // An inspected image only appears after its existing activity control is expanded.
@@ -224,10 +224,10 @@ fn fullscreen_image_previews_follow_layout_without_entering_text_surfaces() {
         let layout = view.layout(&cells, index).unwrap();
         assert_eq!(layout.text(), expected);
         let pinned_narrow = layout.rewrap(/*width*/ 8);
-        assert!(pinned_narrow.visible_image().is_none());
+        assert!(pinned_narrow.visible_images().next().is_none());
         let pinned_restored = pinned_narrow.rewrap(area.width);
         assert_eq!(pinned_restored.row_count(), layout.row_count());
-        assert!(pinned_restored.visible_image().is_some());
+        assert!(pinned_restored.visible_images().next().is_some());
     }
     // Short, inset viewports may begin in an image. Its placement stays inside the viewport.
     let short = Rect::new(
@@ -258,7 +258,7 @@ fn fullscreen_image_previews_follow_layout_without_entering_text_surfaces() {
     view.jump_to_latest();
     view.set_presentation(/*detailed*/ false, HistoryRenderMode::Raw);
     view.render(area, &mut buf, &cells);
-    assert!((0..cells.len()).all(|index| view.layout(&cells, index).unwrap().image.is_none()));
+    assert!((0..cells.len()).all(|index| view.layout(&cells, index).unwrap().images.is_empty()));
     view.set_presentation(/*detailed*/ false, HistoryRenderMode::Rich);
     view.image_protocol = None;
     view.render(area, &mut buf, &cells);
@@ -280,3 +280,6 @@ fn fullscreen_image_previews_follow_layout_without_entering_text_surfaces() {
     assert_eq!(buf, text_only);
     assert!(view.image_placements().is_empty());
 }
+
+#[path = "../../../alab-tui/glue/user_image_history_tests.rs"]
+mod user_image_history_tests; // ALAB(image-history): exercise attachment previews through the transcript viewport.

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "base": "637c42947236017bc78da59d1a22916400ccae63",
+  "target": "bc63849ff6ba67033e6887bf7c37c18c7bd631ad",
+  "frontier": "637c42947236017bc78da59d1a22916400ccae63",
+  "commits": [
+    {
+      "sha": "bc63849ff6ba67033e6887bf7c37c18c7bd631ad",
+      "subject": "Share config layer entries across snapshots (#62370)",
+      "paths": [
+        "codex-rs/config/src/state.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "product-policy",
+        "exec-handoff",
+        "account-isolation"
+      ],
+      "decision": "adapt",
+      "reason": "Adopt shared immutable configuration entries. Replacing user or session settings keeps the original snapshot intact and shares untouched TOML. Restore handoff data using the public borrowed layer iterator so the fork no longer depends on the private vector element type.",
+      "evidence": [
+        "The upstream diff changes one private representation and preserves layer precedence, disabled entries, enabled-layer validation and public borrowed access. ConfigLayerStack::new continues to accept owned entries.",
+        "The fork restores saved user and session data under current host authority. It must still take managed entries, Guardian policy and current project trust from the receiving host. Iterating borrowed entries also works on the previous upstream representation.",
+        "Selection of model and effort, managed app approval settings and provider requirements rely on ordered layers. Existing config state and handoff tests cover these behaviors. A two-snapshot regression checks the shared backing of untouched entries and independent replacements."
+      ],
+      "revisit": "Run the source-selected codex-config library tests, including managed authority, isolation of restored settings and actual sharing across user and session changes, on the integration build."
+    }
+  ]
+}

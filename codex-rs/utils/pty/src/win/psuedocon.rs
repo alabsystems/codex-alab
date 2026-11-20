@@ -186,7 +186,7 @@ impl PsuedoCon {
         let (mut exe, mut cmdline) = build_cmdline(&cmd)?;
         let cmd_os = OsString::from_wide(&cmdline);
 
-        let cwd = resolve_current_directory(&cmd);
+        let cwd = resolve_current_directory(&cmd)?; // ALAB(shell-invocation): require the caller's directory.
         let mut env_block = build_environment_block(&cmd);
 
         let res = unsafe {
@@ -237,28 +237,9 @@ impl PsuedoCon {
 #[path = "psuedocon_tests.rs"]
 mod lifecycle_tests;
 
-fn resolve_current_directory(cmd: &CommandBuilder) -> Option<Vec<u16>> {
-    let home = cmd
-        .get_env("USERPROFILE")
-        .and_then(|path| Path::new(path).is_dir().then(|| path.to_owned()));
-    let cwd = cmd
-        .get_cwd()
-        .and_then(|path| Path::new(path).is_dir().then(|| path.to_owned()));
-    let dir = cwd.or(home)?;
-
-    let mut wide = Vec::new();
-    if Path::new(&dir).is_relative() {
-        if let Ok(current_dir) = env::current_dir() {
-            wide.extend(current_dir.join(&dir).as_os_str().encode_wide());
-        } else {
-            wide.extend(dir.encode_wide());
-        }
-    } else {
-        wide.extend(dir.encode_wide());
-    }
-    wide.push(0);
-    Some(wide)
-}
+#[path = "../../../../alab-core/glue/pty_windows_directory.rs"]
+mod directory; // ALAB(shell-invocation): preserve the explicit cwd across the CreateProcessW boundary.
+use directory::resolve_current_directory;
 
 fn build_environment_block(cmd: &CommandBuilder) -> Vec<u16> {
     let mut block = Vec::new();

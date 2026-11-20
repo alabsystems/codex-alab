@@ -216,6 +216,7 @@ async fn spawn_process_portable(
     let process_group_id = child.process_id();
     let killer = child.clone_killer();
 
+    let native_eof = crate::NativeOutputEof::new(); // ALAB(shell-output): PTY master EOF covers its merged stream.
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
@@ -224,6 +225,7 @@ async fn spawn_process_portable(
         stdout_tx,
         writer_rx,
         crate::unix_io::StdinCloseBehavior::SendEof,
+        native_eof.clone(), // ALAB(shell-output): keep the original read receipt.
     );
     #[cfg(not(unix))]
     let (reader_handle, writer_handle) = {
@@ -311,7 +313,7 @@ async fn spawn_process_portable(
     );
 
     Ok(SpawnedProcess {
-        session: handle,
+        session: handle.with_native_output_eof(native_eof), // ALAB(shell-output): bind the stream proof to this launch.
         stdout_rx,
         stderr_rx,
         exit_rx,
@@ -419,10 +421,11 @@ async fn spawn_process_preserving_fds(
     #[cfg(not(target_os = "linux"))]
     let process_group_id = child.id();
 
+    let native_eof = crate::NativeOutputEof::new(); // ALAB(shell-output): PTY master EOF covers its merged stream.
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
-    let (reader_handle, writer_handle) = io.spawn(stdout_tx, writer_rx, stdin_close_behavior);
+    let (reader_handle, writer_handle) = io.spawn(stdout_tx, writer_rx, stdin_close_behavior, native_eof.clone()); // ALAB(shell-output): keep the original read receipt.
 
     let (exit_tx, exit_rx) = oneshot::channel::<i32>();
     let exit_status = Arc::new(AtomicBool::new(false));
@@ -470,7 +473,7 @@ async fn spawn_process_preserving_fds(
     );
 
     Ok(SpawnedProcess {
-        session: handle,
+        session: handle.with_native_output_eof(native_eof), // ALAB(shell-output): bind the stream proof to this launch.
         stdout_rx,
         stderr_rx,
         exit_rx,

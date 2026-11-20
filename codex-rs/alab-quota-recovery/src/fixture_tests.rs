@@ -878,7 +878,7 @@ fn the_fixtures_refusals_each_name_their_walls_kind() {
             kind == WallKind::Ordinary,
             "{name}"
         );
-        assert_eq!(kind.asked(), name != "refusal-model-limit.json", "{name}");
+        assert!(kind.asked(), "{name}");
         assert_eq!(
             kind.host_kept(),
             name.contains("workspace") || name.contains("spend")
@@ -1057,12 +1057,8 @@ fn the_fixtures_credit_only_refusal_is_an_ordinary_wall_with_no_window() {
 /// The `codex` family the same 429 states, with room, is not read, and the
 /// reset is the named limit's spent window's. Upstream's copy tells the person
 /// to switch model; ALab keeps the model and moves the account, or waits.
-/// It is not an ordinary wall, which is right for an earned reset, and step
-/// S3 keeps that reading. Since S3, exec publishes its observation by the
-/// wall's kind, a model's own limit included, and its runtime asks no host
-/// about one (`WallKind::asked`): a host asked today judges the ordinary
-/// bucket. The run waits out the reset, as before, until S5 names the limit
-/// to a host that judges it.
+/// Exec can name this bucket to a host that advertises named prepares and arms.
+/// Its provider reset still governs the wait when a move is unavailable.
 #[test]
 fn the_fixtures_model_limit_refusal_states_the_named_limits_windows() {
     let reply = golden("refusal-model-limit.json");

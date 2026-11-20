@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "base": "345f166d01fda88e6e723afbbfdce2efde843f74",
+  "target": "f09fb197f517acb3052ae3976a7fc3b5a5a8897d",
+  "frontier": "345f166d01fda88e6e723afbbfdce2efde843f74",
+  "commits": [
+    {
+      "sha": "409973e0e217a3d271d0bb425085eef077743ac6",
+      "subject": "Extract TUI thread resume finalization (#62171)",
+      "paths": [
+        "codex-rs/tui/src/app_server_session/rollout_history.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "history-pagination",
+        "exec-handoff",
+        "model-discovery"
+      ],
+      "decision": "adapt",
+      "reason": "Use the upstream finalizer for resume requests that produce a fresh StartedThread. Keep the original request and finalization inside the same ALab construction scope.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 fc0b0fdb65d26f9d38f152effd4739f6318edca3241cf935385428b8da99ec80.",
+        "The caller still retries unsupported pagination before finalizing. The extracted method carries the typed response, configuration, thread ID and hydration scope through subscription, history hydration, parent title and task-tool setup. In the fork the outer construction scope ends after this entire sequence. A retained original UI object has a separate reconciliation path."
+      ],
+      "revisit": "Exercise real resume with saved settings, migration and lock contention, alongside existing-session model promotion and retained-original reconciliation."
+    },
+    {
+      "sha": "f09fb197f517acb3052ae3976a7fc3b5a5a8897d",
+      "subject": "Remove Python from MCP permission request hook tests (#62172)",
+      "paths": [
+        "codex-rs/core/BUILD.bazel",
+        "codex-rs/core/src/mcp_tool_call_tests.rs"
+      ],
+      "classes": [
+        "refactor"
+      ],
+      "features": [
+        "qualification-fixtures"
+      ],
+      "decision": "adopt",
+      "reason": "Use the native Core test executable for the MCP permission hook fixture so the permission checks run without a separate Python runtime.",
+      "evidence": [
+        "Reviewed the exact parent-to-commit patch, SHA256 84154b779e9c259a5e480369526787ee7113a81ec6a0209a27ccd35842ebf043.",
+        "Only the Core test module and Bazel test inputs change. The explicit fixture argument selects a child process that reads the real hook payload, appends and flushes its JSON log, then flushes the configured JSON response. Other invocations run the normal test executable."
+      ],
+      "revisit": "Run the permission hook cases covering allow, tool-name fallback and remembered approval under the protected test runner."
+    }
+  ]
+}

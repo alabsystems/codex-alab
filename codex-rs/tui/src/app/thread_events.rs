@@ -60,7 +60,7 @@ fn is_voice_handoff_item(item: &ThreadItemPayload) -> bool {
         if crate::chatwidget::realtime_delegation_input(content).is_some())
 }
 
-fn hide_private_items_after_voice_handoff(
+pub(super) fn hide_private_items_after_voice_handoff( // ALAB(misalignment-review): historical final recovery uses the same ordered visibility rule.
     items: &mut Vec<codex_app_server_protocol::ThreadItem>,
     delegated: bool,
 ) {
@@ -109,6 +109,9 @@ pub(super) struct ThreadEventStore {
     pub(super) active_reasoning_item: Option<codex_app_server_protocol::ItemStartedNotification>,
     // Lifecycle identity must survive bounded replay-buffer eviction.
     pub(super) latest_turn_id: Option<String>,
+    pub(super) alab_final_items: super::turn_chronology::FinalItems, // ALAB(misalignment-review): final reply identities survive bounded notification eviction.
+    pub(super) alab_retired_turns: HashSet<String>, // ALAB(misalignment-review): retain only identities of completed or superseded turns across eviction.
+    pub(super) terminal_hold: super::misalignment_terminal_hold::TerminalHold, // ALAB(misalignment-review): one unresolved finding can outlive its notification.
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) capacity: usize,
@@ -159,6 +162,9 @@ impl ThreadEventStore {
             evicted_active_turn: None,
             active_reasoning_item: None,
             latest_turn_id: None,
+            alab_final_items: Default::default(), // ALAB(misalignment-review): no final item has been received.
+            alab_retired_turns: HashSet::new(), // ALAB(misalignment-review): this store has seen no turns.
+            terminal_hold: Default::default(), // ALAB(misalignment-review): no finding before delivery.
             pending_interrupt_turn_id: None,
             input_state: None,
             capacity,
@@ -200,6 +206,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
+        self.alab_refresh_turn_history(&turns); // ALAB(misalignment-review): restored history identifies earlier terminal turns.
         self.evicted_active_turn = None;
         if self.active_reasoning_item.as_ref().is_some_and(|started| {
             turns.iter().any(|turn| {
@@ -221,7 +228,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
-        self.latest_turn_id = Some(turn_id.clone());
+        self.alab_note_latest_turn(&turn_id); // ALAB(misalignment-review): a new accepted turn supersedes the old identity.
         self.active_turn_id = Some(turn_id);
     }
 
@@ -245,6 +252,7 @@ impl ThreadEventStore {
     }
 
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        if !self.alab_accept_lifecycle(notification.as_ref()) { return; } // ALAB(misalignment-review): delayed historical events cannot rewind the store.
         #[cfg(unix)] self.alab_side_delivery.begin(notification.as_ref()); // ALAB(retained-side): capture original delivery before its real buffer clone.
         let user_item = match notification.as_ref() {
             ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item.payload)),
@@ -280,7 +288,7 @@ impl ThreadEventStore {
                     self.active_reasoning_item = None;
                 }
                 if self.active_turn_id.is_none() {
-                    self.latest_turn_id = Some(turn.turn.id.clone());
+                    self.alab_note_latest_turn(&turn.turn.id); // ALAB(misalignment-review): sparse terminal delivery can identify a new turn.
                 }
                 if matches!(turn.turn.status, TurnStatus::Completed) {
                     self.recap_progress.completed_turns += 1;
@@ -298,7 +306,7 @@ impl ThreadEventStore {
                     && n.error.codex_error_info
                         == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) =>
             {
-                self.latest_turn_id = Some(n.turn_id.clone());
+                self.alab_note_latest_turn(&n.turn_id); // ALAB(misalignment-review): a new refusal can arrive without a start.
             }
             ServerNotification::ThreadClosed(_) => {
                 self.clear_active_turn_id();
@@ -333,6 +341,8 @@ impl ThreadEventStore {
             }
             _ => {}
         }
+
+        self.terminal_hold.observe(notification.as_ref(), self.latest_turn_id.as_deref()); // ALAB(misalignment-review): preserve the accepted finding before buffer eviction.
 
         // These notifications are either handled before routing or ignored by ChatWidget on
         // replay. In particular, raw response items and realtime audio can carry large payloads,
@@ -445,6 +455,7 @@ impl ThreadEventStore {
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }
+        self.terminal_hold.restore(&mut snapshot, self.latest_turn_id.as_deref()); // ALAB(misalignment-review): replay an evicted finding without its live review details.
         let delegated = snapshot
             .turns
             .iter()

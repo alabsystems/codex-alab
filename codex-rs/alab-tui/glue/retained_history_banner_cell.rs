@@ -1,6 +1,6 @@
 // Copyright 2026 Andrew Yates
 // SPDX-License-Identifier: Apache-2.0
-//! Exact native banner, cache and unique header; global harness observations remain original code.
+//! Retain the native banner and header. A timed card rebuilds its cache from the current host.
 use super::*;
 use crate::history_cell::alab_retained_cells::CaptureContext;
 use crate::history_cell::alab_retained_cells::RestoreContext;
@@ -15,6 +15,8 @@ use std::io;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::history_cell) struct Data {
+    #[serde(default)]
+    model_label: String,
     banner: BannerData,
     cache: Option<CacheData>,
     header: Box<UniqueBody>,
@@ -25,14 +27,6 @@ struct CacheData {
     width: u16,
     harness: Option<u8>,
     lines: Vec<native::LineData>,
-}
-fn harness(actual: Harness) -> u8 {
-    match actual {
-        Harness::On(Mode::Off) => 0,
-        Harness::On(Mode::Cruise) => 1,
-        Harness::On(Mode::Land) => 2,
-        Harness::Unsupervised => 3,
-    }
 }
 fn restore_harness(actual: u8) -> io::Result<Harness> {
     Ok(match actual {
@@ -52,19 +46,34 @@ impl Data {
         let Some(actual) = actual.as_any().downcast_ref::<BannerCell>() else {
             return Ok(None);
         };
-        let cache = {
+        let model = actual.model.lock().unwrap_or_else(PoisonError::into_inner);
+        let cache = if model.dirty {
+            None
+        } else {
             let cache = actual
                 .cache
                 .lock()
                 .map_err(|_| native::invalid("banner cache capture lock poisoned"))?;
-            cache.as_ref().map(|(width, state, lines)| CacheData {
-                width: *width,
-                harness: state.map(harness),
-                lines: lines.iter().map(native::LineData::capture).collect(),
+            cache.as_ref().and_then(|(width, state, lines)| {
+                // A timed card is derived from this host and local date. Rebuild it on restore.
+                let harness = match state {
+                    Some(Harness::CruiseUntil(_)) => return None,
+                    Some(Harness::On(Mode::Off)) => Some(0),
+                    Some(Harness::On(Mode::Cruise)) => Some(1),
+                    Some(Harness::On(Mode::Land)) => Some(2),
+                    Some(Harness::Unsupervised) => Some(3),
+                    None => None,
+                };
+                Some(CacheData {
+                    width: *width,
+                    harness,
+                    lines: lines.iter().map(native::LineData::capture).collect(),
+                })
             })
         };
         Ok(Some(Self {
-            banner: BannerData::capture(&actual.banner),
+            model_label: model.label.clone(),
+            banner: BannerData::capture(model.resolved_banner.as_ref().unwrap_or(&actual.banner)),
             cache,
             header: Box::new(UniqueBody::capture(
                 actual.header.as_ref(),
@@ -94,6 +103,10 @@ impl Data {
             })
             .transpose()?;
         Ok(Box::new(BannerCell {
+            model: std::sync::Arc::new(Mutex::new(BannerModel {
+                label: self.model_label,
+                ..Default::default()
+            })),
             banner: self.banner.restore()?,
             cache: Mutex::new(cache),
             header: self
@@ -110,10 +123,77 @@ mod controls {
     use crate::history_cell::HistoryCell;
     use ratatui::style::Stylize;
     use std::sync::Arc;
+    fn round_trip(original: &Arc<dyn HistoryCell>) -> io::Result<Arc<dyn HistoryCell>> {
+        let mut graph = cells::Capture::default();
+        let root = graph.intern(original)?;
+        let mut text = native::Capture::default();
+        let bytes = graph.encode(&mut text, 1_048_576)?;
+        let mut shared = native::Restored::new(text.export()?)?;
+        cells::Restored::decode(
+            &bytes,
+            1_048_576,
+            &mut shared,
+            &mut RestoreContext::default(),
+        )?
+        .cell(root)
+    }
+
+    #[test]
+    fn restored_card_reads_the_current_hosts_landing_time() -> io::Result<()> {
+        use codex_alab_tui::session::Autopilot;
+        use codex_alab_tui::session::HarnessWord;
+        use codex_alab_tui::session::Shared;
+        let host = Box::leak(Box::new(Shared::new()));
+        let _scope = codex_alab_tui::boxes::scoped(host);
+        host.set_autopilot_with_word(Autopilot::Active, HarnessWord::Cruise);
+        let now = chrono::Utc::now();
+        let earlier = u64::try_from(now.timestamp()).unwrap() + 3_600;
+        let later = earlier + 7_200;
+        let label = |at| {
+            let landing =
+                codex_alab_tui::landing::Landing::in_zone(at, &chrono::Local, now).unwrap();
+            format!("∞ cruise ⤓{landing}")
+        };
+        let _clock = codex_alab_tui::fixture_clock::scoped(now);
+        let original: Arc<dyn HistoryCell> = Arc::new(BannerCell {
+            model: Default::default(),
+            banner: Banner::new(
+                codex_alab_tui::banner::Style::Codex,
+                Depth::Mono,
+                Theme::default(),
+                "0.11",
+            ),
+            cache: Mutex::new(None),
+            header: Box::new(AgentMessageCell::new(
+                vec![Line::from("original header")],
+                true,
+            )),
+        });
+        host.set_land_at(Some(earlier));
+        assert!(
+            original
+                .display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains(&label(earlier)))
+        );
+        host.set_land_at(Some(later));
+        let restored = round_trip(&original)?;
+        let cell = restored.as_any().downcast_ref::<BannerCell>().unwrap();
+        assert!(cell.cache.lock().unwrap().is_none());
+        assert!(
+            cell.transcript_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains(&label(later)))
+        );
+        assert_eq!(cell.raw_lines(), original.raw_lines());
+        Ok(())
+    }
+
     #[test]
     fn native_banner_cell_retains_unique_header_historical_banner_and_exact_cached_lines()
     -> io::Result<()> {
         let original: Arc<dyn HistoryCell> = Arc::new(BannerCell {
+            model: Default::default(),
             banner: Banner::new(
                 codex_alab_tui::banner::Style::Codex,
                 Depth::Mono,
@@ -131,18 +211,7 @@ mod controls {
                 true,
             )),
         });
-        let mut graph = cells::Capture::default();
-        let root = graph.intern(&original)?;
-        let mut text = native::Capture::default();
-        let bytes = graph.encode(&mut text, 1_048_576)?;
-        let mut shared = native::Restored::new(text.export()?)?;
-        let restored = cells::Restored::decode(
-            &bytes,
-            1_048_576,
-            &mut shared,
-            &mut RestoreContext::default(),
-        )?
-        .cell(root)?;
+        let restored = round_trip(&original)?;
         let before = original
             .as_any()
             .downcast_ref::<BannerCell>()

@@ -11,6 +11,9 @@ use tokio::net::TcpListener;
 
 use super::disconnect::serve_reconnect_requests;
 
+#[path = "../../../../alab-tui/glue/parked_channel_reconnect_tests.rs"]
+mod alab_parked_channel; // ALAB(retained-ui): exercise an independent live channel through displayed-backend reconnect.
+
 #[tokio::test]
 async fn reconnect_restores_launch_reviewer_without_a_profile_override() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
@@ -547,7 +550,11 @@ async fn reconnect_reconciles_offscreen_pending_profile_before_restoring_permiss
                         "activePermissionProfile": if pending { Some(json!({"id": "server-only"})) } else { None },
                         "reasoningEffort": null}})
                 }
-                "thread/read" => json!({"result": {"thread": thread(primary)}}),
+                "thread/read" => {
+                    let requested = ThreadId::from_string(id.expect("thread/read requires an ID")).unwrap(); // ALAB(history): metadata belongs to the requested conversation.
+                    assert!([primary, displayed].contains(&requested));
+                    json!({"result": {"thread": thread(requested)}})
+                }
                 "turn/start" => {
                     let params = request.params.as_ref().unwrap();
                     assert_eq!(params["permissions"], serde_json::Value::Null);
@@ -565,7 +572,9 @@ async fn reconnect_reconciles_offscreen_pending_profile_before_restoring_permiss
     });
     let mut session = crate::start_embedded_app_server_for_picker(&app.config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    let parked = alab_parked_channel::Parked::prepare(&mut app, primary, &session).await; // ALAB(retained-ui): reserve and buffer on a different physical backend before the real reconnect.
     app.begin_reconnect();
+    let alab_lifecycle = app.saved_openings.alab_test_register_lifecycle(&app.app_event_tx); // ALAB(life): register the production callbacks before the real connection rotates.
     let connected = reconnect(
         session.backend_id(),
         app.app_server_target.clone(),
@@ -586,6 +595,8 @@ async fn reconnect_reconciles_offscreen_pending_profile_before_restoring_permiss
     )
     .await?;
     assert!(app.pending_server_profiles.contains_key(&primary));
+    app.saved_openings.alab_test_reconnected_lifecycle(alab_lifecycle); // ALAB(upgrade): the original request and signal reach the real reconnected actor.
+    parked.check(&mut app).await; // ALAB(retained-ui): parked delivery, store and attachment boundary remain on the original connection.
 
     app.select_agent_thread(&mut tui, &mut session, primary)
         .await?;

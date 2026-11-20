@@ -3,6 +3,7 @@
 
 //! Source-side opaque recovery data on the authenticated native host. This
 //! channel preserves bytes; it supplies no SDK, account or execution admission.
+use crate::upgrade::wait_until;
 use crate::upgrade_host::Host;
 use codex_alab_aterm::Client;
 use sha2::Digest;
@@ -23,17 +24,23 @@ use std::time::Instant;
 /// source/destination integration and recovery qualification are complete.
 pub async fn check_execution(client: &Client, deadline: Instant) -> Result<(), String> {
     let command = format!("@{} native-act info source-exec", client.endpoint().sid);
-    let reply = tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        client.request(&command),
-    )
-    .await
-    .map_err(|_| "native runtime execution capability deadline".to_owned())?
-    .map_err(|_| "native runtime capability transport failed".to_owned())?;
-    if reply.status != "OK native source-exec preparation=1 execution=available input-fence=1" {
-        return Err("native full-runtime execution is unavailable".into());
+    let reply = match wait_until(deadline, client.request(&command)).await {
+        Some(Ok(reply)) => reply,
+        None | Some(Err(codex_alab_aterm::Error::Unanswered)) => {
+            return Err(
+                "timed out waiting for aterm to report live session handoff support".into(),
+            );
+        }
+        Some(Err(_)) => return Err("native runtime capability transport failed".into()),
+    };
+    match reply.status.as_str() {
+        "OK native source-exec preparation=1 execution=available input-fence=1" => Ok(()),
+        "OK native source-exec preparation=1 execution=unavailable input-fence=1"
+        | "OK native source-exec preparation=0 execution=unavailable input-fence=1" => {
+            Err("aterm reports that live session handoff is unavailable".into())
+        }
+        _ => Err("aterm has not confirmed support for live session handoff".into()),
     }
-    Ok(())
 }
 
 /// Reserve before committing source producers. A dropped preparation releases
@@ -287,8 +294,8 @@ impl Reservation {
         let status = fields(&reply)?;
         match status.get("state").copied() {
             Some("receiving") if status.len() == 1 => {
-                let (stream, _) = tokio::time::timeout_at(
-                    tokio::time::Instant::from_std(deadline),
+                let (stream, _) = wait_until(
+                    deadline,
                     std::future::poll_fn(|context| {
                         let _fd_custody = match codex_alab_core::native_fd_custody::receiving() {
                             Ok(guard) => guard,
@@ -298,7 +305,7 @@ impl Reservation {
                     }),
                 )
                 .await
-                .map_err(|_| "native runtime connection deadline")?
+                .ok_or("native runtime connection deadline")?
                 .map_err(|error| error.to_string())?;
                 let peer = stream
                     .peer_cred()
@@ -412,14 +419,11 @@ fn primary_id(value: &str) -> bool {
 }
 async fn source_call(client: &Client, tail: &str, deadline: Instant) -> Result<String, String> {
     let command = format!("@{} native-act {tail}", client.endpoint().sid);
-    tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        client.request(&command),
-    )
-    .await
-    .map_err(|_| "native source replacement deadline".to_owned())?
-    .map(|reply| reply.status)
-    .map_err(|_| "native source replacement transport failed".to_owned())
+    wait_until(deadline, client.request(&command))
+        .await
+        .ok_or_else(|| "native source replacement deadline".to_owned())?
+        .map(|reply| reply.status)
+        .map_err(|_| "native source replacement transport failed".to_owned())
 }
 fn source_fields(line: &str) -> Result<BTreeMap<&str, &str>, String> {
     if line.len() > 132 * 1024 {
@@ -458,23 +462,17 @@ fn snapshot(bytes: &[u8]) -> io::Result<(File, String)> {
     Ok((file, digest))
 }
 async fn pause(deadline: Instant) -> Result<(), String> {
-    tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        tokio::time::sleep(Duration::from_millis(20)),
-    )
-    .await
-    .map_err(|_| "native runtime retention deadline".into())
+    wait_until(deadline, tokio::time::sleep(Duration::from_millis(20)))
+        .await
+        .ok_or_else(|| "native runtime retention deadline".into())
 }
 async fn call(client: &Client, tail: &str, deadline: Instant) -> Result<String, String> {
     let command = format!("@{} native-act runtime-data {tail}", client.endpoint().sid);
-    tokio::time::timeout_at(
-        tokio::time::Instant::from_std(deadline),
-        client.request(&command),
-    )
-    .await
-    .map_err(|_| "native runtime data deadline".to_owned())?
-    .map(|reply| reply.status)
-    .map_err(|_| "native runtime data transport failed".to_owned())
+    wait_until(deadline, client.request(&command))
+        .await
+        .ok_or_else(|| "native runtime data deadline".to_owned())?
+        .map(|reply| reply.status)
+        .map_err(|_| "native runtime data transport failed".to_owned())
 }
 fn fields(line: &str) -> Result<BTreeMap<&str, &str>, String> {
     // The host deliberately reports a failed copy with an ERR status, while
@@ -517,9 +515,9 @@ fn retained(
 }
 async fn send(stream: &tokio::net::UnixStream, file: &File, deadline: Instant) -> io::Result<()> {
     loop {
-        tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), stream.writable())
+        wait_until(deadline, stream.writable())
             .await
-            .map_err(|_| {
+            .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::TimedOut, "runtime descriptor deadline")
             })??;
         let result = stream.try_io(tokio::io::Interest::WRITABLE, || {
@@ -556,42 +554,63 @@ async fn send(stream: &tokio::net::UnixStream, file: &File, deadline: Instant) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_alab_aterm::Options;
+    use codex_alab_aterm::fake::FakeAterm;
+    use codex_alab_aterm::fake::Mode;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::FileExt;
     use std::os::unix::fs::MetadataExt;
 
     #[tokio::test]
     async fn data_transport_is_not_a_native_execution_capability() {
-        use codex_alab_aterm::Options;
-        use codex_alab_aterm::fake::FakeAterm;
-        use codex_alab_aterm::fake::Mode;
-        for (status, ready) in [
+        let unconfirmed = Some("aterm has not confirmed support for live session handoff");
+        for (status, expected_error) in [
             (
                 "OK native source-exec preparation=1 execution=available",
-                false,
+                unconfirmed,
             ),
             (
                 "OK native source-exec preparation=1 execution=unavailable",
-                false,
+                unconfirmed,
+            ),
+            (
+                "OK native source-exec preparation=1 execution=unavailable input-fence=1",
+                Some("aterm reports that live session handoff is unavailable"),
+            ),
+            (
+                "OK native source-exec preparation=0 execution=unavailable input-fence=1",
+                Some("aterm reports that live session handoff is unavailable"),
+            ),
+            (
+                "ERR native source-exec preparation=1 execution=unavailable input-fence=1",
+                unconfirmed,
+            ),
+            (
+                "OK native source-exec preparation=1 execution=unavailable input-fence=1 execution=available",
+                unconfirmed,
             ),
             (
                 "OK native source-exec preparation=0 execution=available",
-                false,
+                unconfirmed,
+            ),
+            (
+                "OK native source-exec preparation=0 execution=available input-fence=1",
+                unconfirmed,
             ),
             (
                 "OK native source-exec preparation=1 execution=available execution=unavailable",
-                false,
+                unconfirmed,
             ),
             (
                 "OK native runtime-data protocol=1 max-bytes=268435456 authority=data-only",
-                false,
+                unconfirmed,
             ),
             (
                 "OK native source-exec preparation=1 execution=available input-fence=1",
-                true,
+                None,
             ),
         ] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::test_paths::short_tempdir().unwrap();
             let fake = FakeAterm::start(directory.path(), Mode::Current)
                 .await
                 .unwrap();
@@ -603,8 +622,10 @@ mod tests {
             assert_eq!(
                 check_execution(&client, Instant::now() + Duration::from_secs(5))
                     .await
-                    .is_ok(),
-                ready
+                    .err()
+                    .as_deref(),
+                expected_error,
+                "{status}"
             );
             assert!(
                 fake.requests()
@@ -613,6 +634,75 @@ mod tests {
                         && !line.contains("execute source-exec"))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn shifted_task_clock_preserves_native_capability_budget_and_host_refusal() {
+        let directory = crate::test_paths::short_tempdir().unwrap();
+        let fake = FakeAterm::start(directory.path(), Mode::Current)
+            .await
+            .unwrap();
+        let client = Client::connect(fake.endpoint(), Options::default())
+            .await
+            .unwrap();
+        let command = format!("@{} native-act info source-exec", fake.sid());
+        fake.reply_once(
+            &command,
+            "OK native source-exec preparation=1 execution=unavailable input-fence=1\n",
+        );
+        let expired = Instant::now();
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(121)).await;
+        tokio::time::resume();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert!(tokio::time::Instant::now().into_std() > deadline);
+        assert_eq!(
+            check_execution(&client, expired).await.unwrap_err(),
+            "timed out waiting for aterm to report live session handoff support"
+        );
+        assert_eq!(
+            check_execution(&client, deadline).await.unwrap_err(),
+            "aterm reports that live session handoff is unavailable"
+        );
+        let requests: Vec<_> = fake
+            .requests()
+            .into_iter()
+            .filter(|line| line.contains(" native-act "))
+            .collect();
+        assert_eq!(requests, [command]);
+    }
+
+    #[tokio::test]
+    async fn unanswered_capability_query_reports_timeout_before_the_phase_deadline() {
+        let directory = crate::test_paths::short_tempdir().unwrap();
+        let fake = FakeAterm::start(directory.path(), Mode::Current)
+            .await
+            .unwrap();
+        let options = Options::default();
+        let client_timeout = options.timeout;
+        let client = Client::connect(fake.endpoint(), options).await.unwrap();
+        let query = "native-act info source-exec";
+        fake.gate(query);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut check = std::pin::pin!(check_execution(&client, deadline));
+        tokio::select! {
+            result = &mut check => panic!("gated query returned {result:?}"),
+            seen = fake.wait_for(|host| !host.gated_requests().is_empty()) => assert!(seen),
+        }
+        assert_eq!(fake.gated_requests(), [format!("@{} {query}", fake.sid())]);
+        tokio::time::pause();
+        tokio::time::advance(client_timeout + Duration::from_millis(1)).await;
+        tokio::time::resume();
+        assert_eq!(
+            check.await.unwrap_err(),
+            "timed out waiting for aterm to report live session handoff support"
+        );
+        fake.open_gate(query);
+        assert!(Instant::now() < deadline);
+        assert_eq!(
+            check_execution(&client, deadline).await.unwrap_err(),
+            "native runtime capability transport failed"
+        );
     }
 
     #[tokio::test]

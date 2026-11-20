@@ -139,8 +139,8 @@ impl KeymapActionId {
         }
         match (self.context, other.context) {
             // Presets cannot open while a list owns input.
-            (Chat, List) => self.action != "open_presets",
-            (List, Chat) => other.action != "open_presets",
+            (Chat, List) => !matches!(self.action, "open_presets" | "open_autopilot"), // ALAB(interface): these pickers yield to lists.
+            (List, Chat) => !matches!(other.action, "open_presets" | "open_autopilot"), // ALAB(interface): these pickers yield to lists.
 
             // Activity focus, Find, and selection remain available during list navigation.
             (Global, List) => matches!(
@@ -503,4 +503,5 @@ define_runtime_action_bindings! {
         decline,
         cancel,
     ],
+    "chat" => Chat, chat, chat [open_autopilot], // ALAB(interface): append to preserve native chord token numbers.
 }

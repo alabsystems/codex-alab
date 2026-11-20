@@ -331,12 +331,22 @@ impl Source {
 pub struct Wall {
     source: Source,
     root: Option<String>,
+    limit: Option<String>,
 }
 
 impl Wall {
     /// The wall of `source` in the root turn `root` (`None`: no recoverable root turn).
     pub fn new(source: Source, root: Option<String>) -> Self {
-        Wall { source, root }
+        Self {
+            source,
+            root,
+            limit: None,
+        }
+    }
+
+    pub fn with_limit(mut self, limit: Option<&str>) -> Self {
+        self.limit = limit.map(str::to_owned);
+        self
     }
 
     /// The source identity a move would leave, or why there is none. A wall with no
@@ -365,7 +375,7 @@ impl Latch {
             *self = Latch {
                 wall: Some(wall.clone()),
                 told: false,
-                settled: false,
+                settled: self.settled(wall),
             };
         }
     }
@@ -373,7 +383,12 @@ impl Latch {
     /// Whether an outcome that cannot change before another wall settled `wall`: then
     /// nothing is asked of aterm until another wall comes.
     pub fn settled(&self, wall: &Wall) -> bool {
-        self.settled && self.wall.as_ref() == Some(wall)
+        // Permanent routes describe the launch, login or root, independent of which
+        // bucket refused it. An ordinary no-destination answer remains retryable.
+        self.settled
+            && self.wall.as_ref().is_some_and(|previous| {
+                previous.source == wall.source && previous.root == wall.root
+            })
     }
 
     /// Note that `wall` met `route`. Returns the line the first time this wall meets any
