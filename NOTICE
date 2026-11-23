@@ -1,11 +1,11 @@
 codex-alab
 Copyright 2026 Andrew Yates
 
-codex-alab is licensed under the ALab Academic Use License 1.0; the terms are in LICENSE.
+codex-alab is licensed under the PolyForm Noncommercial License 1.0.0; the terms are in LICENSE.
 
 codex-alab's binaries include third-party components. Each remains under its own
-license, and nothing in the ALab Academic Use License limits the rights that license
-gives you.
+license: the PolyForm Noncommercial License 1.0.0 covers only ALab's own work
+and limits none of the rights those licenses give you.
 
 codex-alab is built on OpenAI Codex (https://github.com/openai/codex). OpenAI's
 code in it remains under the Apache License, Version 2.0 (licenses/Apache-2.0.txt);

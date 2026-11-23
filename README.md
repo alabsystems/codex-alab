@@ -14,14 +14,19 @@ Install it with aterm's package manager, which verifies every signed binary:
 aterm pkg install codex
 ```
 
-Every release is listed under [Releases](https://github.com/alabsystems/codex-alab/releases),
-and its notes are in `release-notes/`.
+Every release is listed under [Releases](https://github.com/alabsystems/codex-alab/releases).
+
+## Security
+
+Report a security problem privately to hello@alab.systems, not in a public
+issue.
 
 ## License
 
-codex-alab is licensed under the ALab Academic Use License 1.0 (`LICENSE`). It may be used
-free of charge for non-commercial teaching, academic research and personal
-study. Any other use, including any use by or for a company, needs a
-commercial license from ALab: see [alab.systems](https://alab.systems).
+codex-alab is licensed under the PolyForm Noncommercial License 1.0.0 (`LICENSE`). It may be used
+free of charge for any noncommercial purpose: research, teaching, personal
+study, and use by educational institutions, public research organizations,
+charities and government bodies. Commercial use needs a commercial license
+from ALab: see [alab.systems](https://alab.systems).
 
 Third-party components keep their own licenses; see `NOTICE`.
