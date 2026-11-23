@@ -9,8 +9,8 @@ and limits none of the rights those licenses give you.
 
 codex-alab is built on OpenAI Codex (https://github.com/openai/codex). OpenAI's
 code in it remains under the Apache License, Version 2.0 (licenses/Apache-2.0.txt);
-ALab's changes, and codex-alab as a whole, are licensed under the ALab Academic
-Use License. OpenAI Codex's notice follows.
+ALab's changes, and codex-alab as a whole, are licensed under the PolyForm
+Noncommercial License 1.0.0. OpenAI Codex's notice follows.
 
 OpenAI Codex
 Copyright 2025 OpenAI
